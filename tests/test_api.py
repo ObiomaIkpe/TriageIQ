@@ -46,8 +46,10 @@ def fakes(monkeypatch):
     monkeypatch.setattr(reply_draft, "_chain", f.draft)
     monkeypatch.setattr(critic, "_chain", f.critic)
     f.kb_error = None
+    f.kb_calls = []
 
     def _search(query_text, top_k):
+        f.kb_calls.append({"query_text": query_text, "top_k": top_k})
         if f.kb_error:
             raise f.kb_error
         return f.kb_results
@@ -102,7 +104,7 @@ def test_critic_llm_can_flag_a_ticket_that_has_a_kb_match(fakes):
     assert body["review_reason"] == "Reply adds a claim not in the article."
 
 
-def test_low_confidence_is_flagged_without_calling_critic_llm(fakes):
+def test_low_confidence_ticket_skips_kb_draft_and_critic(fakes):
     fakes.classify.result = ClassificationResult(
         category=Category.other,
         urgency=Urgency.low,
@@ -110,10 +112,16 @@ def test_low_confidence_is_flagged_without_calling_critic_llm(fakes):
         reasoning="Unclear.",
     )
 
-    body = client.post("/triage", json=TICKET).json()
+    response = client.post("/triage", json=TICKET)
 
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suggested_reply"] is None
+    assert body["kb_sources"] == []
     assert body["needs_human_review"] is True
     assert body["review_reason"] == "Low classifier confidence."
+    assert fakes.kb_calls == []
+    assert fakes.draft.calls == []
     assert fakes.critic.calls == []
 
 
@@ -121,6 +129,14 @@ def test_each_llm_node_runs_once_per_ticket(fakes):
     client.post("/triage", json=TICKET)
 
     assert len(fakes.classify.calls) == 1
+    assert len(fakes.draft.calls) == 1
+    assert len(fakes.critic.calls) == 1
+
+
+def test_confident_ticket_still_calls_kb_draft_and_critic_once(fakes):
+    client.post("/triage", json=TICKET)
+
+    assert len(fakes.kb_calls) == 1
     assert len(fakes.draft.calls) == 1
     assert len(fakes.critic.calls) == 1
 

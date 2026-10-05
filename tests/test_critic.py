@@ -1,7 +1,7 @@
 import pytest
 
 from app.graph import critic
-from app.graph.critic import CritiqueResult, LOW_CONFIDENCE_THRESHOLD, critique
+from app.graph.critic import CritiqueResult, critique
 from app.models import Category, ClassificationResult, TicketIn, Urgency
 
 _UNSET = object()
@@ -47,14 +47,6 @@ def make_state(confidence: float = 0.9, kb_context=_UNSET) -> dict:
 
 # --- deterministic flags: no LLM call ---------------------------------------
 
-def test_low_confidence_flags_without_calling_llm(fake_chain):
-    result = critique(make_state(confidence=0.5))
-
-    assert result["needs_human_review"] is True
-    assert result["review_reason"] == "Low classifier confidence."
-    assert fake_chain.calls == []
-
-
 @pytest.mark.parametrize("kb_context", [None, []])
 def test_no_kb_match_flags_without_calling_llm(fake_chain, kb_context):
     result = critique(make_state(kb_context=kb_context))
@@ -75,21 +67,16 @@ def test_kb_failure_flags_without_calling_llm(fake_chain):
     assert fake_chain.calls == []
 
 
-def test_all_applicable_reasons_are_reported_together(fake_chain):
-    result = critique(make_state(confidence=0.3, kb_context=[]))
+def test_critic_does_not_judge_confidence_itself(fake_chain):
+    # Low-confidence tickets are stopped by the graph before this node. If one
+    # did arrive with a KB match, the critic would not flag it on confidence.
+    result = critique(make_state(confidence=0.3))
 
-    assert result["review_reason"] == (
-        "No knowledge base match. Low classifier confidence."
-    )
+    assert len(fake_chain.calls) == 1
+    assert result["review_reason"] == ""
 
 
 # --- LLM path ---------------------------------------------------------------
-
-def test_confidence_at_threshold_goes_to_llm(fake_chain):
-    critique(make_state(confidence=LOW_CONFIDENCE_THRESHOLD))
-
-    assert len(fake_chain.calls) == 1
-
 
 def test_kb_ok_flag_still_goes_to_llm(fake_chain):
     state = make_state()
@@ -144,6 +131,6 @@ def test_llm_path_returns_only_its_own_keys(fake_chain):
 
 
 def test_deterministic_flag_path_returns_only_its_own_keys(fake_chain):
-    result = critique(make_state(confidence=0.5))
+    result = critique(make_state(kb_context=[]))
 
     assert set(result) == {"needs_human_review", "review_reason"}

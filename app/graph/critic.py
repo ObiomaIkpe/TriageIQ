@@ -5,8 +5,6 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.models import GraphState
 
-LOW_CONFIDENCE_THRESHOLD = 0.6
-
 
 class CritiqueResult(BaseModel):
     needs_human_review: bool
@@ -45,13 +43,13 @@ def critique(state: GraphState) -> GraphState:
 
     # Deterministic checks first. Each one flags the ticket for a human without
     # spending an LLM call, and the same ticket always gets the same verdict.
+    # Low classifier confidence is not checked here: the graph sends those
+    # tickets to flag_low_confidence and they never reach this node.
     reasons = []
     if state.get("kb_failed"):
         reasons.append("Knowledge base unavailable.")
     elif not kb_context:
         reasons.append("No knowledge base match.")
-    if classification.confidence < LOW_CONFIDENCE_THRESHOLD:
-        reasons.append("Low classifier confidence.")
 
     if reasons:
         return {
@@ -59,8 +57,8 @@ def critique(state: GraphState) -> GraphState:
             "review_reason": " ".join(reasons),
         }
 
-    # Only grounded, confidently classified tickets reach the LLM critic, so
-    # kb_context is never empty here.
+    # Only tickets with a KB match reach the LLM critic, so kb_context is
+    # never empty here.
     ticket = state["ticket"]
     context_text = "\n".join(f"- {snippet}" for snippet in kb_context)
 

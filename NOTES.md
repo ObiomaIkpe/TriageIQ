@@ -7,10 +7,12 @@ Notes from a walkthrough of the code. Changes made since: the classifier and cri
 A request to the triage endpoint runs a LangGraph workflow (`app/graph/build.py`):
 
 ```
-classify -> route -> retrieve_kb -> draft_reply_node -> critique -> END
+classify -> route -> [confidence >= threshold?]
+    yes -> retrieve_kb -> draft_reply_node -> critique -> END
+    no  -> flag_low_confidence -> END
 ```
 
-The graph is linear, with no branches. `triage_ticket` (`app/api/triage.py`) builds the initial state `{"ticket": ticket}`, calls `triage_graph.invoke(...)`, and maps the final state to a `TriageResult`.
+The graph has one conditional edge, after `route`. The threshold is `low_confidence_threshold` in `app/config.py` (default 0.6); exactly the threshold counts as confident. Low-confidence tickets skip retrieval, drafting and critique, so their response has `suggested_reply: null` and `kb_sources: []`. `triage_ticket` (`app/api/triage.py`) builds the initial state `{"ticket": ticket}`, calls `triage_graph.invoke(...)`, and maps the final state to a `TriageResult`.
 
 `GraphState` (`app/models.py`) is a `TypedDict` with `total=False`, so the state can start with only `ticket`. Each node adds its own fields.
 
@@ -20,7 +22,8 @@ The graph is linear, with no branches. `triage_ticket` (`app/api/triage.py`) bui
 | `route` | `graph/router.py` | `routing_target` | No LLM. Map lookup by category, plus `-urgent` suffix for high/critical |
 | `retrieve_kb` | `graph/kb_retrieval.py` | `kb_context` | Vector search on subject + body: up to 3 matches within 0.5 cosine distance (may be none) |
 | `draft_reply_node` | `graph/reply_draft.py` | `draft_reply` | LLM, temperature 0.3, grounded in `kb_context` |
-| `critique` | `graph/critic.py` | `needs_human_review`, `review_reason` | Confidence < 0.6 flags without an LLM call. Otherwise an LLM reviews the draft against the ticket, classification and `kb_context` |
+| `flag_low_confidence` | `graph/flag_low_confidence.py` | `needs_human_review`, `review_reason` | No LLM. Runs instead of the three nodes below when confidence is under the threshold |
+| `critique` | `graph/critic.py` | `needs_human_review`, `review_reason` | Flags without an LLM call if the KB failed or had no match. Otherwise an LLM reviews the draft against the ticket, classification and `kb_context` |
 
 The node is named `draft_reply_node` because LangGraph does not allow a node name to match a state key (`draft_reply`).
 
@@ -36,8 +39,8 @@ The `retrieve_kb` node finds up to 3 KB articles close in meaning to the ticket,
 
 ## Gaps and things to consider
 
-### 1. Wasted LLM call on low-confidence tickets
-The reply is drafted before the critic checks confidence. If confidence is below 0.6, the draft call is made and then flagged anyway. A conditional edge after `classify` could skip drafting for those tickets.
+### 1. Wasted LLM call on low-confidence tickets (RESOLVED)
+Previously the reply was drafted before the critic checked confidence, so a low-confidence ticket paid for a draft that was then flagged anyway. Resolved by a conditional edge after `route`: tickets under the threshold go to `flag_low_confidence` and make no KB, draft or critic calls.
 
 ### 2. `.get()` fallbacks in `triage_ticket` cannot trigger
 The graph is linear and every path sets `routing_target`, `kb_context`, `draft_reply`, `needs_human_review` and `review_reason`. The defaults (`"general-queue"`, `[]`, `True`, ...) are harmless but would hide a bug if a node stopped writing a field. Consider `final_state["..."]` so a missing field fails loudly.

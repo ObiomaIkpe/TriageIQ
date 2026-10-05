@@ -20,8 +20,10 @@ def triage_ticket(ticket: TicketIn) -> TriageResult:
         urgency=classification.urgency,
         confidence=classification.confidence,
         routing_target=final_state["routing_target"],
-        suggested_reply=final_state["draft_reply"],
-        kb_sources=final_state["kb_context"],
+        # Optional on purpose: low-confidence tickets skip retrieval and
+        # drafting, so these two keys are legitimately absent for them.
+        suggested_reply=final_state.get("draft_reply"),
+        kb_sources=final_state.get("kb_context", []),
         needs_human_review=final_state["needs_human_review"],
         review_reason=final_state["review_reason"] or None,
     )

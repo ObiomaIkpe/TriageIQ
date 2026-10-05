@@ -15,6 +15,9 @@ class Settings(BaseSettings):
 
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 2
+    # Tickets the classifier is less sure about than this skip retrieval,
+    # drafting and critique and go straight to human review.
+    low_confidence_threshold: float = 0.6
     database_url: str = "postgresql://triageiq:triageiq@localhost:5432/triageiq"
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""
