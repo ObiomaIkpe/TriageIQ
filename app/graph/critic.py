@@ -1,6 +1,5 @@
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from app.models import GraphState
@@ -13,16 +12,13 @@ class CritiqueResult(BaseModel):
     reason: str = Field(description="Empty string if no review is needed.")
 
 
-_parser = PydanticOutputParser(pydantic_object=CritiqueResult)
-
 _prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are reviewing a support agent's classification and draft reply "
      "before it's sent. Flag needs_human_review=true if: the draft reply "
      "seems inconsistent with the ticket, the reply makes claims not "
      "supported by the knowledge base context, or the classification "
-     "seems wrong given the ticket content. Otherwise false.\n\n"
-     "{format_instructions}"),
+     "seems wrong given the ticket content. Otherwise false."),
     ("human",
      "Ticket subject: {subject}\n"
      "Ticket body: {body}\n\n"
@@ -33,7 +29,7 @@ _prompt = ChatPromptTemplate.from_messages([
 
 _llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
 
-_chain = _prompt | _llm | _parser
+_chain = _prompt | _llm.with_structured_output(CritiqueResult)
 
 
 def critique(state: GraphState) -> GraphState:
@@ -56,7 +52,6 @@ def critique(state: GraphState) -> GraphState:
         "urgency": classification.urgency.value,
         "confidence": classification.confidence,
         "draft_reply": state.get("draft_reply", ""),
-        "format_instructions": _parser.get_format_instructions(),
     })
 
     return {
