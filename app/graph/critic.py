@@ -2,6 +2,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.models import GraphState
 
 LOW_CONFIDENCE_THRESHOLD = 0.6
@@ -28,7 +29,7 @@ _prompt = ChatPromptTemplate.from_messages([
      "Draft reply: {draft_reply}"),
 ])
 
-_llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
+_llm = ChatAnthropic(model=settings.model_id, temperature=0)
 
 _chain = _prompt | _llm.with_structured_output(CritiqueResult)
 

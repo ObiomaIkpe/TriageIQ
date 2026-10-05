@@ -2,6 +2,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+from app.config import settings
 from app.models import GraphState
 
 _prompt = ChatPromptTemplate.from_messages([
@@ -19,7 +20,7 @@ _prompt = ChatPromptTemplate.from_messages([
      "Draft a reply to the customer."),
 ])
 
-_llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0.3)
+_llm = ChatAnthropic(model=settings.model_id, temperature=0.3)
 
 _chain = _prompt | _llm | StrOutputParser()
 
