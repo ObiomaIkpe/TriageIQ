@@ -48,7 +48,6 @@ class GraphState(TypedDict, total=False):
     ticket: TicketIn
     classification: ClassificationResult
     routing_target: str
-    kb_context: list[str]
     draft_reply: str
     needs_human_review: bool
     review_reason: str
