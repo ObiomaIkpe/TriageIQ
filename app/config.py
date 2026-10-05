@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     voyage_api_key: str = ""
+    voyage_rpm: int = 3
     model_id: str = "claude-sonnet-4-6"
     database_url: str = "postgresql://triageiq:triageiq@localhost:5432/triageiq"
     langchain_tracing_v2: bool = False
