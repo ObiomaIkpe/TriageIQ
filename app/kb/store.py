@@ -67,6 +67,12 @@ def init_schema() -> None:
         # ivfflat index. Revisit once the KB grows into the hundreds+.
 
 
+def check_database() -> None:
+    """Raise if Postgres is unreachable or the knowledge base table is missing."""
+    with get_connection() as conn:
+        conn.execute("SELECT 1 FROM kb_documents LIMIT 1")
+
+
 def _embed_with_retry(text: str, input_type: str) -> list[float]:
     for attempt in range(1, MAX_ATTEMPTS + 1):
         _limiter.acquire()

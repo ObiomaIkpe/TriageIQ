@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api import triage as triage_api
 from app.graph import classifier, critic, kb_retrieval, reply_draft
 from app.graph.critic import CritiqueResult
 from app.main import app
@@ -138,3 +139,24 @@ def test_kb_failure_degrades_and_flags_for_review(fakes):
     assert body["needs_human_review"] is True
     assert body["review_reason"] == "Knowledge base unavailable."
     assert fakes.critic.calls == []
+
+
+def test_missing_state_field_fails_loudly_instead_of_defaulting(monkeypatch):
+    class PartialGraph:
+        def invoke(self, state):
+            return {
+                "classification": ClassificationResult(
+                    category=Category.account,
+                    urgency=Urgency.low,
+                    confidence=0.9,
+                    reasoning="test",
+                )
+            }
+
+    monkeypatch.setattr(triage_api, "triage_graph", PartialGraph())
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/triage", json=TICKET
+    )
+
+    assert response.status_code == 500

@@ -212,3 +212,24 @@ def test_add_document_embeds_as_document_and_inserts(fakes, monkeypatch):
     sql, params = conn.executed[0]
     assert sql.strip().startswith("INSERT INTO kb_documents")
     assert params == ("lockout", "Accounts lock after 5 attempts.", [0.1, 0.2, 0.3])
+
+
+# --- check_database ---------------------------------------------------------
+
+def test_check_database_queries_the_kb_table(monkeypatch):
+    conn = FakeConn()
+    monkeypatch.setattr(store, "get_connection", lambda: conn)
+
+    store.check_database()
+
+    assert conn.executed[0][0] == "SELECT 1 FROM kb_documents LIMIT 1"
+
+
+def test_check_database_raises_when_the_database_is_down(monkeypatch):
+    def down():
+        raise ConnectionError("postgres is down")
+
+    monkeypatch.setattr(store, "get_connection", down)
+
+    with pytest.raises(ConnectionError):
+        store.check_database()
