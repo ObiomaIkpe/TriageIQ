@@ -106,3 +106,23 @@ def test_critique_keeps_existing_state(fake_chain):
 
     assert result["ticket"] is state["ticket"]
     assert result["draft_reply"] == state["draft_reply"]
+
+
+def test_kb_failure_flags_without_calling_llm(fake_chain):
+    state = make_state()
+    state["kb_failed"] = True
+
+    result = critique(state)
+
+    assert result["needs_human_review"] is True
+    assert result["review_reason"] == "Knowledge base unavailable."
+    assert fake_chain.calls == []
+
+
+def test_kb_ok_flag_still_goes_to_llm(fake_chain):
+    state = make_state()
+    state["kb_failed"] = False
+
+    critique(state)
+
+    assert len(fake_chain.calls) == 1

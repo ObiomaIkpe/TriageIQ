@@ -44,9 +44,14 @@ def fakes(monkeypatch):
     monkeypatch.setattr(classifier, "_chain", f.classify)
     monkeypatch.setattr(reply_draft, "_chain", f.draft)
     monkeypatch.setattr(critic, "_chain", f.critic)
-    monkeypatch.setattr(
-        kb_retrieval, "search_similar", lambda query_text, top_k: f.kb_results
-    )
+    f.kb_error = None
+
+    def _search(query_text, top_k):
+        if f.kb_error:
+            raise f.kb_error
+        return f.kb_results
+
+    monkeypatch.setattr(kb_retrieval, "search_similar", _search)
     return f
 
 
@@ -119,3 +124,17 @@ def test_invalid_ticket_is_rejected_with_422(fakes, payload):
 
     assert response.status_code == 422
     assert fakes.classify.calls == []
+
+
+def test_kb_failure_degrades_and_flags_for_review(fakes):
+    fakes.kb_error = RuntimeError("database is down")
+
+    response = client.post("/triage", json=TICKET)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kb_sources"] == []
+    assert body["suggested_reply"] == "Your lockout clears after 1 hour."
+    assert body["needs_human_review"] is True
+    assert body["review_reason"] == "Knowledge base unavailable."
+    assert fakes.critic.calls == []
