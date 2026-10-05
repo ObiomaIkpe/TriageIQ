@@ -20,6 +20,7 @@ def make_state(category: Category, urgency: Urgency) -> dict:
     (Category.billing, "billing-team"),
     (Category.technical, "technical-support"),
     (Category.account, "account-management"),
+    (Category.shipping, "shipping-team"),
     (Category.other, "general-queue"),
 ])
 @pytest.mark.parametrize("urgency", [Urgency.low, Urgency.medium])
@@ -32,6 +33,7 @@ def test_normal_urgency_routes_to_base_team(category, expected, urgency):
     (Category.billing, "billing-team-urgent"),
     (Category.technical, "technical-support-urgent"),
     (Category.account, "account-management-urgent"),
+    (Category.shipping, "shipping-team-urgent"),
     (Category.other, "general-queue-urgent"),
 ])
 @pytest.mark.parametrize("urgency", [Urgency.high, Urgency.critical])
@@ -45,3 +47,11 @@ def test_route_keeps_existing_state():
     result = route(state)
     assert result["ticket"] is state["ticket"]
     assert result["classification"] is state["classification"]
+
+
+def test_every_category_has_a_routing_entry():
+    # Guards against adding a category and forgetting the router, which would
+    # silently send those tickets to general-queue.
+    from app.graph.router import ROUTING_MAP
+
+    assert set(ROUTING_MAP) == set(Category)

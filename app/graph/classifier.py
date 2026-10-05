@@ -6,10 +6,13 @@ from app.models import ClassificationResult, GraphState
 
 _prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You are a support ticket classifier. Read the ticket and decide its "
-     "category (billing, technical, account, or other) and urgency "
-     "(low, medium, high, or critical). Give a confidence score between "
-     "0 and 1, and a short reasoning for your decision."),
+          "You are a support ticket classifier. Read the ticket and decide its "
+     "category (billing, technical, account, shipping, or other) and "
+     "urgency (low, medium, high, or critical). Use shipping for orders "
+     "that are late, lost, damaged or undelivered, and for tracking "
+     "questions; refunds and charges stay under billing. Give a "
+     "confidence score between 0 and 1, and a short reasoning for your "
+     "decision."),
     ("human", "Subject: {subject}\n\nBody: {body}"),
 ])
 

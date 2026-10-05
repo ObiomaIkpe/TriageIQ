@@ -8,6 +8,7 @@ class Category(str, Enum):
     billing = "billing"
     technical = "technical"
     account = "account"
+    shipping = "shipping"
     other = "other"
 
 

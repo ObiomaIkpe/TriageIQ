@@ -4,6 +4,7 @@ ROUTING_MAP = {
     Category.billing: "billing-team",
     Category.technical: "technical-support",
     Category.account: "account-management",
+    Category.shipping: "shipping-team",
     Category.other: "general-queue",
 }
 
