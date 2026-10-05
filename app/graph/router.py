@@ -1,0 +1,18 @@
+from app.models import GraphState, Category
+
+ROUTING_MAP = {
+    Category.billing: "billing-team",
+    Category.technical: "technical-support",
+    Category.account: "account-management",
+    Category.other: "general-queue",
+}
+
+
+def route(state: GraphState) -> GraphState:
+    classification = state["classification"]
+    target = ROUTING_MAP.get(classification.category, "general-queue")
+
+    if classification.urgency.value in ("high", "critical"):
+        target = f"{target}-urgent"
+
+    return {**state, "routing_target": target}
