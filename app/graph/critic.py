@@ -29,7 +29,10 @@ _prompt = ChatPromptTemplate.from_messages([
      "Draft reply: {draft_reply}"),
 ])
 
-_llm = ChatAnthropic(model=settings.model_id, temperature=0)
+_llm = ChatAnthropic(model=settings.model_id, 
+                    temperature=0,
+                    timeout=settings.llm_timeout_seconds,
+                    max_retries=settings.llm_max_retries,)
 
 _chain = _prompt | _llm.with_structured_output(CritiqueResult)
 

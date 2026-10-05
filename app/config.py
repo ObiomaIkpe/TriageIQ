@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # (VOYAGE_RPM in .env) once the account has a payment method.
     voyage_rpm: int = 3
     model_id: str = "claude-sonnet-4-6"
+
+    llm_timeout_seconds: float = 30.0
+    llm_max_retries: int = 2
     database_url: str = "postgresql://triageiq:triageiq@localhost:5432/triageiq"
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""
