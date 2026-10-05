@@ -79,17 +79,27 @@ def test_grounded_ticket_is_triaged_and_not_flagged(fakes):
     }
 
 
-def test_ticket_with_no_kb_match_is_flagged_by_critic(fakes):
+def test_ticket_with_no_kb_match_is_flagged_by_rule_without_calling_critic(fakes):
     fakes.kb_results = []
-    fakes.critic.result = CritiqueResult(
-        needs_human_review=True, reason="No KB support for escalation promise."
-    )
 
     body = client.post("/triage", json=TICKET).json()
 
     assert body["kb_sources"] == []
     assert body["needs_human_review"] is True
-    assert body["review_reason"] == "No KB support for escalation promise."
+    assert body["review_reason"] == "No knowledge base match."
+    assert fakes.critic.calls == []
+
+
+def test_critic_llm_can_flag_a_ticket_that_has_a_kb_match(fakes):
+    fakes.critic.result = CritiqueResult(
+        needs_human_review=True, reason="Reply adds a claim not in the article."
+    )
+
+    body = client.post("/triage", json=TICKET).json()
+
+    assert body["kb_sources"] == ["Lockout clears automatically after 1 hour."]
+    assert body["needs_human_review"] is True
+    assert body["review_reason"] == "Reply adds a claim not in the article."
 
 
 def test_low_confidence_is_flagged_without_calling_critic_llm(fakes):

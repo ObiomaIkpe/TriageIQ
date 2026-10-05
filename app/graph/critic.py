@@ -41,32 +41,29 @@ _chain = _prompt | _llm.with_structured_output(CritiqueResult)
 
 def critique(state: GraphState) -> GraphState:
     classification = state["classification"]
-
-    # If retrieval failed, the reply could not be grounded or checked against
-    # the knowledge base. Flag it without spending an LLM call.
-    if state.get("kb_failed"):
-        return {
-            **state,
-            "needs_human_review": True,
-            "review_reason": "Knowledge base unavailable.",
-        }
-
-    # Cheap, deterministic check first: a low confidence score is an
-    # automatic flag, no need to spend an LLM call to know that.
-    if classification.confidence < LOW_CONFIDENCE_THRESHOLD:
-        return {
-            **state,
-            "needs_human_review": True,
-            "review_reason": "Low classifier confidence.",
-        }
-
-    ticket = state["ticket"]
     kb_context = state.get("kb_context", [])
 
-    context_text = (
-        "\n".join(f"- {snippet}" for snippet in kb_context)
-        if kb_context else "No relevant knowledge base articles found."
-    )
+    # Deterministic checks first. Each one flags the ticket for a human without
+    # spending an LLM call, and the same ticket always gets the same verdict.
+    reasons = []
+    if state.get("kb_failed"):
+        reasons.append("Knowledge base unavailable.")
+    elif not kb_context:
+        reasons.append("No knowledge base match.")
+    if classification.confidence < LOW_CONFIDENCE_THRESHOLD:
+        reasons.append("Low classifier confidence.")
+
+    if reasons:
+        return {
+            **state,
+            "needs_human_review": True,
+            "review_reason": " ".join(reasons),
+        }
+
+    # Only grounded, confidently classified tickets reach the LLM critic, so
+    # kb_context is never empty here.
+    ticket = state["ticket"]
+    context_text = "\n".join(f"- {snippet}" for snippet in kb_context)
 
     result: CritiqueResult = _chain.invoke({
         "subject": ticket.subject,
