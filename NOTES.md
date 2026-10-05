@@ -1,6 +1,6 @@
 # TriageIQ: How It Works and Open Gaps
 
-Notes from a walkthrough of the code. Nothing here has been changed in the code yet.
+Notes from a walkthrough of the code. Changes made since: the classifier and critic now use `with_structured_output`, and the critic now receives the KB context (see "Resolved" and "Test results" below).
 
 ## How it works
 
@@ -16,11 +16,11 @@ The graph is linear, with no branches. `triage_ticket` (`app/api/triage.py`) bui
 
 | Node | File | Writes | Notes |
 |---|---|---|---|
-| `classify` | `graph/classifier.py` | `classification` | LLM, temperature 0, parsed into `ClassificationResult` |
+| `classify` | `graph/classifier.py` | `classification` | LLM, temperature 0, `with_structured_output(ClassificationResult)` |
 | `route` | `graph/router.py` | `routing_target` | No LLM. Map lookup by category, plus `-urgent` suffix for high/critical |
 | `retrieve_kb` | `graph/kb_retrieval.py` | `kb_context` | Vector search, top 3 matches on subject + body |
 | `draft_reply_node` | `graph/reply_draft.py` | `draft_reply` | LLM, temperature 0.3, grounded in `kb_context` |
-| `critique` | `graph/critic.py` | `needs_human_review`, `review_reason` | Confidence < 0.6 flags without an LLM call. Otherwise an LLM reviews the draft |
+| `critique` | `graph/critic.py` | `needs_human_review`, `review_reason` | Confidence < 0.6 flags without an LLM call. Otherwise an LLM reviews the draft against the ticket, classification and `kb_context` |
 
 The node is named `draft_reply_node` because LangGraph does not allow a node name to match a state key (`draft_reply`).
 
@@ -46,7 +46,7 @@ The graph is linear and every path sets `routing_target`, `kb_context`, `draft_r
 Each node returns `{**state, "key": value}`. LangGraph only needs the changed keys, so `{"key": value}` is enough. The spread can cause update conflicts if parallel branches are added later (for example, running `route` and `retrieve_kb` in parallel).
 
 ### 4. Blocking `invoke` and sequential LLM latency
-`invoke` is synchronous. Called from an `async def` endpoint it blocks the event loop. Use `await triage_graph.ainvoke(...)` or make the endpoint a plain `def`. A request makes up to three sequential LLM calls (classify, draft, critique), so latency adds up.
+`invoke` is synchronous. The endpoint is a plain `def`, which FastAPI runs in a threadpool, so this does not block the event loop today. It would only become a problem if the endpoint were changed to `async def` without switching to `await triage_graph.ainvoke(...)`. A request still makes up to three sequential LLM calls (classify, draft, critique), so per-request latency adds up.
 
 ### 5. Model ID
 All three LLM calls use `claude-sonnet-4-6`. Confirm this is the intended model, and consider moving it to one config constant instead of repeating it in three files.
@@ -69,6 +69,26 @@ Ticket text goes straight into the classifier, drafter and critic prompts, and t
 ### 9. Not yet checked
 - Error handling: if any node or LLM call raises, `invoke` raises and the endpoint returns a 500. There are no retries or fallbacks.
 - Whether the endpoint should return 200 or 201 depends on whether a triage record is persisted. Currently it only computes a result, so 200 is correct.
+
+## Resolved
+
+### Critic could not see the KB
+The critic's prompt told it to flag claims "not supported by the knowledge base context", but `critique` never passed it the KB articles. It could not verify anything, so it flagged replies that were fully supported by the KB. Fixed in `app/graph/critic.py`: `kb_context` is now formatted (same fallback text as `draft_reply.py`) and included in the critic's prompt.
+
+## Test results
+
+Run against the rebuilt Docker stack with real Anthropic and Voyage calls.
+
+1. **"Cannot log in" / forgot password** (a KB article covers it). Classified account / low / 0.97, routed to `account-management`. The reply was grounded in the KB. Before the critic fix it was flagged for review with the reason that no KB was provided. After the fix: `needs_human_review: false`, `review_reason: null`.
+2. **"Hardware refund"** (no KB article covers it). Classified billing / high / 0.82, routed to `billing-team-urgent`. The drafter said it did not have the policy and escalated to a specialist rather than inventing one. The critic flagged it for review, noting that the KB has nothing on hardware refunds and that the category is questionable.
+
+Together these show the critic clears supported replies and still flags unsupported ones.
+
+### Findings from the tests
+- **No similarity cutoff, seen in practice (gap #8).** Test 1 got lockout and 2FA paragraphs the customer did not ask about. Test 2 got 3 articles, none relevant.
+- **Category design.** A broken-hardware refund request has no obvious category among billing / technical / account / other. The classifier chose billing and the critic questioned it. This is a category design question, not a code bug.
+- **Content gap.** The KB has no hardware refund article, so tickets like test 2 will always need a human until one is added.
+- **Test coverage.** Only two tickets were tried, and only one run each. This is a sanity check, not a measurement of reliability.
 
 ## Answers to earlier questions
 

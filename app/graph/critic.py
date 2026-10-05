@@ -24,6 +24,7 @@ _prompt = ChatPromptTemplate.from_messages([
      "Ticket body: {body}\n\n"
      "Classification: category={category}, urgency={urgency}, "
      "confidence={confidence}\n\n"
+     "Knowledge base context:\n{kb_context}\n\n"
      "Draft reply: {draft_reply}"),
 ])
 
@@ -45,12 +46,20 @@ def critique(state: GraphState) -> GraphState:
         }
 
     ticket = state["ticket"]
+    kb_context = state.get("kb_context", [])
+
+    context_text = (
+        "\n".join(f"- {snippet}" for snippet in kb_context)
+        if kb_context else "No relevant knowledge base articles found."
+    )
+
     result: CritiqueResult = _chain.invoke({
         "subject": ticket.subject,
         "body": ticket.body,
         "category": classification.category.value,
         "urgency": classification.urgency.value,
         "confidence": classification.confidence,
+        "kb_context": context_text,
         "draft_reply": state.get("draft_reply", ""),
     })
 
