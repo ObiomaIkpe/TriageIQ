@@ -1,8 +1,14 @@
+import threading
+import time
+from collections import OrderedDict
+
 import psycopg
 from pgvector.psycopg import register_vector
 import voyageai
+import voyageai.error
 
 from app.config import settings
+from app.kb.ratelimit import RateLimiter
 
 EMBEDDING_DIM = 1024  # voyage-3 output dimension
 EMBEDDING_MODEL = "voyage-3"
@@ -12,7 +18,31 @@ EMBEDDING_MODEL = "voyage-3"
 # ~0.33-0.35, everything else at 0.56+. Provisional - retune as the KB grows.
 MAX_DISTANCE = 0.5
 
+# Retry policy for Voyage calls: 3 attempts total, waiting 2s then 4s.
+MAX_ATTEMPTS = 3
+BACKOFF_BASE_SECONDS = 2.0
+
+# Only transient failures are retried. Names are looked up defensively so a
+# renamed exception in a future voyageai release can't break import.
+_RETRYABLE = tuple(
+    getattr(voyageai.error, name)
+    for name in (
+        "RateLimitError",
+        "ServiceUnavailableError",
+        "Timeout",
+        "APIConnectionError",
+    )
+    if hasattr(voyageai.error, name)
+)
+
 _voyage = voyageai.Client(api_key=settings.voyage_api_key)
+_limiter = RateLimiter(max_calls=settings.voyage_rpm, period=60.0)
+_sleep = time.sleep
+
+# In-memory LRU cache of embeddings, keyed by (input_type, text).
+_CACHE_SIZE = 256
+_cache: "OrderedDict[tuple[str, str], list[float]]" = OrderedDict()
+_cache_lock = threading.Lock()
 
 
 def get_connection() -> psycopg.Connection:
@@ -37,12 +67,42 @@ def init_schema() -> None:
         # ivfflat index. Revisit once the KB grows into the hundreds+.
 
 
+def _embed_with_retry(text: str, input_type: str) -> list[float]:
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        _limiter.acquire()
+        try:
+            result = _voyage.embed(
+                [text], model=EMBEDDING_MODEL, input_type=input_type
+            )
+            return result.embeddings[0]
+        except _RETRYABLE:
+            if attempt == MAX_ATTEMPTS:
+                raise
+            _sleep(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
+    raise AssertionError("unreachable")  # loop always returns or raises
+
+
 def embed_text(text: str, input_type: str = "document") -> list[float]:
     """input_type is 'document' when embedding KB content, 'query' when
     embedding a ticket to search against it - Voyage tunes embeddings
-    differently for each, which improves retrieval quality."""
-    result = _voyage.embed([text], model=EMBEDDING_MODEL, input_type=input_type)
-    return result.embeddings[0]
+    differently for each, which improves retrieval quality.
+
+    Results are cached, and uncached calls go through the rate limiter and
+    retry policy above."""
+    key = (input_type, text)
+    with _cache_lock:
+        if key in _cache:
+            _cache.move_to_end(key)
+            return list(_cache[key])
+
+    embedding = _embed_with_retry(text, input_type)
+
+    with _cache_lock:
+        _cache[key] = embedding
+        _cache.move_to_end(key)
+        while len(_cache) > _CACHE_SIZE:
+            _cache.popitem(last=False)
+    return list(embedding)
 
 
 def add_document(topic: str, content: str) -> None:

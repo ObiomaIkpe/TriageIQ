@@ -2,10 +2,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", protected_namespaces=("settings_",))
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", protected_namespaces=("settings_",)
+    )
 
     anthropic_api_key: str = ""
     voyage_api_key: str = ""
+    # Voyage requests allowed per minute. 3 matches the free tier; raise it
+    # (VOYAGE_RPM in .env) once the account has a payment method.
     voyage_rpm: int = 3
     model_id: str = "claude-sonnet-4-6"
     database_url: str = "postgresql://triageiq:triageiq@localhost:5432/triageiq"
