@@ -55,7 +55,6 @@ def critique(state: GraphState) -> GraphState:
 
     if reasons:
         return {
-            **state,
             "needs_human_review": True,
             "review_reason": " ".join(reasons),
         }
@@ -76,7 +75,6 @@ def critique(state: GraphState) -> GraphState:
     })
 
     return {
-        **state,
         "needs_human_review": result.needs_human_review,
         "review_reason": result.reason,
     }

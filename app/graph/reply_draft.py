@@ -43,4 +43,4 @@ def draft_reply(state: GraphState) -> GraphState:
         "kb_context": context_text,
     })
 
-    return {**state, "draft_reply": reply}
+    return {"draft_reply": reply}

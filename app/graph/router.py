@@ -16,4 +16,4 @@ def route(state: GraphState) -> GraphState:
     if classification.urgency.value in ("high", "critical"):
         target = f"{target}-urgent"
 
-    return {**state, "routing_target": target}
+    return {"routing_target": target}

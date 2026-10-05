@@ -32,4 +32,4 @@ def classify(state: GraphState) -> GraphState:
         "body": ticket.body,
     })
 
-    return {**state, "classification": result}
+    return {"classification": result}

@@ -48,12 +48,21 @@ def test_query_is_subject_plus_body_and_top_k_is_3(fake_search):
     ]
 
 
-def test_retrieval_keeps_existing_state(fake_search):
-    state = make_state()
+def test_retrieval_returns_only_its_own_keys(fake_search):
+    result = retrieve_kb_context(make_state())
 
-    result = retrieve_kb_context(state)
+    assert set(result) == {"kb_context", "kb_failed"}
 
-    assert result["ticket"] is state["ticket"]
+
+def test_retrieval_failure_path_returns_only_its_own_keys(monkeypatch):
+    def boom(query_text, top_k):
+        raise RuntimeError("voyage or postgres is down")
+
+    monkeypatch.setattr(kb_retrieval, "search_similar", boom)
+
+    result = retrieve_kb_context(make_state())
+
+    assert set(result) == {"kb_context", "kb_failed"}
 
 
 def test_search_failure_degrades_to_empty_context_and_sets_flag(monkeypatch):

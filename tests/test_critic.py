@@ -137,9 +137,13 @@ def test_llm_receives_ticket_classification_and_draft(fake_chain):
     assert sent["draft_reply"] == "Your lockout clears after 1 hour."
 
 
-def test_critique_keeps_existing_state(fake_chain):
-    state = make_state()
-    result = critique(state)
+def test_llm_path_returns_only_its_own_keys(fake_chain):
+    result = critique(make_state())
 
-    assert result["ticket"] is state["ticket"]
-    assert result["draft_reply"] == state["draft_reply"]
+    assert set(result) == {"needs_human_review", "review_reason"}
+
+
+def test_deterministic_flag_path_returns_only_its_own_keys(fake_chain):
+    result = critique(make_state(confidence=0.5))
+
+    assert set(result) == {"needs_human_review", "review_reason"}

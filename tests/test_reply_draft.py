@@ -60,10 +60,7 @@ def test_llm_receives_subject_and_body(fake_chain):
     assert sent["body"] == "Account locked."
 
 
-def test_draft_keeps_existing_state(fake_chain):
-    state = make_state(["Article A"])
+def test_draft_returns_only_its_own_keys(fake_chain):
+    result = draft_reply(make_state(["Article A"]))
 
-    result = draft_reply(state)
-
-    assert result["ticket"] is state["ticket"]
-    assert result["kb_context"] == ["Article A"]
+    assert set(result) == {"draft_reply"}

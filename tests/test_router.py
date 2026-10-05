@@ -42,11 +42,9 @@ def test_high_urgency_adds_urgent_suffix(category, expected, urgency):
     assert result["routing_target"] == expected
 
 
-def test_route_keeps_existing_state():
-    state = make_state(Category.billing, Urgency.low)
-    result = route(state)
-    assert result["ticket"] is state["ticket"]
-    assert result["classification"] is state["classification"]
+def test_route_returns_only_its_own_keys():
+    result = route(make_state(Category.billing, Urgency.low))
+    assert set(result) == {"routing_target"}
 
 
 def test_every_category_has_a_routing_entry():

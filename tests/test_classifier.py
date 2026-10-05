@@ -48,9 +48,7 @@ def test_llm_receives_subject_and_body(fake_chain):
     ]
 
 
-def test_classify_keeps_existing_state(fake_chain):
-    state = make_state()
+def test_classify_returns_only_its_own_keys(fake_chain):
+    result = classify(make_state())
 
-    result = classify(state)
-
-    assert result["ticket"] is state["ticket"]
+    assert set(result) == {"classification"}
