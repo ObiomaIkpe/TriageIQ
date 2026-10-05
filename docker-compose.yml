@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: triageiq
       POSTGRES_DB: triageiq
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - triageiq_pgdata:/var/lib/postgresql/data
 
