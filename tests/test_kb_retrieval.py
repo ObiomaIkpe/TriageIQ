@@ -54,3 +54,23 @@ def test_retrieval_keeps_existing_state(fake_search):
     result = retrieve_kb_context(state)
 
     assert result["ticket"] is state["ticket"]
+
+
+def test_search_failure_degrades_to_empty_context_and_sets_flag(monkeypatch):
+    def boom(query_text, top_k):
+        raise RuntimeError("voyage or postgres is down")
+
+    monkeypatch.setattr(kb_retrieval, "search_similar", boom)
+
+    result = retrieve_kb_context(make_state())
+
+    assert result["kb_context"] == []
+    assert result["kb_failed"] is True
+
+
+def test_successful_search_clears_the_failure_flag(fake_search):
+    fake_search.results = ["Article A"]
+
+    result = retrieve_kb_context(make_state())
+
+    assert result["kb_failed"] is False

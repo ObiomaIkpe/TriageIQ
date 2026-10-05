@@ -51,3 +51,5 @@ class GraphState(TypedDict, total=False):
     draft_reply: str
     needs_human_review: bool
     review_reason: str
+    kb_context: list[str]
+    kb_failed: bool

@@ -29,16 +29,27 @@ _prompt = ChatPromptTemplate.from_messages([
      "Draft reply: {draft_reply}"),
 ])
 
-_llm = ChatAnthropic(model=settings.model_id, 
-                    temperature=0,
-                    timeout=settings.llm_timeout_seconds,
-                    max_retries=settings.llm_max_retries,)
+_llm = ChatAnthropic(
+    model=settings.model_id,
+    temperature=0,
+    timeout=settings.llm_timeout_seconds,
+    max_retries=settings.llm_max_retries,
+)
 
 _chain = _prompt | _llm.with_structured_output(CritiqueResult)
 
 
 def critique(state: GraphState) -> GraphState:
     classification = state["classification"]
+
+    # If retrieval failed, the reply could not be grounded or checked against
+    # the knowledge base. Flag it without spending an LLM call.
+    if state.get("kb_failed"):
+        return {
+            **state,
+            "needs_human_review": True,
+            "review_reason": "Knowledge base unavailable.",
+        }
 
     # Cheap, deterministic check first: a low confidence score is an
     # automatic flag, no need to spend an LLM call to know that.
