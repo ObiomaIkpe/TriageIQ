@@ -48,8 +48,6 @@ def main() -> None:
     for i, doc in enumerate(SAMPLE_DOCS):
         add_document(doc["topic"], doc["content"])
         print(f"  saved: {doc['topic']}")
-        if i < len(SAMPLE_DOCS) - 1:
-            time.sleep(20)  # stay under Voyage free-tier rate limit (3 RPM)
 
     print("Done.")
 
