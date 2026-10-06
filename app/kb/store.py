@@ -53,7 +53,11 @@ def get_connection() -> psycopg.Connection:
     return conn
 
 def init_schema() -> None:
-    """Create the kb_documents table if it doesn't exist yet."""
+    """Create the kb_documents table and enforce one row per topic.
+
+    Every statement is safe to run on every startup, on a fresh database or on
+    one created before topics were unique.
+    """
     with get_connection() as conn:
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS kb_documents (
@@ -62,6 +66,16 @@ def init_schema() -> None:
                 content TEXT NOT NULL,
                 embedding VECTOR({EMBEDDING_DIM}) NOT NULL
             )
+        """)
+        # A database created before topics were unique may hold duplicates.
+        # Keep the lowest id per topic so the unique index below can be built.
+        conn.execute("""
+            DELETE FROM kb_documents a USING kb_documents b
+            WHERE a.topic = b.topic AND a.id > b.id
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS kb_documents_topic_key
+            ON kb_documents (topic)
         """)
         # No index at this scale — a handful of rows is faster and more
         # accurate with a plain sequential scan than a poorly-tuned
@@ -116,7 +130,11 @@ def add_document(topic: str, content: str) -> None:
     embedding = embed_text(content, input_type="document")
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO kb_documents (topic, content, embedding) VALUES (%s, %s, %s)",
+            """
+            INSERT INTO kb_documents (topic, content, embedding) VALUES (%s, %s, %s)
+            ON CONFLICT (topic) DO UPDATE
+              SET content = EXCLUDED.content, embedding = EXCLUDED.embedding
+            """,
             (topic, content, embedding),
         )
 
