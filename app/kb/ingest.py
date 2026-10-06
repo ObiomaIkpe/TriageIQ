@@ -3,7 +3,7 @@ One-off script to seed the knowledge base with sample FAQ documents.
 
 Run with: python -m app.kb.ingest
 """
-import time
+
 
 from app.kb.store import init_schema, add_document
 
