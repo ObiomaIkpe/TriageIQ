@@ -1,3 +1,6 @@
+from typing import Optional
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, END
 
 from app.config import settings
@@ -21,7 +24,12 @@ def route_by_confidence(state: GraphState) -> str:
     return "flag_low_confidence"
 
 
-def build_triage_graph():
+def build_triage_graph(checkpointer: Optional[BaseCheckpointSaver] = None):
+    """Compile the triage graph.
+
+    With a checkpointer, every run saves its state under the thread_id given in
+    the run's config. Without one the graph runs exactly as before.
+    """
     graph = StateGraph(GraphState)
 
     graph.add_node("classify", classify)
@@ -46,7 +54,4 @@ def build_triage_graph():
     graph.add_edge("critique", END)
     graph.add_edge("flag_low_confidence", END)
 
-    return graph.compile()
-
-
-triage_graph = build_triage_graph()
+    return graph.compile(checkpointer=checkpointer)

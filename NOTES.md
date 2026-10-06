@@ -12,7 +12,7 @@ classify -> route -> [confidence >= threshold?]
     no  -> flag_low_confidence -> END
 ```
 
-The graph has one conditional edge, after `route`. The threshold is `low_confidence_threshold` in `app/config.py` (default 0.6); exactly the threshold counts as confident. Low-confidence tickets skip retrieval, drafting and critique, so their response has `suggested_reply: null` and `kb_sources: []`. `triage_ticket` (`app/api/triage.py`) builds the initial state `{"ticket": ticket}`, calls `triage_graph.invoke(...)`, and maps the final state to a `TriageResult`.
+The graph has one conditional edge, after `route`. The threshold is `low_confidence_threshold` in `app/config.py` (default 0.6); exactly the threshold counts as confident. Low-confidence tickets skip retrieval, drafting and critique, so their response has `suggested_reply: null` and `kb_sources: []`. `triage_ticket` (`app/api/triage.py`) builds the initial state `{"ticket": ticket}`, calls `invoke(...)` on the graph it gets from `get_graph` (built at startup, with `thread_id` = the ticket id), and maps the final state to a `TriageResult`.
 
 `GraphState` (`app/models.py`) is a `TypedDict` with `total=False`, so the state can start with only `ticket`. Each node adds its own fields.
 
@@ -41,13 +41,23 @@ The `retrieve_kb` node finds up to 3 KB articles close in meaning to the ticket,
 
 - **SQLAlchemy 2.0 (sync) with psycopg 3.** `app/db.py` holds the engine, the session factory and `get_session()` (one transaction: commit on success, roll back on error). `DATABASE_URL` is converted from `postgresql://` to `postgresql+psycopg://`, because the plain form would select `psycopg2`, which is not installed. Creating the engine does not connect.
 - **ORM models:** `KbDocumentRow` (`app/kb/orm.py`, with pgvector's `Vector(1024)` column) and `TicketRow` (`app/tickets/orm.py`). They are named `...Row` to keep them apart from the Pydantic API models. The stores map rows to the Pydantic models.
-- **The schema belongs to Alembic.** `alembic/versions/0001_initial_schema.py` is the only place that creates tables, the `vector` extension and the indexes. It skips anything that already exists and removes duplicate topics (keeping the lowest `id`), so it adopts a database created by the earlier raw-SQL setup.
+- **The schema belongs to Alembic, with one exception.** `alembic/versions/0001_initial_schema.py` is the only place that creates our tables, the `vector` extension and the indexes. It skips anything that already exists and removes duplicate topics (keeping the lowest `id`), so it adopts a database created by the earlier raw-SQL setup. The exception is the LangGraph checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`): the `langgraph-checkpoint-postgres` library owns them and creates and upgrades them itself in `PostgresSaver.setup()` (see "Graph startup and checkpointing"). They are deliberately not in our migrations or ORM models.
 - **Migrations run at startup:** `main.py` calls `run_migrations()` through the retry wrapper. If the database never comes up the app still boots and logs an error. `python -m app.kb.ingest` also runs them first. Migrations can be run by hand with `alembic upgrade head`, which reads `DATABASE_URL` from the settings.
 - **Changing the schema:** edit the model, then `alembic revision --autogenerate -m "..."`, review the generated file, commit it. `alembic check` reports drift between the models and the database.
 - **Docker:** the Dockerfile copies `alembic.ini` and `alembic/`, so the container can migrate itself. A guard test checks this.
-- **Limits.** Nothing locks migrations, so run one app instance at a time. A failed migration is retried and then ignored, which leaves the app running with missing tables until it is fixed.
+- **Limits.** Nothing locks migrations, so run one app instance at a time. A failed migration is retried and then ignored, which leaves the app running with missing tables until it is fixed. Every run also writes checkpoint rows (see "Graph startup and checkpointing") and nothing prunes them yet.
 - **Tests.** Most tests need no database. The ones in `tests/integration/` run against a real Postgres and are skipped unless `TEST_DATABASE_URL` is set, for example `TEST_DATABASE_URL=postgresql://triageiq:triageiq@localhost:5433/triageiq_test`. The database name must end in `_test`; it is created if missing and wiped before each test. They never use `DATABASE_URL`.
 - **Port gotcha.** In `.env`, `DATABASE_URL` points at `localhost:5432`, but the compose database is published on host port `5433`, and `5432` is a different local Postgres. Inside compose the app uses `db:5432` and is unaffected. Commands run from the host need the right port.
+
+## Graph startup and checkpointing (`app/graph/checkpointer.py`, `app/api/deps.py`, `app/main.py`)
+
+- **The graph is built at startup, not at import.** `build_triage_graph(checkpointer=None)` compiles the graph with the given checkpointer. Importing `app.graph.build` no longer touches the database. The startup hook (`main.py`) applies the migrations, then creates the checkpointer, compiles the graph and stores it on `app.state.triage_graph`. On shutdown it closes the connection pool.
+- **A Postgres checkpointer.** `create_checkpointer()` opens a `psycopg` connection pool (autocommit and dict rows, which the library requires) and calls `PostgresSaver.setup()` once. If the database cannot be reached it fails after 5 seconds and closes the pool, so nothing is left behind.
+- **`thread_id` = `ticket_id`.** `POST /triage` calls the graph with `config={"configurable": {"thread_id": ticket_id}}`, so every run's state is saved under the ticket's id and can be found again by it. This changes no response: the API output is identical to before. It prepares human-in-the-loop review, where a run will pause and later resume under that id. No interrupt or review node exists yet.
+- **If startup cannot create the graph** it retries (3 attempts), then logs the error and boots anyway with `app.state.triage_graph = None`. `POST /triage` then returns `503` with `Retry-After`, and `/ready` returns `503` (reason `triage graph unavailable`) even if the database check passes. Restart the app once the database is reachable. `GET /tickets` and `/health` keep working.
+- **`get_graph`** (`app/api/deps.py`) is the FastAPI dependency that hands the endpoint the graph. Tests replace it with a graph that uses an in-memory saver, through an autouse fixture in `tests/conftest.py`, so none of them needs Postgres. The real startup and the real checkpointer are covered by tests in `tests/integration/`.
+- **Versions.** The upgrade to `langgraph 0.2.47` is the first release with both `interrupt()` and `Command`; it needed `langgraph-checkpoint-postgres 2.0.7` and `psycopg-pool 3.2.6`, and no change to the LangChain packages.
+- **Not done on purpose:** there is no retention policy yet. Every run writes checkpoint rows that nothing deletes.
 
 ## Tickets (`app/tickets/`)
 
@@ -55,7 +65,7 @@ Every successful triage is saved, so results can be read back and, later, paused
 
 - **Table `tickets`** (created by the Alembic migration that runs at startup, see "Database layer"): `id` (UUID, primary key), `status`, the original `subject`, `body` and `customer_id`, the triage result (`category`, `urgency`, `confidence`, `routing_target`, `suggested_reply`, `kb_sources` as JSONB, `needs_human_review`, `review_reason`), and `created_at` / `updated_at`. Index on `(status, created_at)`.
 - **Statuses.** `pending_review` when the result is flagged for human review, otherwise `triaged`.
-- **The ticket id is created before the graph runs** (`uuid4()` in `app/api/triage.py`), so a paused graph run can later use it as its LangGraph thread id. `POST /triage` returns it as `ticket_id`.
+- **The ticket id is created before the graph runs** (`uuid4()` in `app/api/triage.py`) and is the graph run's `thread_id`, so a paused graph run can later be resumed by ticket id. `POST /triage` returns it as `ticket_id`.
 - **When rows are saved.** After a successful graph run only, and low-confidence tickets are saved too. If the graph fails, nothing is saved.
 - **Endpoints.** `GET /tickets?status=<triaged|pending_review>&limit=<1-200, default 50>` lists newest first. `GET /tickets/{ticket_id}` returns one ticket, 404 if missing, 422 for a malformed id.
 - **A failed save returns 503.** A database that is unreachable (`sqlalchemy.exc.OperationalError`, or the driver's `psycopg.OperationalError` it wraps) gets a 503 with `Retry-After`, the same as LLM outages. Note that the triage work has already been done and paid for when the save fails, and the response is lost with it.

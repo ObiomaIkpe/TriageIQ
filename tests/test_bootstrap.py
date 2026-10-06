@@ -40,3 +40,30 @@ def test_gives_up_without_raising_after_all_attempts():
     assert result is False
     assert init.calls == 3
     assert sleeps == [1.0, 1.0]  # no pointless sleep after the last attempt
+
+def test_the_default_log_text_is_about_the_migrations(caplog):
+    init, sleeps = FlakyInit(99), []
+
+    with caplog.at_level("WARNING"):
+        init_schema_with_retry(init, attempts=2, delay=0, sleep=sleeps.append)
+
+    assert "Schema init failed (attempt 1/2)" in caplog.text
+    assert "Could not apply the database migrations; continuing without them" in caplog.text
+
+
+def test_the_log_text_can_describe_a_different_startup_step(caplog):
+    init, sleeps = FlakyInit(99), []
+
+    with caplog.at_level("WARNING"):
+        init_schema_with_retry(
+            init,
+            attempts=2,
+            delay=0,
+            sleep=sleeps.append,
+            label="Triage graph startup",
+            failure_message="Could not create the graph; continuing without it",
+        )
+
+    assert "Triage graph startup failed (attempt 1/2)" in caplog.text
+    assert "Could not create the graph; continuing without it" in caplog.text
+    assert "migrations" not in caplog.text

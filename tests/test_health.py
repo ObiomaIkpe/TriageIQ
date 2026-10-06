@@ -7,8 +7,10 @@ from app.main import app
 client = TestClient(app)
 
 
-def test_ready_when_the_database_answers(monkeypatch):
+def test_ready_when_the_database_answers_and_the_graph_is_built(monkeypatch):
     monkeypatch.setattr(main, "check_database", lambda: None)
+    # What the startup hook would have stored; it does not run in these tests.
+    monkeypatch.setattr(app.state, "triage_graph", object(), raising=False)
 
     response = client.get("/ready")
 
@@ -31,13 +33,15 @@ def test_not_ready_when_the_database_is_down(monkeypatch):
     }
 
 
-def test_startup_runs_the_migrations_once(monkeypatch):
+def test_startup_runs_the_migrations_once_then_builds_the_graph(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        main, "init_schema_with_retry", lambda init: calls.append(init)
+        main, "init_schema_with_retry", lambda init, **kwargs: calls.append(init)
     )
 
     with TestClient(app):
         pass
 
-    assert calls == [main.run_migrations]
+    assert len(calls) == 2
+    assert calls[0] is main.run_migrations
+    assert calls[1].func is main._open_graph

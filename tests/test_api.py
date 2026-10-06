@@ -8,6 +8,7 @@ import sqlalchemy.exc
 from fastapi.testclient import TestClient
 
 from app.api import triage as triage_api
+from app.api.deps import get_graph
 from app.errors import RETRY_AFTER_SECONDS
 from app.graph import classifier, critic, kb_retrieval, reply_draft
 from app.graph.critic import CritiqueResult
@@ -268,9 +269,9 @@ def test_kb_failure_degrades_and_flags_for_review(fakes):
     assert fakes.critic.calls == []
 
 
-def test_missing_state_field_fails_loudly_instead_of_defaulting(monkeypatch):
+def test_missing_state_field_fails_loudly_instead_of_defaulting():
     class PartialGraph:
-        def invoke(self, state):
+        def invoke(self, state, config=None):
             return {
                 "classification": ClassificationResult(
                     category=Category.account,
@@ -280,10 +281,73 @@ def test_missing_state_field_fails_loudly_instead_of_defaulting(monkeypatch):
                 )
             }
 
-    monkeypatch.setattr(triage_api, "triage_graph", PartialGraph())
+    # Replaces the graph the autouse fixture installed; it is cleared afterwards.
+    app.dependency_overrides[get_graph] = lambda: PartialGraph()
 
     response = TestClient(app, raise_server_exceptions=False).post(
         "/triage", json=TICKET
     )
 
     assert response.status_code == 500
+
+
+# --- thread_id and checkpoints ----------------------------------------------
+
+class RecordingGraph:
+    """Wraps a real graph and records the config of every invoke."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.configs = []
+
+    def invoke(self, state, config=None, **kwargs):
+        self.configs.append(config)
+        return self.inner.invoke(state, config, **kwargs)
+
+
+def test_the_graph_runs_with_the_ticket_id_as_its_thread_id(fakes, triage_graph_override):
+    recording = RecordingGraph(triage_graph_override)
+    app.dependency_overrides[get_graph] = lambda: recording
+
+    response = client.post("/triage", json=TICKET)
+
+    assert recording.configs == [
+        {"configurable": {"thread_id": response.json()["ticket_id"]}}
+    ]
+
+
+def test_each_request_runs_under_its_own_thread_id(fakes, triage_graph_override, monkeypatch):
+    ids = iter([UUID(int=1), UUID(int=2)])
+    monkeypatch.setattr(triage_api, "uuid4", lambda: next(ids))
+    recording = RecordingGraph(triage_graph_override)
+    app.dependency_overrides[get_graph] = lambda: recording
+
+    client.post("/triage", json=TICKET)
+    client.post("/triage", json=TICKET)
+
+    threads = [c["configurable"]["thread_id"] for c in recording.configs]
+    assert threads == [str(UUID(int=1)), str(UUID(int=2))]
+
+
+def test_the_checkpointer_holds_the_run_state_for_the_ticket_id(fakes, triage_graph_override):
+    response = client.post("/triage", json=TICKET)
+
+    thread = {"configurable": {"thread_id": response.json()["ticket_id"]}}
+    saved = triage_graph_override.get_state(thread).values
+    assert saved
+    assert saved["ticket"].subject == TICKET["subject"]
+    assert saved["classification"].category == Category.account
+    assert saved["routing_target"] == "account-management-urgent"
+
+
+def test_a_low_confidence_run_is_checkpointed_too(fakes, triage_graph_override):
+    fakes.classify.result = ClassificationResult(
+        category=Category.other, urgency=Urgency.low, confidence=0.4, reasoning="Unclear.",
+    )
+
+    response = client.post("/triage", json=TICKET)
+
+    thread = {"configurable": {"thread_id": response.json()["ticket_id"]}}
+    saved = triage_graph_override.get_state(thread).values
+    assert saved["needs_human_review"] is True
+    assert "draft_reply" not in saved
