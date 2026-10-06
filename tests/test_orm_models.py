@@ -36,8 +36,9 @@ def test_embedding_column_has_the_voyage_dimension():
     assert KbDocumentRow.__table__.c.embedding.type.dim == 1024
 
 
-def test_orm_and_store_agree_on_the_embedding_dimension():
-    assert kb_orm.EMBEDDING_DIM == kb_store.EMBEDDING_DIM
+def test_the_store_uses_the_orms_embedding_dimension():
+    # One definition, imported by the store, so the two can never disagree.
+    assert kb_store.EMBEDDING_DIM is kb_orm.EMBEDDING_DIM
 
 
 # --- tickets ----------------------------------------------------------------

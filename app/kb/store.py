@@ -4,13 +4,15 @@ from collections import OrderedDict
 
 import voyageai
 import voyageai.error
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from app.config import settings
-from app.db import get_connection
+from app.db import get_connection, get_session
+from app.kb.orm import EMBEDDING_DIM, KbDocumentRow
 from app.kb.ratelimit import RateLimiter
 from app.models import KbMatch
 
-EMBEDDING_DIM = 1024  # voyage-3 output dimension
 EMBEDDING_MODEL = "voyage-3"
 
 # Cosine distance cutoff for retrieval (0 = identical, higher = less similar).
@@ -77,8 +79,8 @@ def init_schema() -> None:
 
 def check_database() -> None:
     """Raise if Postgres is unreachable or the knowledge base table is missing."""
-    with get_connection() as conn:
-        conn.execute("SELECT 1 FROM kb_documents LIMIT 1")
+    with get_session() as session:
+        session.execute(select(KbDocumentRow.id).limit(1))
 
 
 def _embed_with_retry(text: str, input_type: str) -> list[float]:
@@ -121,15 +123,19 @@ def embed_text(text: str, input_type: str = "document") -> list[float]:
 
 def add_document(topic: str, content: str) -> None:
     embedding = embed_text(content, input_type="document")
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO kb_documents (topic, content, embedding) VALUES (%s, %s, %s)
-            ON CONFLICT (topic) DO UPDATE
-              SET content = EXCLUDED.content, embedding = EXCLUDED.embedding
-            """,
-            (topic, content, embedding),
-        )
+    statement = insert(KbDocumentRow).values(
+        topic=topic, content=content, embedding=embedding
+    )
+    # One row per topic: saving an existing topic updates it in place.
+    statement = statement.on_conflict_do_update(
+        index_elements=[KbDocumentRow.topic],
+        set_={
+            "content": statement.excluded.content,
+            "embedding": statement.excluded.embedding,
+        },
+    )
+    with get_session() as session:
+        session.execute(statement)
 
 
 def search_similar(query_text: str, top_k: int = 3) -> list[KbMatch]:
@@ -138,18 +144,18 @@ def search_similar(query_text: str, top_k: int = 3) -> list[KbMatch]:
     May return fewer than top_k, or an empty list if nothing is close enough.
     """
     query_embedding = embed_text(query_text, input_type="query")
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT topic, content, embedding <=> %s::vector AS distance
-            FROM kb_documents
-            WHERE embedding <=> %s::vector < %s
-            ORDER BY distance
-            LIMIT %s
-            """,
-            (query_embedding, query_embedding, MAX_DISTANCE, top_k),
-        ).fetchall()
-    return [
-        KbMatch(topic=topic, content=content, distance=distance)
-        for topic, content, distance in rows
-    ]
+    # cosine_distance is pgvector's <=> operator (0 = identical).
+    distance = KbDocumentRow.embedding.cosine_distance(query_embedding)
+    distance_column = distance.label("distance")
+    query = (
+        select(KbDocumentRow.topic, KbDocumentRow.content, distance_column)
+        .where(distance < MAX_DISTANCE)
+        .order_by(distance_column)
+        .limit(top_k)
+    )
+    with get_session() as session:
+        rows = session.execute(query)
+        return [
+            KbMatch(topic=topic, content=content, distance=dist)
+            for topic, content, dist in rows
+        ]

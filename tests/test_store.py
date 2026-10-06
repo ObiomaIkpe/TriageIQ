@@ -1,5 +1,6 @@
 import pytest
 import voyageai.error
+from sqlalchemy.dialects import postgresql
 
 from app.kb import store
 from app.models import KbMatch
@@ -52,6 +53,40 @@ class FakeConn:
 
     def fetchall(self):
         return self.rows
+
+
+class FakeSession:
+    """Records the statements the store executes; no database. `rows` are what
+    a SELECT returns."""
+
+    def __init__(self, rows=()):
+        self.rows = list(rows)
+        self.executed = []
+
+    def execute(self, statement):
+        self.executed.append(statement)
+        return iter(self.rows)
+
+
+@pytest.fixture
+def session(monkeypatch):
+    s = FakeSession()
+
+    class FakeBegin:
+        def __enter__(self):
+            return s
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(store, "get_session", lambda: FakeBegin())
+    return s
+
+
+def compiled(statement):
+    """The statement as Postgres would receive it, plus its bound parameters."""
+    c = statement.compile(dialect=postgresql.dialect())
+    return " ".join(str(c).split()), c.params
 
 
 @pytest.fixture(autouse=True)
@@ -176,12 +211,11 @@ def test_non_retryable_error_is_raised_immediately(fakes):
 
 # --- search_similar and add_document ----------------------------------------
 
-def test_search_similar_runs_the_cutoff_query_and_returns_matches(fakes, monkeypatch):
-    conn = FakeConn(rows=[
+def test_search_similar_returns_kb_matches_from_the_rows(fakes, session):
+    session.rows = [
         ("account lockout", "Article A", 0.21),
         ("password reset", "Article B", 0.4),
-    ])
-    monkeypatch.setattr(store, "get_connection", lambda: conn)
+    ]
 
     result = store.search_similar("lockout", top_k=2)
 
@@ -190,41 +224,65 @@ def test_search_similar_runs_the_cutoff_query_and_returns_matches(fakes, monkeyp
         KbMatch(topic="password reset", content="Article B", distance=0.4),
     ]
     assert all(isinstance(match, KbMatch) for match in result)
-    sql, params = conn.executed[0]
-    assert "::vector" in sql
-    assert "LIMIT" in sql
-    # select-list distance, WHERE cutoff, then the cutoff value and top_k
-    assert params == (
-        [0.1, 0.2, 0.3], [0.1, 0.2, 0.3], store.MAX_DISTANCE, 2
+
+
+def test_search_similar_runs_the_cutoff_query(fakes, session):
+    store.search_similar("lockout", top_k=2)
+
+    sql, params = compiled(session.executed[0])
+    assert sql.startswith(
+        "SELECT kb_documents.topic, kb_documents.content, "
+        "kb_documents.embedding <=> "
     )
+    assert "AS distance FROM kb_documents" in sql
+    assert "WHERE (kb_documents.embedding <=> " in sql
+    assert "ORDER BY distance" in sql
+    assert "LIMIT" in sql
+    # The cutoff and the limit are bound values, not part of the SQL text.
+    assert store.MAX_DISTANCE in params.values()
+    assert 2 in params.values()
+    # The query vector is one bound value, used by the select list and the cutoff.
+    assert list(params.values()).count([0.1, 0.2, 0.3]) == 1
+    assert sql.count("%(embedding_1)s") == 2
 
 
-def test_search_similar_embeds_the_query_as_a_query(fakes, monkeypatch):
-    monkeypatch.setattr(store, "get_connection", lambda: FakeConn())
-
+def test_search_similar_embeds_the_query_as_a_query(fakes, session):
     store.search_similar("lockout")
 
     assert fakes.voyage.calls[0]["input_type"] == "query"
+    assert fakes.voyage.calls[0]["texts"] == ["lockout"]
 
 
-def test_search_similar_with_no_rows_returns_empty_list(fakes, monkeypatch):
-    monkeypatch.setattr(store, "get_connection", lambda: FakeConn(rows=[]))
+def test_search_similar_defaults_to_three_results(fakes, session):
+    store.search_similar("lockout")
 
+    _, params = compiled(session.executed[0])
+    assert 3 in params.values()
+
+
+def test_search_similar_with_no_rows_returns_empty_list(fakes, session):
     assert store.search_similar("weather in paris") == []
 
 
-def test_add_document_embeds_as_document_and_upserts(fakes, monkeypatch):
-    conn = FakeConn()
-    monkeypatch.setattr(store, "get_connection", lambda: conn)
-
+def test_add_document_embeds_as_document_and_upserts(fakes, session):
     store.add_document("lockout", "Accounts lock after 5 attempts.")
 
     assert fakes.voyage.calls[0]["input_type"] == "document"
-    sql, params = conn.executed[0]
-    assert sql.strip().startswith("INSERT INTO kb_documents")
-    assert "ON CONFLICT (topic)" in sql
-    assert "DO UPDATE" in sql
-    assert params == ("lockout", "Accounts lock after 5 attempts.", [0.1, 0.2, 0.3])
+    assert len(session.executed) == 1
+    sql, params = compiled(session.executed[0])
+    assert sql.startswith("INSERT INTO kb_documents (topic, content, embedding)")
+    assert "ON CONFLICT (topic) DO UPDATE" in sql
+    assert "content = excluded.content" in sql
+    assert "embedding = excluded.embedding" in sql
+    assert params["topic"] == "lockout"
+    assert params["content"] == "Accounts lock after 5 attempts."
+    assert params["embedding"] == [0.1, 0.2, 0.3]
+
+
+def test_add_document_saves_the_embedding_of_its_content_not_its_topic(fakes, session):
+    store.add_document("lockout", "Accounts lock after 5 attempts.")
+
+    assert fakes.voyage.calls[0]["texts"] == ["Accounts lock after 5 attempts."]
 
 
 # --- init_schema ------------------------------------------------------------
@@ -278,20 +336,20 @@ def test_init_schema_runs_the_same_statements_every_time(monkeypatch):
 
 # --- check_database ---------------------------------------------------------
 
-def test_check_database_queries_the_kb_table(monkeypatch):
-    conn = FakeConn()
-    monkeypatch.setattr(store, "get_connection", lambda: conn)
-
+def test_check_database_queries_the_kb_table(session):
     store.check_database()
 
-    assert conn.executed[0][0] == "SELECT 1 FROM kb_documents LIMIT 1"
+    assert len(session.executed) == 1
+    sql, params = compiled(session.executed[0])
+    assert sql.startswith("SELECT kb_documents.id FROM kb_documents LIMIT")
+    assert 1 in params.values()
 
 
 def test_check_database_raises_when_the_database_is_down(monkeypatch):
     def down():
         raise ConnectionError("postgres is down")
 
-    monkeypatch.setattr(store, "get_connection", down)
+    monkeypatch.setattr(store, "get_session", down)
 
     with pytest.raises(ConnectionError):
         store.check_database()
