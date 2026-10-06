@@ -1,6 +1,4 @@
 from app.db import Base
-from app.kb import orm as kb_orm
-from app.kb import store as kb_store
 from app.kb.orm import KbDocumentRow
 from app.tickets.orm import TicketRow
 
@@ -34,11 +32,6 @@ def test_kb_documents_has_a_unique_topic_index_with_the_old_name():
 
 def test_embedding_column_has_the_voyage_dimension():
     assert KbDocumentRow.__table__.c.embedding.type.dim == 1024
-
-
-def test_the_store_uses_the_orms_embedding_dimension():
-    # One definition, imported by the store, so the two can never disagree.
-    assert kb_store.EMBEDDING_DIM is kb_orm.EMBEDDING_DIM
 
 
 # --- tickets ----------------------------------------------------------------

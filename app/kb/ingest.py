@@ -5,7 +5,8 @@ Run with: python -m app.kb.ingest
 """
 
 
-from app.kb.store import init_schema, add_document
+from app.kb.store import add_document
+from app.migrations import run_migrations
 
 SAMPLE_DOCS = [
     {
@@ -41,8 +42,8 @@ SAMPLE_DOCS = [
 
 
 def main() -> None:
-    print("Initializing schema...")
-    init_schema()
+    print("Applying database migrations...")
+    run_migrations()
 
     print(f"Ingesting {len(SAMPLE_DOCS)} documents...")
     for i, doc in enumerate(SAMPLE_DOCS):

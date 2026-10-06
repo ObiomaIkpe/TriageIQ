@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.config import settings
-from app.db import get_connection, get_session
-from app.kb.orm import EMBEDDING_DIM, KbDocumentRow
+from app.db import get_session
+from app.kb.orm import KbDocumentRow
 from app.kb.ratelimit import RateLimiter
 from app.models import KbMatch
 
@@ -45,36 +45,6 @@ _sleep = time.sleep
 _CACHE_SIZE = 256
 _cache: "OrderedDict[tuple[str, str], list[float]]" = OrderedDict()
 _cache_lock = threading.Lock()
-
-
-def init_schema() -> None:
-    """Create the kb_documents table and enforce one row per topic.
-
-    Every statement is safe to run on every startup, on a fresh database or on
-    one created before topics were unique.
-    """
-    with get_connection() as conn:
-        conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS kb_documents (
-                id SERIAL PRIMARY KEY,
-                topic TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding VECTOR({EMBEDDING_DIM}) NOT NULL
-            )
-        """)
-        # A database created before topics were unique may hold duplicates.
-        # Keep the lowest id per topic so the unique index below can be built.
-        conn.execute("""
-            DELETE FROM kb_documents a USING kb_documents b
-            WHERE a.topic = b.topic AND a.id > b.id
-        """)
-        conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS kb_documents_topic_key
-            ON kb_documents (topic)
-        """)
-        # No index at this scale — a handful of rows is faster and more
-        # accurate with a plain sequential scan than a poorly-tuned
-        # ivfflat index. Revisit once the KB grows into the hundreds+.
 
 
 def check_database() -> None:

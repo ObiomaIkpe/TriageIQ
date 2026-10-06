@@ -3,37 +3,9 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.db import get_connection, get_session
+from app.db import get_session
 from app.models import KbMatch, TicketIn, TicketRecord, TicketStatus, TriageResult
 from app.tickets.orm import TicketRow
-
-
-def init_ticket_schema() -> None:
-    """Create the tickets table and its index. Safe to run on every startup."""
-    with get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS tickets (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                status TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                body TEXT NOT NULL,
-                customer_id TEXT,
-                category TEXT NOT NULL,
-                urgency TEXT NOT NULL,
-                confidence DOUBLE PRECISION NOT NULL,
-                routing_target TEXT NOT NULL,
-                suggested_reply TEXT,
-                kb_sources JSONB NOT NULL DEFAULT '[]',
-                needs_human_review BOOLEAN NOT NULL,
-                review_reason TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS tickets_status_created_idx
-            ON tickets (status, created_at)
-        """)
 
 
 def _to_row(ticket: TicketIn, result: TriageResult) -> TicketRow:

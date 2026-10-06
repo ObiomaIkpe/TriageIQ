@@ -13,6 +13,9 @@ class KbDocumentRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     topic: Mapped[str] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
+    # No vector index at this scale: a handful of rows is faster and more
+    # accurate with a plain sequential scan than a poorly-tuned ivfflat index.
+    # Revisit once the KB grows into the hundreds or more.
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
 
     # One row per topic. The name matches the index the raw-SQL setup created.

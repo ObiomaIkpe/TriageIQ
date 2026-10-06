@@ -13,9 +13,10 @@ def init_schema_with_retry(
 ) -> bool:
     """Run init(), retrying while the database is still starting up.
 
-    Returns True once it succeeds. If every attempt fails it logs the error and
-    returns False instead of raising, so the app still boots and the knowledge
-    base degrades gracefully rather than taking the whole service down.
+    Used for the startup migrations. Returns True once it succeeds. If every
+    attempt fails it logs the error and returns False instead of raising, so the
+    app still boots and the database-backed parts degrade gracefully rather than
+    taking the whole service down.
     """
     for attempt in range(1, attempts + 1):
         try:
@@ -27,5 +28,5 @@ def init_schema_with_retry(
             )
             if attempt < attempts:
                 sleep(delay)
-    logger.error("Could not initialise the knowledge base schema; continuing without it")
+    logger.error("Could not apply the database migrations; continuing without them")
     return False
