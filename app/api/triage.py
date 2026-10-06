@@ -1,13 +1,19 @@
+from uuid import uuid4
+
 from fastapi import APIRouter
 
 from app.models import TicketIn, TriageResult, GraphState
 from app.graph.build import triage_graph
+from app.tickets.store import save_ticket
 
 router = APIRouter(prefix="/triage", tags=["triage"])
 
 
 @router.post("", response_model=TriageResult)
 def triage_ticket(ticket: TicketIn) -> TriageResult:
+    # The id exists before the graph runs, so a paused or resumed run can use
+    # it as its thread id later.
+    ticket_id = str(uuid4())
     initial_state: GraphState = {"ticket": ticket}
     final_state = triage_graph.invoke(initial_state)
 
@@ -15,7 +21,8 @@ def triage_ticket(ticket: TicketIn) -> TriageResult:
     # missing one should fail loudly (500) instead of silently defaulting.
     classification = final_state["classification"]
 
-    return TriageResult(
+    result = TriageResult(
+        ticket_id=ticket_id,
         category=classification.category,
         urgency=classification.urgency,
         confidence=classification.confidence,
@@ -27,3 +34,8 @@ def triage_ticket(ticket: TicketIn) -> TriageResult:
         needs_human_review=final_state["needs_human_review"],
         review_reason=final_state["review_reason"] or None,
     )
+
+    # Saved only after a successful graph run, so a failed run leaves no row.
+    # If the save itself fails the error propagates (503 for a database outage).
+    save_ticket(ticket, result)
+    return result

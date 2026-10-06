@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from typing import Optional, TypedDict
 
@@ -38,7 +39,13 @@ class KbMatch(BaseModel):
     distance: float
 
 
+class TicketStatus(str, Enum):
+    triaged = "triaged"
+    pending_review = "pending_review"
+
+
 class TriageResult(BaseModel):
+    ticket_id: str
     category: Category
     urgency: Urgency
     confidence: float
@@ -47,6 +54,14 @@ class TriageResult(BaseModel):
     kb_sources: list[KbMatch] = Field(default_factory=list)
     needs_human_review: bool
     review_reason: Optional[str] = None
+
+
+class TicketRecord(TriageResult):
+    status: TicketStatus
+    subject: str
+    body: str
+    customer_id: Optional[str] = None
+    created_at: datetime
 
 
 class GraphState(TypedDict, total=False):

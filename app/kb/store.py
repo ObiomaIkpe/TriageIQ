@@ -2,12 +2,11 @@ import threading
 import time
 from collections import OrderedDict
 
-import psycopg
-from pgvector.psycopg import register_vector
 import voyageai
 import voyageai.error
 
 from app.config import settings
+from app.db import get_connection
 from app.kb.ratelimit import RateLimiter
 from app.models import KbMatch
 
@@ -45,12 +44,6 @@ _CACHE_SIZE = 256
 _cache: "OrderedDict[tuple[str, str], list[float]]" = OrderedDict()
 _cache_lock = threading.Lock()
 
-
-def get_connection() -> psycopg.Connection:
-    conn = psycopg.connect(settings.database_url, autocommit=True)
-    conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    register_vector(conn)
-    return conn
 
 def init_schema() -> None:
     """Create the kb_documents table and enforce one row per topic.

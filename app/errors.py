@@ -1,6 +1,7 @@
 import logging
 
 import anthropic
+import psycopg
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -32,6 +33,16 @@ async def llm_unavailable_handler(request: Request, exc: Exception) -> JSONRespo
     )
 
 
+async def database_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.warning("Database unavailable (%s) on %s", type(exc).__name__, request.url.path)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Database temporarily unavailable. Please retry."},
+        headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
+    )
+
+
 def register_error_handlers(app: FastAPI) -> None:
     for exc_class in TRANSIENT_LLM_ERRORS:
         app.add_exception_handler(exc_class, llm_unavailable_handler)
+    app.add_exception_handler(psycopg.OperationalError, database_unavailable_handler)
