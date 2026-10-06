@@ -2,9 +2,12 @@ import pytest
 
 from app.graph import reply_draft
 from app.graph.reply_draft import draft_reply
-from app.models import TicketIn
+from app.models import KbMatch, TicketIn
 
 NO_KB_TEXT = "No relevant knowledge base articles found."
+
+ARTICLE_A = KbMatch(topic="topic a", content="Article A", distance=0.2)
+ARTICLE_B = KbMatch(topic="topic b", content="Article B", distance=0.4)
 
 
 class FakeChain:
@@ -32,17 +35,17 @@ def make_state(kb_context=None) -> dict:
 
 
 def test_draft_is_stored_in_state(fake_chain):
-    result = draft_reply(make_state(["Article A"]))
+    result = draft_reply(make_state([ARTICLE_A]))
 
     assert result["draft_reply"] == "Drafted reply."
 
 
-def test_kb_snippets_are_sent_as_bullets(fake_chain):
-    draft_reply(make_state(["Article A", "Article B"]))
+def test_kb_matches_are_sent_as_bullets_with_their_topic(fake_chain):
+    draft_reply(make_state([ARTICLE_A, ARTICLE_B]))
 
     sent = fake_chain.calls[0]["kb_context"]
-    assert "- Article A" in sent
-    assert "- Article B" in sent
+    assert "- [topic a] Article A" in sent
+    assert "- [topic b] Article B" in sent
 
 
 @pytest.mark.parametrize("kb_context", [None, []])
@@ -53,7 +56,7 @@ def test_missing_or_empty_kb_sends_fallback_text(fake_chain, kb_context):
 
 
 def test_llm_receives_subject_and_body(fake_chain):
-    draft_reply(make_state(["Article A"]))
+    draft_reply(make_state([ARTICLE_A]))
 
     sent = fake_chain.calls[0]
     assert sent["subject"] == "Cannot log in"
@@ -61,6 +64,6 @@ def test_llm_receives_subject_and_body(fake_chain):
 
 
 def test_draft_returns_only_its_own_keys(fake_chain):
-    result = draft_reply(make_state(["Article A"]))
+    result = draft_reply(make_state([ARTICLE_A]))
 
     assert set(result) == {"draft_reply"}

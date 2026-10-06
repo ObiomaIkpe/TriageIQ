@@ -2,6 +2,7 @@ import pytest
 import voyageai.error
 
 from app.kb import store
+from app.models import KbMatch
 
 
 class FakeVoyage:
@@ -175,17 +176,27 @@ def test_non_retryable_error_is_raised_immediately(fakes):
 
 # --- search_similar and add_document ----------------------------------------
 
-def test_search_similar_runs_the_cutoff_query_and_returns_contents(fakes, monkeypatch):
-    conn = FakeConn(rows=[("Article A",), ("Article B",)])
+def test_search_similar_runs_the_cutoff_query_and_returns_matches(fakes, monkeypatch):
+    conn = FakeConn(rows=[
+        ("account lockout", "Article A", 0.21),
+        ("password reset", "Article B", 0.4),
+    ])
     monkeypatch.setattr(store, "get_connection", lambda: conn)
 
     result = store.search_similar("lockout", top_k=2)
 
-    assert result == ["Article A", "Article B"]
+    assert result == [
+        KbMatch(topic="account lockout", content="Article A", distance=0.21),
+        KbMatch(topic="password reset", content="Article B", distance=0.4),
+    ]
+    assert all(isinstance(match, KbMatch) for match in result)
     sql, params = conn.executed[0]
     assert "::vector" in sql
     assert "LIMIT" in sql
-    assert params == ([0.1, 0.2, 0.3], store.MAX_DISTANCE, [0.1, 0.2, 0.3], 2)
+    # select-list distance, WHERE cutoff, then the cutoff value and top_k
+    assert params == (
+        [0.1, 0.2, 0.3], [0.1, 0.2, 0.3], store.MAX_DISTANCE, 2
+    )
 
 
 def test_search_similar_embeds_the_query_as_a_query(fakes, monkeypatch):

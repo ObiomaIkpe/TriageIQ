@@ -3,6 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.graph.formatting import format_kb_context
 from app.models import GraphState
 
 
@@ -60,7 +61,7 @@ def critique(state: GraphState) -> GraphState:
     # Only tickets with a KB match reach the LLM critic, so kb_context is
     # never empty here.
     ticket = state["ticket"]
-    context_text = "\n".join(f"- {snippet}" for snippet in kb_context)
+    context_text = format_kb_context(kb_context)
 
     result: CritiqueResult = _chain.invoke({
         "subject": ticket.subject,
