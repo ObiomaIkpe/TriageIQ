@@ -19,8 +19,10 @@ from alembic.config import Config
 from psycopg import sql
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
+from app import db
 from app.db import sqlalchemy_url
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,3 +84,18 @@ def migrated_database(clean_database: str) -> str:
     """The test database after `alembic upgrade head`."""
     command.upgrade(alembic_config(clean_database), "head")
     return clean_database
+
+
+@pytest.fixture
+def test_session(migrated_database: str, monkeypatch):
+    """Point the app's session factory at the migrated test database.
+
+    The stores call app.db.get_session(), which reads app.db.SessionLocal, so
+    patching it sends their queries to the test database. Yields a factory for
+    sessions the tests can use directly.
+    """
+    engine = create_engine(migrated_database, poolclass=NullPool)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(db, "SessionLocal", factory)
+    yield factory
+    engine.dispose()
