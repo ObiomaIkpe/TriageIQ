@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
+import psycopg
 import pytest
+import sqlalchemy.exc
 from fastapi.testclient import TestClient
 
 from app.api import tickets as tickets_api
@@ -84,6 +86,22 @@ def test_get_ticket_rejects_a_non_uuid_id_without_calling_the_store(monkeypatch)
 
     assert response.status_code == 422
     assert calls == []
+
+
+def test_get_ticket_returns_503_when_the_database_is_down(monkeypatch):
+    def down(ticket_id):
+        raise sqlalchemy.exc.OperationalError(
+            "SELECT ...", {}, psycopg.OperationalError("connection refused")
+        )
+
+    monkeypatch.setattr(tickets_api, "get_ticket", down)
+
+    response = client.get(f"/tickets/{TICKET_ID}")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Database temporarily unavailable. Please retry."
+    }
 
 
 # --- GET /tickets -----------------------------------------------------------

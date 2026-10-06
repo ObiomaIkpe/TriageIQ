@@ -2,6 +2,7 @@ import logging
 
 import anthropic
 import psycopg
+import sqlalchemy.exc
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -45,4 +46,8 @@ async def database_unavailable_handler(request: Request, exc: Exception) -> JSON
 def register_error_handlers(app: FastAPI) -> None:
     for exc_class in TRANSIENT_LLM_ERRORS:
         app.add_exception_handler(exc_class, llm_unavailable_handler)
+    # SQLAlchemy wraps the driver's error, so both forms mean "database down".
     app.add_exception_handler(psycopg.OperationalError, database_unavailable_handler)
+    app.add_exception_handler(
+        sqlalchemy.exc.OperationalError, database_unavailable_handler
+    )

@@ -1,15 +1,11 @@
 from typing import Optional
+from uuid import UUID
 
-from psycopg.types.json import Jsonb
+from sqlalchemy import select
 
-from app.db import get_connection
+from app.db import get_connection, get_session
 from app.models import KbMatch, TicketIn, TicketRecord, TicketStatus, TriageResult
-
-_COLUMNS = """
-    id, status, subject, body, customer_id,
-    category, urgency, confidence, routing_target,
-    suggested_reply, kb_sources, needs_human_review, review_reason, created_at
-"""
+from app.tickets.orm import TicketRow
 
 
 def init_ticket_schema() -> None:
@@ -40,92 +36,67 @@ def init_ticket_schema() -> None:
         """)
 
 
-def save_ticket(ticket: TicketIn, result: TriageResult) -> None:
-    """Insert one row, using result.ticket_id as the primary key."""
+def _to_row(ticket: TicketIn, result: TriageResult) -> TicketRow:
     status = (
         TicketStatus.pending_review
         if result.needs_human_review
         else TicketStatus.triaged
     )
-    kb_sources = Jsonb([m.model_dump(mode="json") for m in result.kb_sources])
-
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO tickets (
-                id, status, subject, body, customer_id,
-                category, urgency, confidence, routing_target,
-                suggested_reply, kb_sources, needs_human_review, review_reason
-            ) VALUES (
-                %s::uuid, %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s
-            )
-            """,
-            (
-                result.ticket_id,
-                status.value,
-                ticket.subject,
-                ticket.body,
-                ticket.customer_id,
-                result.category.value,
-                result.urgency.value,
-                result.confidence,
-                result.routing_target,
-                result.suggested_reply,
-                kb_sources,
-                result.needs_human_review,
-                result.review_reason,
-            ),
-        )
-
-
-def _to_record(row) -> TicketRecord:
-    (
-        ticket_id, status, subject, body, customer_id,
-        category, urgency, confidence, routing_target,
-        suggested_reply, kb_sources, needs_human_review, review_reason,
-        created_at,
-    ) = row
-    return TicketRecord(
-        ticket_id=str(ticket_id),
-        status=status,
-        subject=subject,
-        body=body,
-        customer_id=customer_id,
-        category=category,
-        urgency=urgency,
-        confidence=confidence,
-        routing_target=routing_target,
-        suggested_reply=suggested_reply,
-        kb_sources=[KbMatch.model_validate(m) for m in kb_sources],
-        needs_human_review=needs_human_review,
-        review_reason=review_reason,
-        created_at=created_at,
+    return TicketRow(
+        id=UUID(result.ticket_id),
+        status=status.value,
+        subject=ticket.subject,
+        body=ticket.body,
+        customer_id=ticket.customer_id,
+        category=result.category.value,
+        urgency=result.urgency.value,
+        confidence=result.confidence,
+        routing_target=result.routing_target,
+        suggested_reply=result.suggested_reply,
+        kb_sources=[m.model_dump(mode="json") for m in result.kb_sources],
+        needs_human_review=result.needs_human_review,
+        review_reason=result.review_reason,
     )
 
 
+def _to_record(row: TicketRow) -> TicketRecord:
+    return TicketRecord(
+        ticket_id=str(row.id),
+        status=row.status,
+        subject=row.subject,
+        body=row.body,
+        customer_id=row.customer_id,
+        category=row.category,
+        urgency=row.urgency,
+        confidence=row.confidence,
+        routing_target=row.routing_target,
+        suggested_reply=row.suggested_reply,
+        kb_sources=[KbMatch.model_validate(m) for m in row.kb_sources],
+        needs_human_review=row.needs_human_review,
+        review_reason=row.review_reason,
+        created_at=row.created_at,
+    )
+
+
+def save_ticket(ticket: TicketIn, result: TriageResult) -> None:
+    """Insert one row, using result.ticket_id as the primary key."""
+    with get_session() as session:
+        session.add(_to_row(ticket, result))
+
+
 def get_ticket(ticket_id: str) -> Optional[TicketRecord]:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT" + _COLUMNS + "FROM tickets WHERE id = %s::uuid",
-            (ticket_id,),
-        ).fetchone()
-    return _to_record(row) if row is not None else None
+    with get_session() as session:
+        row = session.get(TicketRow, UUID(ticket_id))
+        return _to_record(row) if row is not None else None
 
 
 def list_tickets(
     status: Optional[TicketStatus] = None, limit: int = 50
 ) -> list[TicketRecord]:
     """Newest first. The status filter is only added when a status is given."""
-    sql = "SELECT" + _COLUMNS + "FROM tickets"
-    params: list = []
+    query = select(TicketRow).order_by(TicketRow.created_at.desc()).limit(limit)
     if status is not None:
-        sql += " WHERE status = %s"
-        params.append(status.value)
-    sql += " ORDER BY created_at DESC LIMIT %s"
-    params.append(limit)
+        query = query.where(TicketRow.status == status.value)
 
-    with get_connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [_to_record(row) for row in rows]
+    with get_session() as session:
+        return [_to_record(row) for row in session.scalars(query)]

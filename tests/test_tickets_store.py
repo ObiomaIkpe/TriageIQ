@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
-from psycopg.types.json import Jsonb
+from sqlalchemy.dialects import postgresql
 
 from app.models import (
     Category,
@@ -14,6 +14,7 @@ from app.models import (
     Urgency,
 )
 from app.tickets import store
+from app.tickets.orm import TicketRow
 
 TICKET_ID = "12345678-1234-5678-1234-567812345678"
 CREATED_AT = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
@@ -22,8 +23,7 @@ CREATED_AT = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
 class FakeConn:
     """Stands in for a psycopg connection used as a context manager."""
 
-    def __init__(self, rows=None):
-        self.rows = rows or []
+    def __init__(self):
         self.executed = []
 
     def __enter__(self):
@@ -36,18 +36,42 @@ class FakeConn:
         self.executed.append((sql, params))
         return self
 
-    def fetchone(self):
-        return self.rows[0] if self.rows else None
 
-    def fetchall(self):
-        return self.rows
+class FakeSession:
+    """Records what the store asks of a SQLAlchemy session; no database."""
+
+    def __init__(self, get_result=None, scalars_result=()):
+        self.added = []
+        self.get_calls = []
+        self.queries = []
+        self._get_result = get_result
+        self._scalars_result = scalars_result
+
+    def add(self, row):
+        self.added.append(row)
+
+    def get(self, model, key):
+        self.get_calls.append((model, key))
+        return self._get_result
+
+    def scalars(self, query):
+        self.queries.append(query)
+        return iter(self._scalars_result)
 
 
 @pytest.fixture
-def conn(monkeypatch):
-    c = FakeConn()
-    monkeypatch.setattr(store, "get_connection", lambda: c)
-    return c
+def session(monkeypatch):
+    s = FakeSession()
+
+    class FakeBegin:
+        def __enter__(self):
+            return s
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(store, "get_session", lambda: FakeBegin())
+    return s
 
 
 def _normalised(sql):
@@ -68,7 +92,7 @@ def make_result(needs_human_review=False, kb_sources=None) -> TriageResult:
     )
 
 
-def make_row(**overrides):
+def make_row(**overrides) -> TicketRow:
     values = dict(
         id=UUID(TICKET_ID),
         status="triaged",
@@ -88,12 +112,15 @@ def make_row(**overrides):
         created_at=CREATED_AT,
     )
     values.update(overrides)
-    return tuple(values.values())
+    return TicketRow(**values)
 
 
-# --- init_ticket_schema -----------------------------------------------------
+# --- init_ticket_schema (still raw SQL until startup moves to Alembic) -------
 
-def test_init_ticket_schema_creates_the_table_then_the_index(conn):
+def test_init_ticket_schema_creates_the_table_then_the_index(monkeypatch):
+    conn = FakeConn()
+    monkeypatch.setattr(store, "get_connection", lambda: conn)
+
     store.init_ticket_schema()
 
     statements = [_normalised(sql) for sql, _ in conn.executed]
@@ -105,7 +132,10 @@ def test_init_ticket_schema_creates_the_table_then_the_index(conn):
     )
 
 
-def test_init_ticket_schema_runs_the_same_statements_every_time(conn):
+def test_init_ticket_schema_runs_the_same_statements_every_time(monkeypatch):
+    conn = FakeConn()
+    monkeypatch.setattr(store, "get_connection", lambda: conn)
+
     store.init_ticket_schema()
     store.init_ticket_schema()
 
@@ -113,132 +143,147 @@ def test_init_ticket_schema_runs_the_same_statements_every_time(conn):
     assert conn.executed[:2] == conn.executed[2:]
 
 
-# --- save_ticket ------------------------------------------------------------
+# --- _to_row ----------------------------------------------------------------
 
-def test_save_ticket_inserts_one_row_with_the_ticket_id_and_all_fields(conn):
+def test_to_row_maps_the_ticket_and_result_fields():
     ticket = TicketIn(subject="Cannot log in", body="Account locked.", customer_id="cust-1")
 
-    store.save_ticket(ticket, make_result())
+    row = store._to_row(ticket, make_result())
 
-    assert len(conn.executed) == 1
-    sql, params = conn.executed[0]
-    assert _normalised(sql).startswith("INSERT INTO tickets")
-    assert params[:5] == (
-        TICKET_ID, "triaged", "Cannot log in", "Account locked.", "cust-1",
+    assert row.id == UUID(TICKET_ID)
+    assert (row.subject, row.body, row.customer_id) == (
+        "Cannot log in", "Account locked.", "cust-1",
     )
-    assert params[5:9] == ("account", "high", 0.95, "account-management-urgent")
-    assert params[9] == "Your lockout clears after 1 hour."
-    assert params[11:] == (False, None)
+    assert (row.category, row.urgency, row.confidence) == ("account", "high", 0.95)
+    assert row.routing_target == "account-management-urgent"
+    assert row.suggested_reply == "Your lockout clears after 1 hour."
+    assert (row.needs_human_review, row.review_reason) == (False, None)
 
 
-def test_save_ticket_values_are_parameters_not_part_of_the_sql(conn):
-    ticket = TicketIn(subject="Robert'); DROP TABLE tickets;--", body="b")
+def test_flagged_result_becomes_pending_review():
+    row = store._to_row(TicketIn(subject="s", body="b"), make_result(needs_human_review=True))
 
-    store.save_ticket(ticket, make_result())
-
-    sql, params = conn.executed[0]
-    assert "DROP TABLE" not in sql
-    assert ticket.subject in params
+    assert row.status == "pending_review"
+    assert (row.needs_human_review, row.review_reason) == (True, "Needs a look.")
 
 
-def test_flagged_result_is_saved_as_pending_review(conn):
-    store.save_ticket(TicketIn(subject="s", body="b"), make_result(needs_human_review=True))
+def test_unflagged_result_becomes_triaged():
+    row = store._to_row(TicketIn(subject="s", body="b"), make_result(needs_human_review=False))
 
-    _, params = conn.executed[0]
-    assert params[1] == "pending_review"
-    assert params[11:] == (True, "Needs a look.")
+    assert row.status == "triaged"
 
 
-def test_unflagged_result_is_saved_as_triaged(conn):
-    store.save_ticket(TicketIn(subject="s", body="b"), make_result(needs_human_review=False))
-
-    _, params = conn.executed[0]
-    assert params[1] == "triaged"
-
-
-def test_kb_sources_are_saved_as_a_jsonb_list_of_dicts(conn):
+def test_kb_sources_become_a_list_of_plain_dicts():
     matches = [
         KbMatch(topic="account lockout", content="Clears after 1 hour.", distance=0.33),
         KbMatch(topic="password reset", content="Use the reset link.", distance=0.41),
     ]
 
-    store.save_ticket(TicketIn(subject="s", body="b"), make_result(kb_sources=matches))
+    row = store._to_row(TicketIn(subject="s", body="b"), make_result(kb_sources=matches))
 
-    kb_param = conn.executed[0][1][10]
-    assert isinstance(kb_param, Jsonb)
-    assert kb_param.obj == [
+    assert row.kb_sources == [
         {"topic": "account lockout", "content": "Clears after 1 hour.", "distance": 0.33},
         {"topic": "password reset", "content": "Use the reset link.", "distance": 0.41},
     ]
 
 
-def test_no_kb_sources_are_saved_as_an_empty_jsonb_list(conn):
-    store.save_ticket(TicketIn(subject="s", body="b"), make_result())
+def test_no_kb_sources_become_an_empty_list():
+    row = store._to_row(TicketIn(subject="s", body="b"), make_result())
 
-    kb_param = conn.executed[0][1][10]
-    assert isinstance(kb_param, Jsonb)
-    assert kb_param.obj == []
+    assert row.kb_sources == []
 
 
-# --- get_ticket -------------------------------------------------------------
+def test_a_malformed_ticket_id_is_rejected_before_any_database_work():
+    result = make_result().model_copy(update={"ticket_id": "not-a-uuid"})
 
-def test_get_ticket_returns_a_ticket_record_from_the_row(conn):
-    conn.rows = [make_row()]
+    with pytest.raises(ValueError):
+        store._to_row(TicketIn(subject="s", body="b"), result)
 
-    record = store.get_ticket(TICKET_ID)
+
+# --- _to_record -------------------------------------------------------------
+
+def test_to_record_maps_a_row_back_to_a_ticket_record():
+    record = store._to_record(make_row())
 
     assert isinstance(record, TicketRecord)
     assert record.ticket_id == TICKET_ID
     assert record.status == TicketStatus.triaged
-    assert record.subject == "Cannot log in"
-    assert record.customer_id == "cust-1"
     assert record.category == Category.account
+    assert record.urgency == Urgency.high
+    assert record.customer_id == "cust-1"
     assert record.created_at == CREATED_AT
     assert record.kb_sources == [
         KbMatch(topic="account lockout", content="Clears after 1 hour.", distance=0.33)
     ]
-    sql, params = conn.executed[0]
-    assert "WHERE id = %s" in sql
-    assert params == (TICKET_ID,)
 
 
-def test_get_ticket_returns_none_when_there_is_no_row(conn):
-    conn.rows = []
+def test_a_saved_result_survives_the_round_trip_through_a_row():
+    matches = [KbMatch(topic="account lockout", content="Clears after 1 hour.", distance=0.33)]
+    row = store._to_row(
+        TicketIn(subject="s", body="b", customer_id="c"),
+        make_result(needs_human_review=True, kb_sources=matches),
+    )
+    row.created_at = CREATED_AT  # the database fills this in on insert
+
+    record = store._to_record(row)
+
+    assert record.ticket_id == TICKET_ID
+    assert record.status == TicketStatus.pending_review
+    assert record.kb_sources == matches
+    assert (record.subject, record.body, record.customer_id) == ("s", "b", "c")
+
+
+# --- save_ticket / get_ticket / list_tickets (no database) ------------------
+
+def test_save_ticket_adds_one_row_in_one_session(session):
+    store.save_ticket(TicketIn(subject="s", body="b"), make_result())
+
+    assert len(session.added) == 1
+    assert isinstance(session.added[0], TicketRow)
+    assert session.added[0].id == UUID(TICKET_ID)
+
+
+def test_get_ticket_looks_the_row_up_by_primary_key(session):
+    session._get_result = make_row()
+
+    record = store.get_ticket(TICKET_ID)
+
+    assert session.get_calls == [(TicketRow, UUID(TICKET_ID))]
+    assert record.ticket_id == TICKET_ID
+
+
+def test_get_ticket_returns_none_when_there_is_no_row(session):
+    session._get_result = None
 
     assert store.get_ticket(TICKET_ID) is None
 
 
-# --- list_tickets -----------------------------------------------------------
+def _compiled(query):
+    return query.compile(dialect=postgresql.dialect())
 
-def test_list_tickets_without_a_status_has_no_where_clause(conn):
-    conn.rows = [make_row()]
 
-    records = store.list_tickets()
+def test_list_tickets_without_a_status_has_no_where_clause(session):
+    store.list_tickets()
 
-    assert [r.ticket_id for r in records] == [TICKET_ID]
-    sql, params = conn.executed[0]
+    compiled = _compiled(session.queries[0])
+    sql = _normalised(str(compiled))
     assert "WHERE" not in sql
-    assert "ORDER BY created_at DESC" in sql
-    assert params == [50]
+    assert "ORDER BY tickets.created_at DESC" in sql
+    assert 50 in compiled.params.values()
 
 
-def test_list_tickets_with_a_status_adds_the_filter_and_passes_the_limit(conn):
+def test_list_tickets_with_a_status_adds_the_filter_and_passes_the_limit(session):
     store.list_tickets(status=TicketStatus.pending_review, limit=10)
 
-    sql, params = conn.executed[0]
-    assert "WHERE status = %s" in sql
-    assert "ORDER BY created_at DESC" in sql
-    assert params == ["pending_review", 10]
+    compiled = _compiled(session.queries[0])
+    sql = _normalised(str(compiled))
+    assert "WHERE tickets.status =" in sql
+    assert "ORDER BY tickets.created_at DESC" in sql
+    assert set(compiled.params.values()) == {"pending_review", 10}
 
 
-def test_list_tickets_returns_an_empty_list_when_there_are_no_rows(conn):
-    conn.rows = []
-
-    assert store.list_tickets() == []
-
-
-def test_list_tickets_maps_every_row(conn):
-    conn.rows = [
+def test_list_tickets_maps_every_row(session):
+    session._scalars_result = [
         make_row(),
         make_row(id=UUID("87654321-4321-8765-4321-876543218765"), status="pending_review"),
     ]
@@ -246,3 +291,7 @@ def test_list_tickets_maps_every_row(conn):
     records = store.list_tickets()
 
     assert [r.status for r in records] == [TicketStatus.triaged, TicketStatus.pending_review]
+
+
+def test_list_tickets_returns_an_empty_list_when_there_are_no_rows(session):
+    assert store.list_tickets() == []

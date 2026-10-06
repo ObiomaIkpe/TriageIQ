@@ -4,6 +4,7 @@ import anthropic
 import httpx
 import psycopg
 import pytest
+import sqlalchemy.exc
 from fastapi.testclient import TestClient
 
 from app.api import triage as triage_api
@@ -201,6 +202,21 @@ def test_low_confidence_ticket_is_saved_too_without_a_reply(fakes):
 
 def test_database_outage_while_saving_returns_503_with_retry_after(fakes):
     fakes.save_error = psycopg.OperationalError("connection refused")
+
+    response = client.post("/triage", json=TICKET)
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == str(RETRY_AFTER_SECONDS)
+    assert response.json() == {
+        "detail": "Database temporarily unavailable. Please retry."
+    }
+
+
+def test_sqlalchemy_database_outage_while_saving_also_returns_503(fakes):
+    # SQLAlchemy wraps the driver error in its own OperationalError.
+    fakes.save_error = sqlalchemy.exc.OperationalError(
+        "INSERT INTO tickets ...", {}, psycopg.OperationalError("connection refused")
+    )
 
     response = client.post("/triage", json=TICKET)
 
