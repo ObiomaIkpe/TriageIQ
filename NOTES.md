@@ -37,6 +37,18 @@ The `retrieve_kb` node finds up to 3 KB articles close in meaning to the ticket,
 - **Seeding (`ingest.py`).** A script, run with `python -m app.kb.ingest`. It is safe to re-run: documents are identified by `topic`, and re-running updates an existing topic's content and embedding in place instead of adding a row. It creates the table, then embeds and saves 5 sample FAQ documents (password reset, billing cycle, account lockout, subscription cancellation, two-factor authentication). It sleeps 20 seconds between documents to stay under the Voyage free-tier limit of 3 requests per minute.
 - **Nothing close enough.** If the table is empty or no article is within the cutoff, search returns `[]` and the drafter and critic see "No relevant knowledge base articles found."
 
+## Tickets (`app/tickets/`)
+
+Every successful triage is saved, so results can be read back and, later, paused for human review.
+
+- **Table `tickets`** (created at startup by `init_ticket_schema()`, alongside the KB table): `id` (UUID, primary key), `status`, the original `subject`, `body` and `customer_id`, the triage result (`category`, `urgency`, `confidence`, `routing_target`, `suggested_reply`, `kb_sources` as JSONB, `needs_human_review`, `review_reason`), and `created_at` / `updated_at`. Index on `(status, created_at)`.
+- **Statuses.** `pending_review` when the result is flagged for human review, otherwise `triaged`.
+- **The ticket id is created before the graph runs** (`uuid4()` in `app/api/triage.py`), so a paused graph run can later use it as its LangGraph thread id. `POST /triage` returns it as `ticket_id`.
+- **When rows are saved.** After a successful graph run only, and low-confidence tickets are saved too. If the graph fails, nothing is saved.
+- **Endpoints.** `GET /tickets?status=<triaged|pending_review>&limit=<1-200, default 50>` lists newest first. `GET /tickets/{ticket_id}` returns one ticket, 404 if missing, 422 for a malformed id.
+- **A failed save returns 503.** `psycopg.OperationalError` (database unreachable) gets a 503 with `Retry-After`, the same as LLM outages. Note that the triage work has already been done and paid for when the save fails, and the response is lost with it.
+- **Shared connection helper:** `app/db.py` (`get_connection`), used by both the KB and ticket stores.
+
 ## Gaps and things to consider
 
 ### 1. Wasted LLM call on low-confidence tickets (RESOLVED)
