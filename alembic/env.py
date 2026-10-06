@@ -13,8 +13,11 @@ import app.tickets.orm  # noqa: F401
 
 config = context.config
 
-# Keep the app's own loggers when migrations run from inside the app.
-if config.config_file_name is not None:
+# When migrations run from inside the app (app/migrations.py), the app's own
+# logging stays in charge. From the alembic command line this still applies.
+if config.config_file_name is not None and config.attributes.get(
+    "configure_logger", True
+):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata

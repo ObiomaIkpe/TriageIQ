@@ -9,21 +9,17 @@ from app.api.tickets import router as tickets_router
 from app.api.triage import router as triage_router
 from app.errors import register_error_handlers
 from app.kb.bootstrap import init_schema_with_retry
-from app.kb.store import check_database, init_schema
-from app.tickets.store import init_ticket_schema
+from app.kb.store import check_database
+from app.migrations import run_migrations
 
 logger = logging.getLogger(__name__)
 
 
-def init_all_schemas() -> None:
-    init_schema()
-    init_ticket_schema()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Runs in a thread because it may sleep while waiting for Postgres.
-    await asyncio.to_thread(init_schema_with_retry, init_all_schemas)
+    # Applies any pending Alembic migrations. Runs in a thread because it may
+    # sleep while waiting for Postgres.
+    await asyncio.to_thread(init_schema_with_retry, run_migrations)
     yield
 
 

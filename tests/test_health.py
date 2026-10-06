@@ -31,17 +31,7 @@ def test_not_ready_when_the_database_is_down(monkeypatch):
     }
 
 
-def test_init_all_schemas_creates_the_kb_schema_then_the_tickets_schema(monkeypatch):
-    order = []
-    monkeypatch.setattr(main, "init_schema", lambda: order.append("kb"))
-    monkeypatch.setattr(main, "init_ticket_schema", lambda: order.append("tickets"))
-
-    main.init_all_schemas()
-
-    assert order == ["kb", "tickets"]
-
-
-def test_startup_initialises_the_schema_once(monkeypatch):
+def test_startup_runs_the_migrations_once(monkeypatch):
     calls = []
     monkeypatch.setattr(
         main, "init_schema_with_retry", lambda init: calls.append(init)
@@ -50,4 +40,4 @@ def test_startup_initialises_the_schema_once(monkeypatch):
     with TestClient(app):
         pass
 
-    assert calls == [main.init_all_schemas]
+    assert calls == [main.run_migrations]

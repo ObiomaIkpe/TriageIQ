@@ -10,12 +10,10 @@ about. Without the variable the tests are skipped, and the settings'
 DATABASE_URL is never used.
 """
 import os
-from pathlib import Path
 
 import psycopg
 import pytest
 from alembic import command
-from alembic.config import Config
 from psycopg import sql
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
@@ -24,15 +22,7 @@ from sqlalchemy.pool import NullPool
 
 from app import db
 from app.db import sqlalchemy_url
-
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def alembic_config(url: str) -> Config:
-    cfg = Config(str(ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(ROOT / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
-    return cfg
+from app.migrations import alembic_config  # noqa: F401  (re-exported for the tests)
 
 
 @pytest.fixture(scope="session")

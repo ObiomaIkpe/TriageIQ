@@ -1,8 +1,6 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-import psycopg
-from pgvector.psycopg import register_vector
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -34,11 +32,3 @@ def get_session() -> Iterator[Session]:
     """One transaction: commits when the block succeeds, rolls back if it raises."""
     with SessionLocal.begin() as session:
         yield session
-
-
-# Raw connection used by the stores until they move to SQLAlchemy.
-def get_connection() -> psycopg.Connection:
-    conn = psycopg.connect(settings.database_url, autocommit=True)
-    conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    register_vector(conn)
-    return conn

@@ -34,27 +34,6 @@ class FakeLimiter:
         self.acquired += 1
 
 
-class FakeConn:
-    """Stands in for a psycopg connection used as a context manager."""
-
-    def __init__(self, rows=None):
-        self.rows = rows or []
-        self.executed = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def execute(self, sql, params=None):
-        self.executed.append((sql, params))
-        return self
-
-    def fetchall(self):
-        return self.rows
-
-
 class FakeSession:
     """Records the statements the store executes; no database. `rows` are what
     a SELECT returns."""
@@ -283,55 +262,6 @@ def test_add_document_saves_the_embedding_of_its_content_not_its_topic(fakes, se
     store.add_document("lockout", "Accounts lock after 5 attempts.")
 
     assert fakes.voyage.calls[0]["texts"] == ["Accounts lock after 5 attempts."]
-
-
-# --- init_schema ------------------------------------------------------------
-
-def _normalised(sql):
-    return " ".join(sql.split())
-
-
-def test_init_schema_creates_table_then_removes_duplicates_then_adds_unique_index(
-    monkeypatch,
-):
-    conn = FakeConn()
-    monkeypatch.setattr(store, "get_connection", lambda: conn)
-
-    store.init_schema()
-
-    statements = [_normalised(sql) for sql, _ in conn.executed]
-    assert len(statements) == 3
-    assert statements[0].startswith("CREATE TABLE IF NOT EXISTS kb_documents")
-    assert statements[1] == (
-        "DELETE FROM kb_documents a USING kb_documents b "
-        "WHERE a.topic = b.topic AND a.id > b.id"
-    )
-    assert statements[2] == (
-        "CREATE UNIQUE INDEX IF NOT EXISTS kb_documents_topic_key "
-        "ON kb_documents (topic)"
-    )
-
-
-def test_init_schema_uses_if_not_exists_for_the_table_and_the_index(monkeypatch):
-    conn = FakeConn()
-    monkeypatch.setattr(store, "get_connection", lambda: conn)
-
-    store.init_schema()
-
-    statements = [_normalised(sql) for sql, _ in conn.executed]
-    assert "IF NOT EXISTS" in statements[0]
-    assert "IF NOT EXISTS" in statements[2]
-
-
-def test_init_schema_runs_the_same_statements_every_time(monkeypatch):
-    conn = FakeConn()
-    monkeypatch.setattr(store, "get_connection", lambda: conn)
-
-    store.init_schema()
-    store.init_schema()
-
-    assert len(conn.executed) == 6
-    assert conn.executed[:3] == conn.executed[3:]
 
 
 # --- check_database ---------------------------------------------------------

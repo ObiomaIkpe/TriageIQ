@@ -20,23 +20,6 @@ TICKET_ID = "12345678-1234-5678-1234-567812345678"
 CREATED_AT = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
 
 
-class FakeConn:
-    """Stands in for a psycopg connection used as a context manager."""
-
-    def __init__(self):
-        self.executed = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def execute(self, sql, params=None):
-        self.executed.append((sql, params))
-        return self
-
-
 class FakeSession:
     """Records what the store asks of a SQLAlchemy session; no database."""
 
@@ -113,34 +96,6 @@ def make_row(**overrides) -> TicketRow:
     )
     values.update(overrides)
     return TicketRow(**values)
-
-
-# --- init_ticket_schema (still raw SQL until startup moves to Alembic) -------
-
-def test_init_ticket_schema_creates_the_table_then_the_index(monkeypatch):
-    conn = FakeConn()
-    monkeypatch.setattr(store, "get_connection", lambda: conn)
-
-    store.init_ticket_schema()
-
-    statements = [_normalised(sql) for sql, _ in conn.executed]
-    assert len(statements) == 2
-    assert statements[0].startswith("CREATE TABLE IF NOT EXISTS tickets")
-    assert statements[1] == (
-        "CREATE INDEX IF NOT EXISTS tickets_status_created_idx "
-        "ON tickets (status, created_at)"
-    )
-
-
-def test_init_ticket_schema_runs_the_same_statements_every_time(monkeypatch):
-    conn = FakeConn()
-    monkeypatch.setattr(store, "get_connection", lambda: conn)
-
-    store.init_ticket_schema()
-    store.init_ticket_schema()
-
-    assert len(conn.executed) == 4
-    assert conn.executed[:2] == conn.executed[2:]
 
 
 # --- _to_row ----------------------------------------------------------------
