@@ -9,6 +9,7 @@ import voyageai.error
 
 from app.config import settings
 from app.kb.ratelimit import RateLimiter
+from app.models import KbMatch
 
 EMBEDDING_DIM = 1024  # voyage-3 output dimension
 EMBEDDING_MODEL = "voyage-3"
@@ -120,8 +121,8 @@ def add_document(topic: str, content: str) -> None:
         )
 
 
-def search_similar(query_text: str, top_k: int = 3) -> list[str]:
-    """Return up to top_k KB document contents within MAX_DISTANCE of the query.
+def search_similar(query_text: str, top_k: int = 3) -> list[KbMatch]:
+    """Return up to top_k KB matches within MAX_DISTANCE of the query.
 
     May return fewer than top_k, or an empty list if nothing is close enough.
     """
@@ -129,11 +130,15 @@ def search_similar(query_text: str, top_k: int = 3) -> list[str]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT content FROM kb_documents
+            SELECT topic, content, embedding <=> %s::vector AS distance
+            FROM kb_documents
             WHERE embedding <=> %s::vector < %s
-            ORDER BY embedding <=> %s::vector
+            ORDER BY distance
             LIMIT %s
             """,
-            (query_embedding, MAX_DISTANCE, query_embedding, top_k),
+            (query_embedding, query_embedding, MAX_DISTANCE, top_k),
         ).fetchall()
-    return [row[0] for row in rows]
+    return [
+        KbMatch(topic=topic, content=content, distance=distance)
+        for topic, content, distance in rows
+    ]

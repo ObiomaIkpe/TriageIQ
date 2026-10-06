@@ -2,7 +2,10 @@ import pytest
 
 from app.graph import kb_retrieval
 from app.graph.kb_retrieval import retrieve_kb_context
-from app.models import TicketIn
+from app.models import KbMatch, TicketIn
+
+ARTICLE_A = KbMatch(topic="topic a", content="Article A", distance=0.2)
+ARTICLE_B = KbMatch(topic="topic b", content="Article B", distance=0.4)
 
 
 @pytest.fixture
@@ -25,11 +28,11 @@ def make_state() -> dict:
 
 
 def test_matches_are_stored_in_kb_context(fake_search):
-    fake_search.results = ["Article A", "Article B"]
+    fake_search.results = [ARTICLE_A, ARTICLE_B]
 
     result = retrieve_kb_context(make_state())
 
-    assert result["kb_context"] == ["Article A", "Article B"]
+    assert result["kb_context"] == [ARTICLE_A, ARTICLE_B]
 
 
 def test_no_matches_gives_empty_list(fake_search):
@@ -78,7 +81,7 @@ def test_search_failure_degrades_to_empty_context_and_sets_flag(monkeypatch):
 
 
 def test_successful_search_clears_the_failure_flag(fake_search):
-    fake_search.results = ["Article A"]
+    fake_search.results = [ARTICLE_A]
 
     result = retrieve_kb_context(make_state())
 

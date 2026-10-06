@@ -3,6 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.config import settings
+from app.graph.formatting import format_kb_context
 from app.models import GraphState
 
 _prompt = ChatPromptTemplate.from_messages([
@@ -33,7 +34,7 @@ def draft_reply(state: GraphState) -> GraphState:
     kb_context = state.get("kb_context", [])
 
     context_text = (
-        "\n".join(f"- {snippet}" for snippet in kb_context)
+        format_kb_context(kb_context)
         if kb_context else "No relevant knowledge base articles found."
     )
 

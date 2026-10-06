@@ -32,13 +32,19 @@ class ClassificationResult(BaseModel):
     reasoning: str
 
 
+class KbMatch(BaseModel):
+    topic: str
+    content: str
+    distance: float
+
+
 class TriageResult(BaseModel):
     category: Category
     urgency: Urgency
     confidence: float
     routing_target: str
     suggested_reply: Optional[str] = None
-    kb_sources: list[str] = Field(default_factory=list)
+    kb_sources: list[KbMatch] = Field(default_factory=list)
     needs_human_review: bool
     review_reason: Optional[str] = None
 
@@ -51,5 +57,5 @@ class GraphState(TypedDict, total=False):
     draft_reply: str
     needs_human_review: bool
     review_reason: str
-    kb_context: list[str]
+    kb_context: list[KbMatch]
     kb_failed: bool

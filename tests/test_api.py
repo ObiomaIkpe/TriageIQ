@@ -5,11 +5,22 @@ from app.api import triage as triage_api
 from app.graph import classifier, critic, kb_retrieval, reply_draft
 from app.graph.critic import CritiqueResult
 from app.main import app
-from app.models import Category, ClassificationResult, Urgency
+from app.models import Category, ClassificationResult, KbMatch, Urgency
 
 client = TestClient(app)
 
 TICKET = {"subject": "Cannot log in", "body": "Account locked."}
+
+KB_MATCH = KbMatch(
+    topic="account lockout",
+    content="Lockout clears automatically after 1 hour.",
+    distance=0.33,
+)
+KB_MATCH_JSON = {
+    "topic": "account lockout",
+    "content": "Lockout clears automatically after 1 hour.",
+    "distance": 0.33,
+}
 
 
 class FakeChain:
@@ -40,7 +51,7 @@ def fakes(monkeypatch):
     )
     f.draft = FakeChain("Your lockout clears after 1 hour.")
     f.critic = FakeChain(CritiqueResult(needs_human_review=False, reason=""))
-    f.kb_results = ["Lockout clears automatically after 1 hour."]
+    f.kb_results = [KB_MATCH]
 
     monkeypatch.setattr(classifier, "_chain", f.classify)
     monkeypatch.setattr(reply_draft, "_chain", f.draft)
@@ -75,7 +86,7 @@ def test_grounded_ticket_is_triaged_and_not_flagged(fakes):
         "confidence": 0.95,
         "routing_target": "account-management-urgent",
         "suggested_reply": "Your lockout clears after 1 hour.",
-        "kb_sources": ["Lockout clears automatically after 1 hour."],
+        "kb_sources": [KB_MATCH_JSON],
         "needs_human_review": False,
         "review_reason": None,
     }
@@ -99,7 +110,7 @@ def test_critic_llm_can_flag_a_ticket_that_has_a_kb_match(fakes):
 
     body = client.post("/triage", json=TICKET).json()
 
-    assert body["kb_sources"] == ["Lockout clears automatically after 1 hour."]
+    assert body["kb_sources"] == [KB_MATCH_JSON]
     assert body["needs_human_review"] is True
     assert body["review_reason"] == "Reply adds a claim not in the article."
 

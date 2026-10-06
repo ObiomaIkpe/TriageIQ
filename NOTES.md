@@ -20,7 +20,7 @@ The graph has one conditional edge, after `route`. The threshold is `low_confide
 |---|---|---|---|
 | `classify` | `graph/classifier.py` | `classification` | LLM, temperature 0, `with_structured_output(ClassificationResult)` |
 | `route` | `graph/router.py` | `routing_target` | No LLM. Map lookup by category, plus `-urgent` suffix for high/critical |
-| `retrieve_kb` | `graph/kb_retrieval.py` | `kb_context` | Vector search on subject + body: up to 3 matches within 0.5 cosine distance (may be none) |
+| `retrieve_kb` | `graph/kb_retrieval.py` | `kb_context` | Vector search on subject + body: up to 3 matches within 0.5 cosine distance (may be none). Each match is a `KbMatch` (`topic`, `content`, `distance`), and the API returns them as-is in `kb_sources` |
 | `draft_reply_node` | `graph/reply_draft.py` | `draft_reply` | LLM, temperature 0.3, grounded in `kb_context` |
 | `flag_low_confidence` | `graph/flag_low_confidence.py` | `needs_human_review`, `review_reason` | No LLM. Runs instead of the three nodes below when confidence is under the threshold |
 | `critique` | `graph/critic.py` | `needs_human_review`, `review_reason` | Flags without an LLM call if the KB failed or had no match. Otherwise an LLM reviews the draft against the ticket, classification and `kb_context` |
@@ -33,7 +33,7 @@ The `retrieve_kb` node finds up to 3 KB articles close in meaning to the ticket,
 
 - **Embedding (`store.py: embed_text`).** Text is sent to Voyage AI (`voyage-3`), which returns 1024 numbers. `input_type` is `"document"` when storing articles and `"query"` when searching, because Voyage tunes the embeddings differently for each.
 - **Storage.** Articles live in Postgres, table `kb_documents` (`id`, `topic`, `content`, `embedding VECTOR(1024)`), using the `pgvector` extension.
-- **Search (`search_similar`).** Keeps articles with `embedding <=> query_embedding < MAX_DISTANCE` (cosine distance, `MAX_DISTANCE = 0.5`), ordered closest first, `LIMIT 3`. It returns a plain `list[str]` of article contents, which may be shorter than 3 or empty.
+- **Search (`search_similar`).** Keeps articles with `embedding <=> query_embedding < MAX_DISTANCE` (cosine distance, `MAX_DISTANCE = 0.5`), ordered closest first, `LIMIT 3`. It returns a `list[KbMatch]` (`topic`, `content`, `distance`), which may be shorter than 3 or empty. The drafter and critic see each match as a `- [topic] content` line (`graph/formatting.py`).
 - **Seeding (`ingest.py`).** A one-off script, run with `python -m app.kb.ingest`. It creates the table, then embeds and inserts 5 sample FAQ documents (password reset, billing cycle, account lockout, subscription cancellation, two-factor authentication). It sleeps 20 seconds between documents to stay under the Voyage free-tier limit of 3 requests per minute.
 - **Nothing close enough.** If the table is empty or no article is within the cutoff, search returns `[]` and the drafter and critic see "No relevant knowledge base articles found."
 
@@ -62,7 +62,7 @@ Ticket text goes straight into the classifier, drafter and critic prompts, and t
 
 ### 8. Knowledge base gaps
 - **Voyage rate limit at request time.** `ingest.py` sleeps 20 seconds between documents because of a 3 requests-per-minute free-tier limit. But every triage request also makes one Voyage embedding call in `search_similar`. On the free tier, the endpoint would hit the limit after about 3 requests in a minute. Not tested; this follows from the limit stated in the `ingest.py` comment.
-- **`topic` is never returned.** `search_similar` selects only `content`, so the drafter and the API's `kb_sources` can't show which article a snippet came from.
+- **`topic` is never returned (RESOLVED).** `search_similar` now selects `topic`, `content` and the cosine distance and returns `KbMatch` objects, so the drafter, the critic and the API's `kb_sources` can all show which article a snippet came from. `kb_sources` changed from a list of strings to a list of `{topic, content, distance}` objects.
 - **New database connection on every call.** `get_connection()` opens one each time and also runs `CREATE EXTENSION IF NOT EXISTS vector`. Fine at low traffic; a connection pool is the usual fix.
 - **Ingest is not idempotent.** `kb_documents` has no unique constraint on `topic`, so running `python -m app.kb.ingest` twice inserts every document twice, and duplicates can fill the top 3 results.
 - **Extra latency.** Each retrieval is a Voyage API call plus a Postgres query, even though no LLM is involved.

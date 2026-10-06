@@ -2,10 +2,14 @@ import pytest
 
 from app.graph import critic
 from app.graph.critic import CritiqueResult, critique
-from app.models import Category, ClassificationResult, TicketIn, Urgency
+from app.models import Category, ClassificationResult, KbMatch, TicketIn, Urgency
 
 _UNSET = object()
-DEFAULT_KB = ["Lockout clears after 1 hour."]
+DEFAULT_KB = [
+    KbMatch(topic="account lockout", content="Lockout clears after 1 hour.", distance=0.3)
+]
+ARTICLE_A = KbMatch(topic="topic a", content="Article A", distance=0.2)
+ARTICLE_B = KbMatch(topic="topic b", content="Article B", distance=0.4)
 
 
 class FakeChain:
@@ -105,12 +109,12 @@ def test_llm_flag_and_reason_are_passed_through(fake_chain):
     assert result["review_reason"] == "Claim not in the article."
 
 
-def test_kb_snippets_are_sent_to_the_llm_as_bullets(fake_chain):
-    critique(make_state(kb_context=["Article A", "Article B"]))
+def test_kb_matches_are_sent_to_the_llm_as_bullets_with_their_topic(fake_chain):
+    critique(make_state(kb_context=[ARTICLE_A, ARTICLE_B]))
 
     sent = fake_chain.calls[0]["kb_context"]
-    assert "- Article A" in sent
-    assert "- Article B" in sent
+    assert "- [topic a] Article A" in sent
+    assert "- [topic b] Article B" in sent
 
 
 def test_llm_receives_ticket_classification_and_draft(fake_chain):
