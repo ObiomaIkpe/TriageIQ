@@ -456,12 +456,20 @@ def api(monkeypatch, fakes):
     a.saved = []
     a.client = TestClient(app)
     monkeypatch.setattr(triage_api, "uuid4", lambda: UUID(TICKET_ID))
-    monkeypatch.setattr(triage_api, "save_ticket", lambda ticket, result: a.saved.append((ticket, result)))
+    monkeypatch.setattr(triage_api, "new_reference", lambda: REFERENCE)
+
+    def save(ticket, result):
+        a.saved.append((ticket, result))
+        return result.reference
+
+    monkeypatch.setattr(triage_api, "save_ticket", save)
     return a
 
 
+REFERENCE = "TKT-ABC234"
+
 EXPECTED_KEYS = {
-    "ticket_id", "category", "urgency", "confidence", "routing_target", "suggested_reply",
+    "ticket_id", "reference", "category", "urgency", "confidence", "routing_target", "suggested_reply",
     "kb_sources", "needs_human_review", "review_reason",
 }
 
@@ -477,6 +485,7 @@ def test_a_flagged_ticket_returns_the_usual_json_and_no_interrupt_key(api, fakes
     assert "__interrupt__" not in response.text
     assert body == {
         "ticket_id": TICKET_ID,
+        "reference": REFERENCE,
         "category": "account",
         "urgency": "high",
         "confidence": 0.95,

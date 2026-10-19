@@ -24,6 +24,7 @@ CREATED_AT = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
 def make_record(**overrides) -> TicketRecord:
     values = dict(
         ticket_id=TICKET_ID,
+        reference="TKT-ABC234",
         status=TicketStatus.triaged,
         subject="Cannot log in",
         body="Account locked.",
@@ -164,3 +165,49 @@ def test_list_tickets_accepts_the_limit_boundaries(monkeypatch, limit):
     response = client.get("/tickets", params={"limit": limit})
 
     assert response.status_code == 200
+
+
+# --- review fields and statuses ---------------------------------------------
+
+REVIEWED_AT = datetime(2026, 10, 19, 15, 0, tzinfo=timezone.utc)
+
+
+def test_get_ticket_returns_the_reference_and_the_review_fields(monkeypatch):
+    record = make_record(
+        status=TicketStatus.edited,
+        final_reply="We will call you.",
+        review_note="Tone fixed.",
+        reviewed_at=REVIEWED_AT,
+    )
+    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id: record)
+
+    body = client.get(f"/tickets/{TICKET_ID}").json()
+
+    assert body["reference"] == "TKT-ABC234"
+    assert body["status"] == "edited"
+    assert body["final_reply"] == "We will call you."
+    assert body["review_note"] == "Tone fixed."
+    assert body["reviewed_at"] == "2026-10-19T15:00:00Z"
+
+
+def test_an_unreviewed_ticket_has_null_review_fields(monkeypatch):
+    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id: make_record())
+
+    body = client.get(f"/tickets/{TICKET_ID}").json()
+
+    assert body["final_reply"] is None
+    assert body["review_note"] is None
+    assert body["reviewed_at"] is None
+
+
+@pytest.mark.parametrize("status", ["approved", "edited", "rejected"])
+def test_list_tickets_accepts_the_review_statuses(monkeypatch, status):
+    seen = []
+    monkeypatch.setattr(
+        tickets_api, "list_tickets", lambda status, limit: seen.append(status) or []
+    )
+
+    response = client.get("/tickets", params={"status": status})
+
+    assert response.status_code == 200
+    assert seen == [TicketStatus(status)]

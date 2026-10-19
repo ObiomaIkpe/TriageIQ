@@ -36,11 +36,12 @@ def test_embedding_column_has_the_voyage_dimension():
 
 # --- tickets ----------------------------------------------------------------
 
-def test_tickets_columns_match_the_raw_sql_schema():
+def test_tickets_columns_match_the_migrations():
     assert list(TicketRow.__table__.c.keys()) == [
-        "id", "status", "subject", "body", "customer_id",
+        "id", "reference", "status", "subject", "body", "customer_id",
         "category", "urgency", "confidence", "routing_target",
         "suggested_reply", "kb_sources", "needs_human_review", "review_reason",
+        "final_reply", "review_note", "reviewed_at",
         "created_at", "updated_at",
     ]
 
@@ -48,7 +49,10 @@ def test_tickets_columns_match_the_raw_sql_schema():
 def test_tickets_nullable_columns_are_only_the_optional_ones():
     nullable = {c.name for c in TicketRow.__table__.c if c.nullable}
 
-    assert nullable == {"customer_id", "suggested_reply", "review_reason"}
+    assert nullable == {
+        "customer_id", "suggested_reply", "review_reason",
+        "final_reply", "review_note", "reviewed_at",
+    }
 
 
 def test_tickets_id_is_a_uuid_primary_key_generated_by_the_database():

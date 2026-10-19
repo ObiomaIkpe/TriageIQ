@@ -64,6 +64,7 @@ def _normalised(sql):
 def make_result(needs_human_review=False, kb_sources=None) -> TriageResult:
     return TriageResult(
         ticket_id=TICKET_ID,
+        reference="TKT-ABC234",
         category=Category.account,
         urgency=Urgency.high,
         confidence=0.95,
@@ -78,6 +79,7 @@ def make_result(needs_human_review=False, kb_sources=None) -> TriageResult:
 def make_row(**overrides) -> TicketRow:
     values = dict(
         id=UUID(TICKET_ID),
+        reference="TKT-ABC234",
         status="triaged",
         subject="Cannot log in",
         body="Account locked.",

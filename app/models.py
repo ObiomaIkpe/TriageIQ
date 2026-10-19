@@ -42,10 +42,14 @@ class KbMatch(BaseModel):
 class TicketStatus(str, Enum):
     triaged = "triaged"
     pending_review = "pending_review"
+    approved = "approved"
+    edited = "edited"
+    rejected = "rejected"
 
 
 class TriageResult(BaseModel):
     ticket_id: str
+    reference: str
     category: Category
     urgency: Urgency
     confidence: float
@@ -62,6 +66,9 @@ class TicketRecord(TriageResult):
     body: str
     customer_id: Optional[str] = None
     created_at: datetime
+    final_reply: Optional[str] = None
+    review_note: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
 
 
 class ReviewDecision(BaseModel):

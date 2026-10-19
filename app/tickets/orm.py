@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Double, Index, Text, func, text
+from sqlalchemy import Boolean, DateTime, Double, Index, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,6 +17,7 @@ class TicketRow(Base):
         primary_key=True,
         server_default=text("gen_random_uuid()"),
     )
+    reference: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text)
     subject: Mapped[str] = mapped_column(Text)
     body: Mapped[str] = mapped_column(Text)
@@ -31,6 +32,9 @@ class TicketRow(Base):
     )
     needs_human_review: Mapped[bool] = mapped_column(Boolean)
     review_reason: Mapped[Optional[str]] = mapped_column(Text)
+    final_reply: Mapped[Optional[str]] = mapped_column(Text)
+    review_note: Mapped[Optional[str]] = mapped_column(Text)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -38,5 +42,8 @@ class TicketRow(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    # The name matches the index the raw-SQL setup created.
-    __table_args__ = (Index("tickets_status_created_idx", "status", "created_at"),)
+    __table_args__ = (
+        # The name matches the index the raw-SQL setup created.
+        Index("tickets_status_created_idx", "status", "created_at"),
+        UniqueConstraint("reference", name="tickets_reference_key"),
+    )

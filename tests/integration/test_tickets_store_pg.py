@@ -14,13 +14,17 @@ from app.models import (
 )
 from app.tickets import store
 from app.tickets.orm import TicketRow
+from app.tickets.reference import new_reference
 
 pytestmark = pytest.mark.integration
 
 
-def make_result(ticket_id=None, needs_human_review=False, kb_sources=None) -> TriageResult:
+def make_result(
+    ticket_id=None, needs_human_review=False, kb_sources=None, reference=None
+) -> TriageResult:
     return TriageResult(
         ticket_id=ticket_id or str(uuid4()),
+        reference=reference or new_reference(),
         category=Category.account,
         urgency=Urgency.high,
         confidence=0.95,
@@ -131,7 +135,7 @@ def _insert_with_created_at(test_session, created_at, status="triaged"):
     with test_session.begin() as session:
         session.add(
             TicketRow(
-                id=ticket_id, status=status, subject="s", body="b",
+                id=ticket_id, reference=new_reference(), status=status, subject="s", body="b",
                 category="account", urgency="low", confidence=0.9,
                 routing_target="general-queue", kb_sources=[],
                 needs_human_review=status == "pending_review",

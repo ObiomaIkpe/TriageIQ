@@ -13,7 +13,7 @@ Built with FastAPI, LangGraph, Claude, Voyage AI embeddings, Postgres with pgvec
 - a **suggested reply**, written only from knowledge base articles it retrieved
 - the **KB sources** it used (topic, content, cosine distance)
 - a **human-review flag** with a reason, so unsure or unsupported results do not go out unchecked
-- a **`ticket_id`**: every result is saved, and can be read back from `/tickets`
+- a **`ticket_id`** and a short, human-friendly **`reference`** (such as `TKT-7K3M9Q`): every result is saved, and can be read back from `/tickets`
 
 ## Architecture
 
@@ -67,8 +67,8 @@ flowchart LR
 | Endpoint | Purpose |
 |---|---|
 | `POST /triage` | Triage a ticket and save the result |
-| `GET /tickets?status=&limit=` | List tickets, newest first. `status` is `triaged` or `pending_review`; `limit` is 1 to 200 (default 50) |
-| `GET /tickets/{ticket_id}` | One ticket, with the original subject and body. 404 if missing, 422 for a malformed id |
+| `GET /tickets?status=&limit=` | List tickets, newest first. `status` is `triaged`, `pending_review`, `approved`, `edited` or `rejected`; `limit` is 1 to 200 (default 50) |
+| `GET /tickets/{ticket_id}` | One ticket, with the original subject and body, and the review fields (`final_reply`, `review_note`, `reviewed_at`, all null until a reviewer decides). 404 if missing, 422 for a malformed id |
 | `GET /health` | Liveness: the process is up |
 | `GET /ready` | Readiness: Postgres answers and the KB table exists |
 | `GET /docs` | Interactive OpenAPI docs |
@@ -84,6 +84,7 @@ curl -X POST localhost:8000/triage \
 ```json
 {
   "ticket_id": "3f6c1d8e-9a4b-4c21-8e0a-5b7d2f1a9c44",
+  "reference": "TKT-7K3M9Q",
   "category": "account",
   "urgency": "high",
   "confidence": 0.95,
@@ -186,8 +187,9 @@ This is a working prototype, not a finished product.
 
 - **Not yet measured on labelled data.** Classification accuracy, how often replies are flagged, and reply quality have no benchmark. The 0.6 confidence threshold and the 0.5 distance cutoff are provisional, set from a handful of examples.
 - **The confidence score is the model's own.** It is not calibrated, so treat it as a rough signal.
-- **Human review is only half built.** Flagged tickets really pause, and `resume_review()` can approve, edit or reject them, but no endpoint exposes it, the stored ticket row is not updated after a decision, and edits are not captured as feedback.
+- **Human review is only half built.** Flagged tickets really pause, and `resume_review()` can approve, edit or reject them, but no endpoint exposes it, the stored ticket row is not yet updated by the graph after a decision (the store function for that exists), and edits are not captured as feedback.
 - **A bad raw resume value strands a ticket.** Always resume through `resume_review()`, which takes a validated `ReviewDecision`. Resuming the graph by hand with an invalid value raises an error, and LangGraph then replays that same bad value on every later resume, so the ticket can no longer be reviewed.
+- **The database is ready for reviews, nothing uses it yet.** Migration `0002` adds the review columns and the `approved`, `edited` and `rejected` statuses, and the store can record a decision (`record_review`, which only succeeds on a ticket that is still `pending_review`). No endpoint calls it, and the graph is not resumed from it. **Migration `0002` is applied to a database the next time the app starts against it**, because migrations run at startup.
 - **No authentication or request limits.** The endpoints are open, and each ticket costs up to three Claude calls and one embedding call.
 - **No specific defence against prompt injection.** Ticket text goes into the prompts. The human-review flag helps, but the critic is itself an LLM reading that text.
 - **Long replies are cut off, and flagged.** Every Claude call is capped at `LLM_MAX_TOKENS` (700, about 500 words). A draft that runs longer stops mid-sentence. The app detects this (Claude's stop reason is `max_tokens`) and flags the ticket for review with the reason "Draft reply was cut off at the token limit.", but the cut-off text is still returned as `suggested_reply`. If the classifier or critic is cut off, the request fails with a `500`. How often cut-offs happen has not been measured yet, so the cap itself is untuned.

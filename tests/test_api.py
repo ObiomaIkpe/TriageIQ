@@ -21,6 +21,7 @@ client = TestClient(app)
 TICKET = {"subject": "Cannot log in", "body": "Account locked."}
 
 FIXED_UUID = UUID("12345678-1234-5678-1234-567812345678")
+FIXED_REFERENCE = "TKT-ABC234"
 
 KB_MATCH = KbMatch(
     topic="account lockout",
@@ -78,6 +79,7 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(kb_retrieval, "search_similar", _search)
     monkeypatch.setattr(triage_api, "uuid4", lambda: FIXED_UUID)
+    monkeypatch.setattr(triage_api, "new_reference", lambda: FIXED_REFERENCE)
 
     f.saved = []
     f.save_error = None
@@ -86,6 +88,7 @@ def fakes(monkeypatch):
         if f.save_error:
             raise f.save_error
         f.saved.append((ticket, result))
+        return result.reference
 
     monkeypatch.setattr(triage_api, "save_ticket", _save)
     return f
@@ -104,6 +107,7 @@ def test_grounded_ticket_is_triaged_and_not_flagged(fakes):
     assert response.status_code == 200
     assert response.json() == {
         "ticket_id": str(FIXED_UUID),
+        "reference": FIXED_REFERENCE,
         "category": "account",
         "urgency": "high",
         "confidence": 0.95,

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import get_graph
 from app.models import TicketIn, TriageResult, GraphState
+from app.tickets.reference import new_reference
 from app.tickets.store import save_ticket
 
 router = APIRouter(prefix="/triage", tags=["triage"])
@@ -14,6 +15,7 @@ def triage_ticket(ticket: TicketIn, graph=Depends(get_graph)) -> TriageResult:
     # The id exists before the graph runs, and is the run's thread id, so a
     # paused or resumed run can be found again by ticket id.
     ticket_id = str(uuid4())
+    reference = new_reference()
     initial_state: GraphState = {"ticket": ticket}
     final_state = graph.invoke(
         initial_state, config={"configurable": {"thread_id": ticket_id}}
@@ -30,6 +32,7 @@ def triage_ticket(ticket: TicketIn, graph=Depends(get_graph)) -> TriageResult:
 
     result = TriageResult(
         ticket_id=ticket_id,
+        reference=reference,
         category=classification.category,
         urgency=classification.urgency,
         confidence=classification.confidence,
@@ -44,5 +47,7 @@ def triage_ticket(ticket: TicketIn, graph=Depends(get_graph)) -> TriageResult:
 
     # Saved only after a successful graph run, so a failed run leaves no row.
     # If the save itself fails the error propagates (503 for a database outage).
-    save_ticket(ticket, result)
-    return result
+    # save_ticket returns the reference it stored: after a collision it is a new one,
+    # and the response must match the row.
+    stored_reference = save_ticket(ticket, result)
+    return result.model_copy(update={"reference": stored_reference})

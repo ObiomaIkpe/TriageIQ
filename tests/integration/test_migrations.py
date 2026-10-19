@@ -31,7 +31,7 @@ def test_upgrade_twice_is_a_no_op(migrated_database):
 
     with _engine(migrated_database).connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0001"
+    assert version == "0002"
 
 
 def test_the_orm_models_match_the_migrated_schema(migrated_database):

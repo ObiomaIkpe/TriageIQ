@@ -15,6 +15,8 @@ Baseline already in place:
 - [x] Postgres checkpointer: the graph is built at startup and every run carries `thread_id` = ticket id (the groundwork for A9)
 - [x] Explicit `LLM_MAX_TOKENS` cap, with drafts cut off at the cap flagged for human review
 - [x] LangChain and LangGraph on current stable versions, with a checkpoint serializer allowlist
+- [x] A `human_review` pause in the graph, with `resume_review()` helpers (M2.7b)
+- [x] Database support for human review (M2.8a): migration 0002 (`reference`, `final_reply`, `review_note`, `reviewed_at`), the `approved`/`edited`/`rejected` statuses, a short ticket reference in the API, and the store functions `get_ticket_by_reference` and `record_review`
 
 ---
 
@@ -38,7 +40,7 @@ Baseline already in place:
 - [ ] **A6. Parallel execution.** Run `route` and `retrieve_kb` concurrently (return only state deltas, see I3). *Done when:* measured p50 latency drops and a test shows no state conflicts.
 - [ ] **A7. Reply guardrails.** Deterministic checks before the LLM critic: no refund/credit/ETA promises unless present in KB, banned phrases, length limit, required signature, no URLs outside an allowlist. Replies cite the KB articles they used.
 - [ ] **A8. Confidence calibration.** The classifier's 0.97 is self-reported by the model and not calibrated. Combine classifier confidence, retrieval distance, and critic verdict into one calibrated score using the eval set; show a reliability diagram; choose the review threshold by cost of a missed vs unnecessary review.
-- [ ] **A9. Human-in-the-loop as a first-class step.** Use a LangGraph checkpointer and `interrupt` so a flagged ticket pauses, a human approves/edits/rejects, and the graph resumes. Capture the edit as feedback (see G9). *(partly done: the checkpointer and `thread_id` = ticket id exist, and as of M2.7b a `human_review` node pauses flagged tickets with `interrupt()` and `app/graph/review.py` can approve, edit or reject them, tested across a restart on Postgres. Still missing: a review endpoint, updating the ticket row after a decision, feedback capture (G9), and the stranding fix for bad raw resumes)*
+- [ ] **A9. Human-in-the-loop as a first-class step.** Use a LangGraph checkpointer and `interrupt` so a flagged ticket pauses, a human approves/edits/rejects, and the graph resumes. Capture the edit as feedback (see G9). *(partly done: the checkpointer and `thread_id` = ticket id exist, and as of M2.7b a `human_review` node pauses flagged tickets with `interrupt()` and `app/graph/review.py` can approve, edit or reject them, tested across a restart on Postgres. As of M2.8a the database side exists too (review columns, statuses, `record_review`). Still missing: a review endpoint that calls `record_review` and `resume_review` together, feedback capture (G9), and the stranding fix for bad raw resumes)*
 - [ ] **A10. Conversation threads.** Handle follow-ups and reopened tickets using prior messages as context.
 
 ## B. Retrieval and knowledge base
