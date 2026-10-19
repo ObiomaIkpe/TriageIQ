@@ -138,6 +138,7 @@ Settings come from the environment or `.env` (`app/config.py`).
 | `DATABASE_URL` | `postgresql://triageiq:triageiq@localhost:5432/triageiq` | Postgres. In Docker, compose overrides it to point at the `db` service |
 | `MODEL_ID` | `claude-sonnet-4-6` | Model for all three LLM steps |
 | `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | `30` / `2` | Claude call limits |
+| `LLM_MAX_TOKENS` | `700` | Longest answer each Claude step may produce, in tokens (about 500 words). A longer answer is cut off. Must be greater than 0 |
 | `LOW_CONFIDENCE_THRESHOLD` | `0.6` | Below this, a ticket goes straight to human review |
 | `VOYAGE_RPM` | `3` | Voyage requests per minute; raise it on a paid account |
 | `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | off | Optional LangSmith tracing |
@@ -185,6 +186,7 @@ This is a working prototype, not a finished product.
 - **No human-review workflow yet.** Tickets flagged `pending_review` are stored and listable, but nothing approves, edits or rejects them.
 - **No authentication or request limits.** The endpoints are open, and each ticket costs up to three Claude calls and one embedding call.
 - **No specific defence against prompt injection.** Ticket text goes into the prompts. The human-review flag helps, but the critic is itself an LLM reading that text.
+- **Long replies are cut off silently.** Every Claude call is capped at `LLM_MAX_TOKENS` (700, about 500 words). A draft that runs longer stops mid-sentence, and nothing flags it, so the critic reviews the truncated text.
 - **A failed save loses the response.** If the database goes down after the work is done, the client gets a 503 and the triage has to be paid for again on retry.
 - **A small sample KB.** Only 5 FAQ articles are included, and there are no tools for managing articles beyond the ingest script.
 - **Run one instance.** Migrations are not locked against concurrent starts.

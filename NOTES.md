@@ -108,6 +108,11 @@ Ticket text goes straight into the classifier, drafter and critic prompts, and t
 - Error handling: if any node or LLM call raises, `invoke` raises and the endpoint returns a 500. There are no retries or fallbacks.
 - Whether the endpoint should return 200 or 201 depends on whether a triage record is persisted. Currently it only computes a result, so 200 is correct.
 
+### 10. Replies longer than the token cap are cut off silently
+Every Claude call (classifier, drafter, critic) sends an explicit `max_tokens` from the setting `llm_max_tokens` (`LLM_MAX_TOKENS`, default 700, about 500 words, must be greater than 0). It is set explicitly because `langchain-anthropic`'s own default differs between versions: 1024 in 0.2.x, and the model's maximum (128000 for `claude-sonnet-4-6`) in 1.x. Without a pinned value, upgrading the library would have silently removed the cap. The request bodies were compared on both library versions and only this field differed.
+
+700 is lower than the earlier effective 1024, a deliberate choice. The consequence: a draft that runs past the cap stops mid-sentence, with stop reason `max_tokens`, and nothing checks for it, so the critic reviews the truncated text and may clear it. For the classifier and critic the structured result is far smaller than the cap. A possible fix: check the stop reason after drafting and flag the ticket for human review, or raise the drafter's cap on its own.
+
 ## Resolved
 
 ### Critic could not see the KB
