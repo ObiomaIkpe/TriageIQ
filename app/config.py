@@ -25,9 +25,13 @@ class Settings(BaseSettings):
     # drafting and critique and go straight to human review.
     low_confidence_threshold: float = 0.6
     database_url: str = "postgresql://triageiq:triageiq@localhost:5432/triageiq"
-    langchain_tracing_v2: bool = False
-    langchain_api_key: str = ""
-    langchain_project: str = "triageiq"
+    # LangSmith tracing. LangSmith reads these straight from the environment; the
+    # app itself never uses them, so they are listed here to document the names.
+    # The older LANGCHAIN_* names still work, but use ONE set: if both are present
+    # and disagree, tracing is on when either one says true.
+    langsmith_tracing: bool = False
+    langsmith_api_key: str = ""
+    langsmith_project: str = "triageiq"
     app_env: str = "development"
     log_level: str = "INFO"
 

@@ -21,9 +21,12 @@ def triage_graph_override():
 
     from app.api.deps import get_graph
     from app.graph.build import build_triage_graph
+    from app.graph.checkpointer import checkpoint_serde
     from app.main import app
 
-    graph = build_triage_graph(MemorySaver())
+    # Same serializer as production, so a state type missing from the allowlist
+    # shows up as a failing test here and not as a surprise on resume.
+    graph = build_triage_graph(MemorySaver(serde=checkpoint_serde()))
     app.dependency_overrides[get_graph] = lambda: graph
     yield graph
     app.dependency_overrides.pop(get_graph, None)

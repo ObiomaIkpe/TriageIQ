@@ -10,15 +10,30 @@ from dataclasses import dataclass
 from typing import Optional
 
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from app.config import settings
+from app.models import Category, ClassificationResult, KbMatch, TicketIn, Urgency
+
+# Our own types that sit in the graph state, so they are stored in every
+# checkpoint. Naming them is how the checkpoint library is told "these are ours,
+# load them". Any other custom type found in a checkpoint is BLOCKED when it is
+# read: it comes back as a plain dict, with only a log message. So when a new
+# type is added to GraphState (or to a model inside it), add it here too;
+# tests/test_checkpointer.py fails if one is missing.
+CHECKPOINT_TYPES = (TicketIn, ClassificationResult, KbMatch, Category, Urgency)
 
 POOL_MIN_SIZE = 1
 POOL_MAX_SIZE = 4
 # Fail fast when the database is unreachable, so the startup retry can retry.
 POOL_OPEN_TIMEOUT_SECONDS = 5.0
+
+
+def checkpoint_serde() -> JsonPlusSerializer:
+    """The serializer for checkpoints: built-in safe types plus CHECKPOINT_TYPES."""
+    return JsonPlusSerializer(allowed_msgpack_modules=CHECKPOINT_TYPES)
 
 
 def libpq_url(url: str) -> str:
@@ -56,7 +71,7 @@ def create_checkpointer(url: Optional[str] = None) -> PostgresCheckpointer:
     )
     try:
         pool.open(wait=True, timeout=POOL_OPEN_TIMEOUT_SECONDS)
-        saver = PostgresSaver(pool)
+        saver = PostgresSaver(pool, serde=checkpoint_serde())
         saver.setup()  # creates the library's tables; safe to repeat
     except Exception:
         pool.close()

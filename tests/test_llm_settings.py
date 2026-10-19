@@ -61,3 +61,40 @@ def test_a_bad_max_tokens_fails_at_startup_not_at_the_first_request(monkeypatch,
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+# --- LangSmith tracing settings ---------------------------------------------
+
+def test_the_tracing_settings_use_the_current_langsmith_names():
+    fields = set(Settings.model_fields)
+
+    assert {"langsmith_tracing", "langsmith_api_key", "langsmith_project"} <= fields
+    assert not {f for f in fields if f.startswith("langchain_")}
+
+
+def test_tracing_is_off_by_default():
+    assert Settings.model_fields["langsmith_tracing"].default is False
+
+
+def test_tracing_can_be_switched_on_from_the_environment(monkeypatch):
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+
+    assert Settings(_env_file=None).langsmith_tracing is True
+
+
+def test_the_legacy_names_in_an_old_env_file_do_not_break_startup(monkeypatch):
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "k")
+
+    settings_without_error = Settings(_env_file=None)
+
+    assert settings_without_error.langsmith_tracing is False  # ignored, not an error
+
+
+def test_the_env_example_lists_only_names_the_app_knows():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+    names = {line.split("=")[0].strip().lower() for line in text.splitlines() if "=" in line}
+
+    assert not {n for n in names if n.startswith("langchain_")}
+    assert names <= set(Settings.model_fields), names - set(Settings.model_fields)

@@ -141,7 +141,7 @@ Settings come from the environment or `.env` (`app/config.py`).
 | `LLM_MAX_TOKENS` | `700` | Longest answer each Claude step may produce, in tokens (about 500 words). A longer answer is cut off. Must be greater than 0 |
 | `LOW_CONFIDENCE_THRESHOLD` | `0.6` | Below this, a ticket goes straight to human review |
 | `VOYAGE_RPM` | `3` | Voyage requests per minute; raise it on a paid account |
-| `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | off | Optional LangSmith tracing |
+| `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | off | Optional LangSmith tracing. The older `LANGCHAIN_*` names still work, but use only one set: if both are present and disagree, tracing is on when either says true |
 | `APP_ENV`, `LOG_LEVEL` | `development`, `INFO` | Environment and logging |
 
 Running outside Docker: install `requirements.txt`, set `DATABASE_URL` to a Postgres with pgvector (the compose database is on `localhost:5433`), run `alembic upgrade head`, then `uvicorn app.main:app`.

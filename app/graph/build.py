@@ -1,7 +1,7 @@
 from typing import Optional
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, START, StateGraph
 
 from app.config import settings
 from app.models import GraphState
@@ -39,7 +39,7 @@ def build_triage_graph(checkpointer: Optional[BaseCheckpointSaver] = None):
     graph.add_node("critique", critique)
     graph.add_node("flag_low_confidence", flag_low_confidence)
 
-    graph.set_entry_point("classify")
+    graph.add_edge(START, "classify")
     graph.add_edge("classify", "route")
     graph.add_conditional_edges(
         "route",

@@ -6,7 +6,7 @@ import uuid
 from typing import TypedDict
 
 import pytest
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from app.graph.checkpointer import create_checkpointer
 
@@ -24,7 +24,7 @@ def bump(state):
 def build(saver):
     graph = StateGraph(State)
     graph.add_node("bump", bump)
-    graph.set_entry_point("bump")
+    graph.add_edge(START, "bump")
     graph.add_edge("bump", END)
     return graph.compile(checkpointer=saver)
 
@@ -103,3 +103,52 @@ def test_an_unreachable_database_fails_instead_of_hanging(monkeypatch):
 
     with pytest.raises(Exception):
         module.create_checkpointer("postgresql://u:p@127.0.0.1:1/nothing_test")
+
+
+# --- the app's own types survive a restart ----------------------------------
+
+def test_the_apps_state_types_come_back_as_objects_after_a_restart_with_no_warnings(
+    clean_database, caplog
+):
+    from typing import TypedDict
+
+    from app.models import Category, ClassificationResult, KbMatch, TicketIn, Urgency
+
+    class AppState(TypedDict, total=False):
+        ticket: TicketIn
+        classification: ClassificationResult
+        kb_context: list[KbMatch]
+
+    def fill(state):
+        return {
+            "classification": ClassificationResult(
+                category=Category.account, urgency=Urgency.high, confidence=0.9, reasoning="r"
+            ),
+            "kb_context": [KbMatch(topic="t", content="c", distance=0.3)],
+        }
+
+    def build_app_graph(saver):
+        graph = StateGraph(AppState)
+        graph.add_node("fill", fill)
+        graph.add_edge(START, "fill")
+        graph.add_edge("fill", END)
+        return graph.compile(checkpointer=saver)
+
+    thread = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    first = create_checkpointer(clean_database)
+    build_app_graph(first.saver).invoke(
+        {"ticket": TicketIn(subject="Cannot log in", body="b")}, config=thread
+    )
+    first.close()
+
+    second = create_checkpointer(clean_database)  # a brand-new pool, saver and graph
+    with caplog.at_level("WARNING"):
+        values = build_app_graph(second.saver).get_state(thread).values
+    second.close()
+
+    assert type(values["ticket"]) is TicketIn
+    assert type(values["classification"]) is ClassificationResult
+    assert type(values["classification"].category) is Category
+    assert type(values["kb_context"][0]) is KbMatch
+    assert "unregistered" not in caplog.text
+    assert "Blocked" not in caplog.text
