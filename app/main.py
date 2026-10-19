@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.api.review import router as review_router
 from app.api.tickets import router as tickets_router
 from app.api.triage import router as triage_router
 from app.errors import register_error_handlers
@@ -76,6 +77,7 @@ app = FastAPI(
 register_error_handlers(app)
 app.include_router(triage_router)
 app.include_router(tickets_router)
+app.include_router(review_router)
 
 
 @app.get("/health")

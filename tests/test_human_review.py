@@ -16,7 +16,7 @@ from app.graph import classifier, critic, kb_retrieval, reply_draft
 from app.graph import human_review as human_review_module
 from app.graph.critic import CritiqueResult
 from app.graph.human_review import human_review
-from app.graph.review import ReviewNotPending, is_paused, resume_review
+from app.graph.review import ReviewNotAllowed, ReviewNotPending, is_paused, resume_review
 from app.main import app
 from app.models import (
     Category,
@@ -184,15 +184,45 @@ def test_editing_gives_the_edited_text_as_the_final_reply(fakes, graph):
     assert final["review_decision"]["edited_reply"] == "We will get back to you today."
 
 
-def test_approving_a_ticket_that_has_no_draft_gives_no_final_reply(fakes, graph):
-    # There is nothing to approve; the spec says approve -> draft_reply, which is absent.
+def test_approving_a_ticket_that_has_no_draft_is_refused_and_it_stays_paused(fakes, graph):
+    # Changed in M2.8b: this used to give final_reply None. There is nothing to approve,
+    # so resume_review now refuses before it resumes anything.
     make_low_confidence(fakes)
     run(graph)
 
-    final = resume_review(graph, TICKET_ID, ReviewDecision(action="approve"))
+    with pytest.raises(ReviewNotAllowed, match="no draft"):
+        resume_review(graph, TICKET_ID, ReviewDecision(action="approve"))
+
+    assert is_paused(graph, TICKET_ID)
+    assert "review_decision" not in graph.get_state(config()).values
+
+
+def test_a_refused_approve_can_still_be_followed_by_an_edit(fakes, graph):
+    make_low_confidence(fakes)
+    run(graph)
+    with pytest.raises(ReviewNotAllowed):
+        resume_review(graph, TICKET_ID, ReviewDecision(action="approve"))
+
+    final = resume_review(graph, TICKET_ID, ReviewDecision(action="edit", edited_reply="Call us."))
+
+    assert final["final_reply"] == "Call us."
+
+
+def test_reject_is_allowed_without_a_draft(fakes, graph):
+    make_low_confidence(fakes)
+    run(graph)
+
+    final = resume_review(graph, TICKET_ID, ReviewDecision(action="reject"))
 
     assert final["final_reply"] is None
-    assert final["review_decision"]["action"] == "approve"
+    assert final["review_decision"]["action"] == "reject"
+
+
+def test_approve_is_allowed_when_there_is_a_draft(fakes, graph):
+    flag_by_critic(fakes)
+    run(graph)
+
+    assert resume_review(graph, TICKET_ID, ReviewDecision(action="approve"))["final_reply"] == DRAFT
 
 
 # --- (d) reject --------------------------------------------------------------

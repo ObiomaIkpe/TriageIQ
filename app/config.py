@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # Tickets the classifier is less sure about than this skip retrieval,
     # drafting and critique and go straight to human review.
     low_confidence_threshold: float = 0.6
+    # Shared secret for POST /tickets/{id}/review, sent in the X-API-Key header. Empty
+    # means the review endpoint is disabled (it answers 503), so a forgotten setting
+    # can never leave it open.
+    review_api_key: str = ""
     database_url: str = "postgresql://triageiq:triageiq@localhost:5432/triageiq"
     # LangSmith tracing. LangSmith reads these straight from the environment; the
     # app itself never uses them, so they are listed here to document the names.

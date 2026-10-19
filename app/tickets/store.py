@@ -116,6 +116,18 @@ def get_ticket_by_reference(reference: str) -> Optional[TicketRecord]:
         return _to_record(row) if row is not None else None
 
 
+def get_ticket_for_update(session: Session, ticket_id: str) -> Optional[TicketRecord]:
+    """Read one ticket and lock its row until the session's transaction ends.
+
+    A second transaction asking for the same row waits here, then sees whatever the
+    first one committed. The caller owns the transaction.
+    """
+    row = session.scalars(
+        select(TicketRow).where(TicketRow.id == UUID(ticket_id)).with_for_update()
+    ).one_or_none()
+    return _to_record(row) if row is not None else None
+
+
 def record_review(
     session: Session,
     ticket_id: str,

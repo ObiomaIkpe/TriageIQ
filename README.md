@@ -69,6 +69,8 @@ flowchart LR
 | `POST /triage` | Triage a ticket and save the result |
 | `GET /tickets?status=&limit=` | List tickets, newest first. `status` is `triaged`, `pending_review`, `approved`, `edited` or `rejected`; `limit` is 1 to 200 (default 50) |
 | `GET /tickets/{ticket_id}` | One ticket, with the original subject and body, and the review fields (`final_reply`, `review_note`, `reviewed_at`, all null until a reviewer decides). 404 if missing, 422 for a malformed id |
+| `GET /tickets/reference/{reference}` | The same record, found by its short reference (such as `TKT-7K3M9Q`). 404 if unknown |
+| `POST /tickets/{ticket_id}/review` | Approve, edit or reject a ticket that is waiting for review. Needs the `X-API-Key` header (see below) |
 | `GET /health` | Liveness: the process is up |
 | `GET /ready` | Readiness: Postgres answers and the KB table exists |
 | `GET /docs` | Interactive OpenAPI docs |
@@ -101,6 +103,20 @@ curl -X POST localhost:8000/triage \
   "review_reason": null
 }
 ```
+
+### Reviewing a flagged ticket
+
+```bash
+curl -X POST localhost:8000/tickets/<ticket_id>/review \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <your REVIEW_API_KEY>" \
+  -d '{"action": "edit", "edited_reply": "Your account unlocks after 1 hour.", "note": "shortened"}'
+```
+
+- `action` is `approve`, `edit` (needs a non-empty `edited_reply`) or `reject`; `note` is optional. The response is the updated ticket (`status` is `approved`, `edited` or `rejected`, with `final_reply`, `review_note` and `reviewed_at` filled in).
+- The key is the `REVIEW_API_KEY` setting, sent as `X-API-Key`. **If the setting is empty the endpoint is disabled** and answers `503`; a missing or wrong key is `401`.
+- `404` unknown ticket. `409` the ticket is not waiting for a review (already reviewed, or its paused run is gone). `422` an invalid body, or `approve` on a ticket that has no draft reply (a low-confidence ticket skips drafting), which can be edited or rejected instead.
+- The ticket's row is locked while it is reviewed, so two reviewers acting at the same moment get one `200` and one `409`.
 
 Errors: a temporary Claude outage returns `503` with `Retry-After`; so does an unreachable database. Other failures, such as a bad API key, stay `500` on purpose, because they are bugs, not outages.
 
@@ -145,6 +161,7 @@ Settings come from the environment or `.env` (`app/config.py`).
 | `LLM_MAX_TOKENS` | `700` | Longest answer each Claude step may produce, in tokens (about 500 words). A longer answer is cut off. Must be greater than 0 |
 | `LOW_CONFIDENCE_THRESHOLD` | `0.6` | Below this, a ticket goes straight to human review |
 | `VOYAGE_RPM` | `3` | Voyage requests per minute; raise it on a paid account |
+| `REVIEW_API_KEY` | empty | Shared secret for `POST /tickets/{id}/review`, sent as the `X-API-Key` header. **Empty disables the endpoint** (it answers 503) |
 | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | off | Optional LangSmith tracing. The older `LANGCHAIN_*` names still work, but use only one set: if both are present and disagree, tracing is on when either says true |
 | `APP_ENV`, `LOG_LEVEL` | `development`, `INFO` | Environment and logging |
 
@@ -171,7 +188,7 @@ Changing the schema: edit the models, run `alembic revision --autogenerate -m "d
 ```
 app/
   main.py              FastAPI app, startup migrations, /health and /ready
-  api/                 POST /triage, GET /tickets, deps.py (get_graph)
+  api/                 POST /triage, GET /tickets, POST /tickets/{id}/review, auth.py, deps.py (get_graph)
   graph/               the LangGraph nodes, build.py (the wiring), checkpointer.py, review.py (resume helpers)
   kb/                  Voyage embeddings, rate limiter, KB search, ingest script
   tickets/             saving and reading tickets
@@ -187,10 +204,10 @@ This is a working prototype, not a finished product.
 
 - **Not yet measured on labelled data.** Classification accuracy, how often replies are flagged, and reply quality have no benchmark. The 0.6 confidence threshold and the 0.5 distance cutoff are provisional, set from a handful of examples.
 - **The confidence score is the model's own.** It is not calibrated, so treat it as a rough signal.
-- **Human review is only half built.** Flagged tickets really pause, and `resume_review()` can approve, edit or reject them, but no endpoint exposes it, the stored ticket row is not yet updated by the graph after a decision (the store function for that exists), and edits are not captured as feedback.
+- **Human review works through the API, with gaps.** Flagged tickets pause, and `POST /tickets/{id}/review` approves, edits or rejects them. There is no reviewer interface, no reviewer identity is recorded, there is one shared API key, and edits are not captured as feedback. Reading tickets (`GET /tickets...`) needs no key. If the app fails after the paused run has been resumed but before the decision is saved, the run has finished while the row still says `pending_review`, and a retry gets a `409`.
 - **A bad raw resume value strands a ticket.** Always resume through `resume_review()`, which takes a validated `ReviewDecision`. Resuming the graph by hand with an invalid value raises an error, and LangGraph then replays that same bad value on every later resume, so the ticket can no longer be reviewed.
-- **The database is ready for reviews, nothing uses it yet.** Migration `0002` adds the review columns and the `approved`, `edited` and `rejected` statuses, and the store can record a decision (`record_review`, which only succeeds on a ticket that is still `pending_review`). No endpoint calls it, and the graph is not resumed from it. **Migration `0002` is applied to a database the next time the app starts against it**, because migrations run at startup.
-- **No authentication or request limits.** The endpoints are open, and each ticket costs up to three Claude calls and one embedding call.
+- **Migration `0002` is applied to a database the next time the app starts against it**, because migrations run at startup. It adds the ticket reference, the review columns and the `approved`, `edited` and `rejected` statuses.
+- **No authentication except on the review endpoint, and no request limits.** The other endpoints are open, and each ticket costs up to three Claude calls and one embedding call.
 - **No specific defence against prompt injection.** Ticket text goes into the prompts. The human-review flag helps, but the critic is itself an LLM reading that text.
 - **Long replies are cut off, and flagged.** Every Claude call is capped at `LLM_MAX_TOKENS` (700, about 500 words). A draft that runs longer stops mid-sentence. The app detects this (Claude's stop reason is `max_tokens`) and flags the ticket for review with the reason "Draft reply was cut off at the token limit.", but the cut-off text is still returned as `suggested_reply`. If the classifier or critic is cut off, the request fails with a `500`. How often cut-offs happen has not been measured yet, so the cap itself is untuned.
 - **A failed save loses the response.** If the database goes down after the work is done, the client gets a 503 and the triage has to be paid for again on retry. For a flagged ticket it is worse: the graph has already paused, so a paused thread exists with no ticket row, and nothing can find it.
