@@ -90,11 +90,24 @@ def test_the_legacy_names_in_an_old_env_file_do_not_break_startup(monkeypatch):
     assert settings_without_error.langsmith_tracing is False  # ignored, not an error
 
 
-def test_the_env_example_lists_only_names_the_app_knows():
+def _env_example_names():
     from pathlib import Path
 
     text = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
-    names = {line.split("=")[0].strip().lower() for line in text.splitlines() if "=" in line}
+    return [line.split("=")[0].strip() for line in text.splitlines() if "=" in line]
+
+
+def test_the_env_example_lists_only_names_the_app_knows():
+    names = {n.lower() for n in _env_example_names()}
 
     assert not {n for n in names if n.startswith("langchain_")}
     assert names <= set(Settings.model_fields), names - set(Settings.model_fields)
+
+
+def test_the_env_example_has_no_two_names_that_differ_only_by_case():
+    # Settings match names case-insensitively, so anthropic_api_key and
+    # ANTHROPIC_API_KEY would be the same setting written twice.
+    lowered = [n.lower() for n in _env_example_names()]
+    duplicates = sorted({n for n in lowered if lowered.count(n) > 1})
+
+    assert not duplicates, f"names listed twice: {duplicates}"
