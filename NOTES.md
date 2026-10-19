@@ -88,8 +88,8 @@ Each node returns `{**state, "key": value}`. LangGraph only needs the changed ke
 ### 4. Sequential LLM latency
 A request makes up to three sequential LLM calls (classify, draft, critique), so per-request latency adds up. The blocking `invoke` is not a problem: the endpoint is a plain `def`, which FastAPI runs in a threadpool.
 
-### 5. Model ID
-All three LLM calls use `claude-sonnet-4-6`. Confirm this is the intended model, and consider moving it to one config constant instead of repeating it in three files.
+### 5. Model ID (RESOLVED)
+The model is the setting `model_id` (`MODEL_ID`, default `claude-sonnet-4-6`) in `app/config.py`, read by all three LLM calls, so it is defined in one place. Confirm `claude-sonnet-4-6` is the model you intend to run.
 
 ### 6. Prompt injection
 Ticket text goes straight into the classifier, drafter and critic prompts, and the draft is fed to the critic. A hostile ticket could try to steer the classification or the review verdict. The human-review flag helps, but the critic is itself an LLM reading attacker-influenced text.

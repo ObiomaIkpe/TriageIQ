@@ -46,7 +46,7 @@ def main() -> None:
     run_migrations()
 
     print(f"Ingesting {len(SAMPLE_DOCS)} documents...")
-    for i, doc in enumerate(SAMPLE_DOCS):
+    for doc in SAMPLE_DOCS:
         add_document(doc["topic"], doc["content"])
         print(f"  saved: {doc['topic']}")
 

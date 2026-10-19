@@ -1,0 +1,12 @@
+# Keeps the build context small and secrets out of the image.
+# The Dockerfile only copies requirements.txt, app/, alembic.ini and alembic/,
+# so none of those may be listed here (tests/test_dockerfile.py checks that).
+.git
+.env
+.env.*
+venv/
+.pytest_cache/
+**/__pycache__
+**/*.pyc
+tests/
+*.sql

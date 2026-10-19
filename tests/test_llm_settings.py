@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -90,15 +93,22 @@ def test_the_legacy_names_in_an_old_env_file_do_not_break_startup(monkeypatch):
     assert settings_without_error.langsmith_tracing is False  # ignored, not an error
 
 
-def _env_example_names():
-    from pathlib import Path
+_ENV_LINE = re.compile(r"^\s*#?\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
+
+def _env_example_entries():
+    """(name, value, commented_out) for every NAME=value line, commented or not."""
     text = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
-    return [line.split("=")[0].strip() for line in text.splitlines() if "=" in line]
+    entries = []
+    for line in text.splitlines():
+        match = _ENV_LINE.match(line)
+        if match:
+            entries.append((match.group(1), match.group(2).strip(), line.lstrip().startswith("#")))
+    return entries
 
 
 def test_the_env_example_lists_only_names_the_app_knows():
-    names = {n.lower() for n in _env_example_names()}
+    names = {name.lower() for name, _, _ in _env_example_entries()}
 
     assert not {n for n in names if n.startswith("langchain_")}
     assert names <= set(Settings.model_fields), names - set(Settings.model_fields)
@@ -107,7 +117,30 @@ def test_the_env_example_lists_only_names_the_app_knows():
 def test_the_env_example_has_no_two_names_that_differ_only_by_case():
     # Settings match names case-insensitively, so anthropic_api_key and
     # ANTHROPIC_API_KEY would be the same setting written twice.
-    lowered = [n.lower() for n in _env_example_names()]
+    lowered = [name.lower() for name, _, _ in _env_example_entries()]
     duplicates = sorted({n for n in lowered if lowered.count(n) > 1})
 
     assert not duplicates, f"names listed twice: {duplicates}"
+
+
+def test_the_env_example_mentions_every_setting():
+    listed = {name.lower() for name, _, _ in _env_example_entries()}
+
+    missing = set(Settings.model_fields) - listed
+    assert not missing, f"add these to .env.example (commented out is fine): {sorted(missing)}"
+
+
+def test_the_commented_out_examples_show_the_real_defaults():
+    # So the example file cannot quietly drift away from app/config.py.
+    commented = [(n, v) for n, v, is_commented in _env_example_entries() if is_commented]
+
+    assert commented, "expected the optional settings to be listed as comments"
+    for name, value in commented:
+        assert str(Settings.model_fields[name.lower()].default) == value, name
+
+
+def test_the_optional_settings_are_commented_out_so_a_copy_of_the_file_uses_the_defaults():
+    uncommented = {n.lower() for n, _, is_commented in _env_example_entries() if not is_commented}
+
+    assert not {"model_id", "llm_timeout_seconds", "llm_max_retries", "llm_max_tokens",
+                "low_confidence_threshold", "voyage_rpm"} & uncommented
