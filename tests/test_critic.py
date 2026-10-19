@@ -138,3 +138,59 @@ def test_deterministic_flag_path_returns_only_its_own_keys(fake_chain):
     result = critique(make_state(kb_context=[]))
 
     assert set(result) == {"needs_human_review", "review_reason"}
+
+# --- a draft that was cut off at the token limit ----------------------------
+
+def truncated_state(**kwargs):
+    state = make_state(**kwargs)
+    state["draft_truncated"] = True
+    return state
+
+
+def test_a_cut_off_draft_is_flagged_without_calling_the_llm(fake_chain):
+    result = critique(truncated_state())
+
+    assert result["needs_human_review"] is True
+    assert result["review_reason"] == "Draft reply was cut off at the token limit."
+    assert fake_chain.calls == []
+
+
+def test_a_draft_that_finished_still_goes_to_the_llm_critic(fake_chain):
+    state = make_state()
+    state["draft_truncated"] = False
+
+    critique(state)
+
+    assert len(fake_chain.calls) == 1
+
+
+def test_a_cut_off_draft_is_reported_after_a_knowledge_base_failure(fake_chain):
+    state = truncated_state(kb_context=[])
+    state["kb_failed"] = True
+
+    result = critique(state)
+
+    assert result["review_reason"] == (
+        "Knowledge base unavailable. Draft reply was cut off at the token limit."
+    )
+    assert fake_chain.calls == []
+
+
+def test_a_cut_off_draft_is_reported_after_a_missing_kb_match(fake_chain):
+    result = critique(truncated_state(kb_context=[]))
+
+    assert result["review_reason"] == (
+        "No knowledge base match. Draft reply was cut off at the token limit."
+    )
+
+
+def test_the_cut_off_path_returns_only_its_own_keys(fake_chain):
+    result = critique(truncated_state())
+
+    assert set(result) == {"needs_human_review", "review_reason"}
+
+
+def test_the_existing_knowledge_base_reasons_are_unchanged(fake_chain):
+    result = critique(make_state(kb_context=[]))
+
+    assert result["review_reason"] == "No knowledge base match."
