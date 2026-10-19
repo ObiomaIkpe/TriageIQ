@@ -13,6 +13,7 @@ from app.graph.checkpointer import create_checkpointer
 from app.graph.critic import CritiqueResult
 from app.main import app
 from app.migrations import run_migrations
+from tests.helpers import ai_message
 from app.models import Category, ClassificationResult, KbMatch, Urgency
 
 pytestmark = pytest.mark.integration
@@ -42,7 +43,7 @@ def live_client(migrated_database, test_session, monkeypatch):
             )
         ),
     )
-    monkeypatch.setattr(reply_draft, "_chain", FakeChain("Your lockout clears after 1 hour."))
+    monkeypatch.setattr(reply_draft, "_chain", FakeChain(ai_message("Your lockout clears after 1 hour.")))
     monkeypatch.setattr(
         critic, "_chain", FakeChain(CritiqueResult(needs_human_review=False, reason=""))
     )

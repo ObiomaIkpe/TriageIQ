@@ -21,9 +21,9 @@ The graph has one conditional edge, after `route`. The threshold is `low_confide
 | `classify` | `graph/classifier.py` | `classification` | LLM, temperature 0, `with_structured_output(ClassificationResult)` |
 | `route` | `graph/router.py` | `routing_target` | No LLM. Map lookup by category, plus `-urgent` suffix for high/critical |
 | `retrieve_kb` | `graph/kb_retrieval.py` | `kb_context` | Vector search on subject + body: up to 3 matches within 0.5 cosine distance (may be none). Each match is a `KbMatch` (`topic`, `content`, `distance`), and the API returns them as-is in `kb_sources` |
-| `draft_reply_node` | `graph/reply_draft.py` | `draft_reply` | LLM, temperature 0.3, grounded in `kb_context` |
+| `draft_reply_node` | `graph/reply_draft.py` | `draft_reply`, `draft_truncated` | LLM, temperature 0.3, grounded in `kb_context`. `draft_truncated` is true when Claude's stop reason was `max_tokens` |
 | `flag_low_confidence` | `graph/flag_low_confidence.py` | `needs_human_review`, `review_reason` | No LLM. Runs instead of the three nodes below when confidence is under the threshold |
-| `critique` | `graph/critic.py` | `needs_human_review`, `review_reason` | Flags without an LLM call if the KB failed or had no match. Otherwise an LLM reviews the draft against the ticket, classification and `kb_context` |
+| `critique` | `graph/critic.py` | `needs_human_review`, `review_reason` | Flags without an LLM call if the KB failed, had no match, or the draft was cut off at the token limit (all applicable reasons are joined). Otherwise an LLM reviews the draft against the ticket, classification and `kb_context` |
 
 The node is named `draft_reply_node` because LangGraph does not allow a node name to match a state key (`draft_reply`).
 
@@ -108,10 +108,14 @@ Ticket text goes straight into the classifier, drafter and critic prompts, and t
 - Error handling: if any node or LLM call raises, `invoke` raises and the endpoint returns a 500. There are no retries or fallbacks.
 - Whether the endpoint should return 200 or 201 depends on whether a triage record is persisted. Currently it only computes a result, so 200 is correct.
 
-### 10. Replies longer than the token cap are cut off silently
-Every Claude call (classifier, drafter, critic) sends an explicit `max_tokens` from the setting `llm_max_tokens` (`LLM_MAX_TOKENS`, default 700, about 500 words, must be greater than 0). It is set explicitly because `langchain-anthropic`'s own default differs between versions: 1024 in 0.2.x, and the model's maximum (128000 for `claude-sonnet-4-6`) in 1.x. Without a pinned value, upgrading the library would have silently removed the cap. The request bodies were compared on both library versions and only this field differed.
+### 10. Replies longer than the token cap are cut off (MITIGATED: flagged, not prevented)
+Every Claude call (classifier, drafter, critic) sends an explicit `max_tokens` from the setting `llm_max_tokens` (`LLM_MAX_TOKENS`, default 700, about 500 words, must be greater than 0). It is set explicitly because `langchain-anthropic`'s own default differs between versions: 1024 in 0.2.x, and the model's maximum (128000 for `claude-sonnet-4-6`) in 1.x. Without a pinned value, upgrading the library would have silently removed the cap. The request bodies were compared on both library versions and only this field differed. 700 is lower than the earlier effective 1024, a deliberate choice.
 
-700 is lower than the earlier effective 1024, a deliberate choice. The consequence: a draft that runs past the cap stops mid-sentence, with stop reason `max_tokens`, and nothing checks for it, so the critic reviews the truncated text and may clear it. For the classifier and critic the structured result is far smaller than the cap. A possible fix: check the stop reason after drafting and flag the ticket for human review, or raise the drafter's cap on its own.
+**What happens when a call hits the cap.**
+- **Drafter (the case that used to be silent).** The reply stops mid-sentence. Claude's stop reason is `max_tokens`, and `draft_reply` now keeps it instead of discarding it with the parser: it returns `draft_truncated: true` next to `draft_reply`, and logs a warning with the token count (a finished draft logs an info line with its token count). The critic has a rule-based check for `draft_truncated`: it flags the ticket for human review with the reason "Draft reply was cut off at the token limit." and does not spend an LLM call. The cut-off text is still returned as `suggested_reply`, so a reviewer can see it. If the KB also failed or had no match, the reasons are joined.
+- **Classifier and critic.** A cut-off structured answer is missing required fields, so the output parser raises a validation error and the request becomes a `500` (LangChain also logs "Output parser received a `max_tokens` stop reason"). This is loud, not silent, and unlikely at these output sizes, since the structured results are far smaller than the cap. It is not handled specially.
+
+**Verified** on both library versions (0.2.3 and 1.7.6) with the real chains against a fake local Anthropic server that reports `max_tokens`: the ticket is flagged and only the drafter's request is sent. **Not done:** nothing makes cut-offs rarer, and how often they happen on real tickets is unknown. Once real tickets have run, the logged token counts show whether to raise the cap (possibly for the drafter alone) or ask the drafter prompt for shorter replies.
 
 ## Resolved
 

@@ -52,6 +52,10 @@ def critique(state: GraphState) -> GraphState:
         reasons.append("Knowledge base unavailable.")
     elif not kb_context:
         reasons.append("No knowledge base match.")
+    # The drafter ran out of room (LLM_MAX_TOKENS), so the reply stops mid-sentence.
+    # There is nothing for the LLM critic to review, so a human has to.
+    if state.get("draft_truncated"):
+        reasons.append("Draft reply was cut off at the token limit.")
 
     if reasons:
         return {

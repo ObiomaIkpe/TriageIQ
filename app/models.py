@@ -70,6 +70,7 @@ class GraphState(TypedDict, total=False):
     classification: ClassificationResult
     routing_target: str
     draft_reply: str
+    draft_truncated: bool
     needs_human_review: bool
     review_reason: str
     kb_context: list[KbMatch]

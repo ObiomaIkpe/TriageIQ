@@ -43,7 +43,7 @@ flowchart TD
 | `classify` | Claude (structured output) | `classification` |
 | `route` | no | `routing_target` |
 | `retrieve_kb` | no (Voyage embedding + SQL) | `kb_context`, `kb_failed` |
-| `draft_reply_node` | Claude | `draft_reply` |
+| `draft_reply_node` | Claude | `draft_reply`, `draft_truncated` |
 | `critique` | only when the rule checks pass | `needs_human_review`, `review_reason` |
 | `flag_low_confidence` | no | `needs_human_review`, `review_reason` |
 
@@ -104,7 +104,7 @@ Errors: a temporary Claude outage returns `503` with `Retry-After`; so does an u
 ## Design decisions
 
 - **Routing is plain code, not an LLM.** The model decides what a ticket *is*; a lookup table decides where it goes. That keeps routing predictable, free, and easy to change.
-- **The critic sees the KB.** Reviewing a reply for unsupported claims needs the articles it should be supported by. Rule checks (KB failed, no KB match) flag a ticket without spending an LLM call, so only grounded drafts reach the LLM critic.
+- **The critic sees the KB.** Reviewing a reply for unsupported claims needs the articles it should be supported by. Rule checks (KB failed, no KB match, draft cut off at the token limit) flag a ticket without spending an LLM call, so only grounded, complete drafts reach the LLM critic.
 - **Low-confidence tickets skip the expensive steps.** A conditional edge sends them straight to human review, with no retrieval, drafting or critique. The threshold is a setting (`LOW_CONFIDENCE_THRESHOLD`, default 0.6).
 - **Retrieval has a similarity cutoff, chosen from measurements.** Search returns up to 3 articles within a cosine distance of 0.5, and may return none. On the sample articles, real matches landed around 0.33 to 0.35 and everything else at 0.56 or more. When nothing is close enough, the drafter is told to say a specialist will follow up instead of guessing. The value is provisional; see the limitations.
 - **Failures degrade instead of crashing.** If the KB lookup fails, the ticket continues without context and is flagged. Claude calls have a timeout and retries; Voyage calls are rate limited, retried with backoff and cached in memory.
@@ -186,7 +186,7 @@ This is a working prototype, not a finished product.
 - **No human-review workflow yet.** Tickets flagged `pending_review` are stored and listable, but nothing approves, edits or rejects them.
 - **No authentication or request limits.** The endpoints are open, and each ticket costs up to three Claude calls and one embedding call.
 - **No specific defence against prompt injection.** Ticket text goes into the prompts. The human-review flag helps, but the critic is itself an LLM reading that text.
-- **Long replies are cut off silently.** Every Claude call is capped at `LLM_MAX_TOKENS` (700, about 500 words). A draft that runs longer stops mid-sentence, and nothing flags it, so the critic reviews the truncated text.
+- **Long replies are cut off, and flagged.** Every Claude call is capped at `LLM_MAX_TOKENS` (700, about 500 words). A draft that runs longer stops mid-sentence. The app detects this (Claude's stop reason is `max_tokens`) and flags the ticket for review with the reason "Draft reply was cut off at the token limit.", but the cut-off text is still returned as `suggested_reply`. If the classifier or critic is cut off, the request fails with a `500`. How often cut-offs happen has not been measured yet, so the cap itself is untuned.
 - **A failed save loses the response.** If the database goes down after the work is done, the client gets a 503 and the triage has to be paid for again on retry.
 - **A small sample KB.** Only 5 FAQ articles are included, and there are no tools for managing articles beyond the ingest script.
 - **Run one instance.** Migrations are not locked against concurrent starts.

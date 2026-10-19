@@ -3,6 +3,7 @@ import pytest
 from app.graph import reply_draft
 from app.graph.reply_draft import draft_reply
 from app.models import KbMatch, TicketIn
+from tests.helpers import ai_message
 
 NO_KB_TEXT = "No relevant knowledge base articles found."
 
@@ -22,7 +23,7 @@ class FakeChain:
 
 @pytest.fixture
 def fake_chain(monkeypatch):
-    chain = FakeChain("Drafted reply.")
+    chain = FakeChain(ai_message("Drafted reply."))
     monkeypatch.setattr(reply_draft, "_chain", chain)
     return chain
 
@@ -66,4 +67,78 @@ def test_llm_receives_subject_and_body(fake_chain):
 def test_draft_returns_only_its_own_keys(fake_chain):
     result = draft_reply(make_state([ARTICLE_A]))
 
-    assert set(result) == {"draft_reply"}
+    assert set(result) == {"draft_reply", "draft_truncated"}
+
+
+# --- cut-off detection ------------------------------------------------------
+
+def test_a_reply_that_finished_is_not_marked_truncated(fake_chain):
+    result = draft_reply(make_state([ARTICLE_A]))
+
+    assert result["draft_truncated"] is False
+
+
+def test_a_reply_that_ran_out_of_room_is_marked_truncated(fake_chain):
+    fake_chain.result = ai_message("Your account was locked because of too many failed log", "max_tokens")
+
+    result = draft_reply(make_state([ARTICLE_A]))
+
+    assert result["draft_truncated"] is True
+
+
+def test_the_cut_off_text_is_still_returned_unchanged(fake_chain):
+    cut = "Your account was locked because of too many failed log"
+    fake_chain.result = ai_message(cut, "max_tokens")
+
+    result = draft_reply(make_state([ARTICLE_A]))
+
+    assert result["draft_reply"] == cut
+
+
+@pytest.mark.parametrize("stop_reason", ["end_turn", "stop_sequence", "tool_use", None])
+def test_only_max_tokens_counts_as_truncated(fake_chain, stop_reason):
+    message = ai_message("A complete reply.")
+    message.response_metadata = {} if stop_reason is None else {"stop_reason": stop_reason}
+    fake_chain.result = message
+
+    assert draft_reply(make_state([ARTICLE_A]))["draft_truncated"] is False
+
+
+def test_a_message_with_no_metadata_at_all_is_not_truncated(fake_chain):
+    message = ai_message("A complete reply.")
+    message.response_metadata = {}
+    message.usage_metadata = None
+    fake_chain.result = message
+
+    result = draft_reply(make_state([ARTICLE_A]))
+
+    assert result == {"draft_reply": "A complete reply.", "draft_truncated": False}
+
+
+def test_a_cut_off_draft_is_logged_as_a_warning(fake_chain, caplog):
+    fake_chain.result = ai_message("Cut off mid", "max_tokens", output_tokens=700)
+
+    with caplog.at_level("INFO", logger="app.graph.reply_draft"):
+        draft_reply(make_state([ARTICLE_A]))
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "cut off at the token limit" in warnings[0].getMessage()
+    assert "output_tokens=700" in warnings[0].getMessage()
+
+
+def test_a_finished_draft_logs_only_info_with_the_token_count(fake_chain, caplog):
+    fake_chain.result = ai_message("Done.", "end_turn", output_tokens=120)
+
+    with caplog.at_level("INFO", logger="app.graph.reply_draft"):
+        draft_reply(make_state([ARTICLE_A]))
+
+    assert [r.levelname for r in caplog.records] == ["INFO"]
+    assert "output_tokens=120" in caplog.records[0].getMessage()
+
+
+def test_the_prompt_inputs_are_unchanged_by_the_cut_off_check(fake_chain):
+    draft_reply(make_state([ARTICLE_A]))
+
+    sent = fake_chain.calls[0]
+    assert set(sent) == {"subject", "body", "kb_context"}

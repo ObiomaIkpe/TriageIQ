@@ -14,6 +14,7 @@ from app.graph import classifier, critic, kb_retrieval, reply_draft
 from app.graph.critic import CritiqueResult
 from app.main import app
 from app.models import Category, ClassificationResult, KbMatch, TriageResult, Urgency
+from tests.helpers import ai_message
 
 client = TestClient(app)
 
@@ -59,7 +60,7 @@ def fakes(monkeypatch):
             reasoning="Locked account.",
         )
     )
-    f.draft = FakeChain("Your lockout clears after 1 hour.")
+    f.draft = FakeChain(ai_message("Your lockout clears after 1 hour."))
     f.critic = FakeChain(CritiqueResult(needs_human_review=False, reason=""))
     f.kb_results = [KB_MATCH]
 
@@ -351,3 +352,71 @@ def test_a_low_confidence_run_is_checkpointed_too(fakes, triage_graph_override):
     saved = triage_graph_override.get_state(thread).values
     assert saved["needs_human_review"] is True
     assert "draft_reply" not in saved
+
+# --- a draft cut off at the token limit -------------------------------------
+
+CUT_OFF_TEXT = "Your account was locked because of too many failed log"
+
+
+def test_a_cut_off_draft_is_still_returned_but_flagged_for_review(fakes):
+    fakes.draft.result = ai_message(CUT_OFF_TEXT, "max_tokens")
+
+    response = client.post("/triage", json=TICKET)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suggested_reply"] == CUT_OFF_TEXT
+    assert body["needs_human_review"] is True
+    assert body["review_reason"] == "Draft reply was cut off at the token limit."
+    assert body["kb_sources"] == [KB_MATCH_JSON]
+
+
+def test_a_cut_off_draft_does_not_spend_the_llm_critic(fakes):
+    fakes.draft.result = ai_message(CUT_OFF_TEXT, "max_tokens")
+
+    client.post("/triage", json=TICKET)
+
+    assert fakes.critic.calls == []
+
+
+def test_a_cut_off_draft_is_saved_as_needing_review(fakes):
+    fakes.draft.result = ai_message(CUT_OFF_TEXT, "max_tokens")
+
+    client.post("/triage", json=TICKET)
+
+    _, saved = fakes.saved[0]
+    assert saved.needs_human_review is True
+    assert saved.review_reason == "Draft reply was cut off at the token limit."
+    assert saved.suggested_reply == CUT_OFF_TEXT
+
+
+def test_a_draft_that_finished_is_not_flagged_for_being_cut_off(fakes):
+    fakes.draft.result = ai_message("A complete reply.", "end_turn")
+
+    body = client.post("/triage", json=TICKET).json()
+
+    assert body["needs_human_review"] is False
+    assert body["review_reason"] is None
+    assert len(fakes.critic.calls) == 1
+
+
+def test_the_cut_off_flag_is_kept_in_the_checkpointed_run_state(fakes, triage_graph_override):
+    fakes.draft.result = ai_message(CUT_OFF_TEXT, "max_tokens")
+
+    response = client.post("/triage", json=TICKET)
+
+    thread = {"configurable": {"thread_id": response.json()["ticket_id"]}}
+    assert triage_graph_override.get_state(thread).values["draft_truncated"] is True
+
+
+def test_a_low_confidence_ticket_has_no_cut_off_flag_because_it_is_never_drafted(
+    fakes, triage_graph_override
+):
+    fakes.classify.result = ClassificationResult(
+        category=Category.other, urgency=Urgency.low, confidence=0.4, reasoning="Unclear.",
+    )
+
+    response = client.post("/triage", json=TICKET)
+
+    thread = {"configurable": {"thread_id": response.json()["ticket_id"]}}
+    assert "draft_truncated" not in triage_graph_override.get_state(thread).values

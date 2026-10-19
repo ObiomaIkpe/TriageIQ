@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.graph import classifier, critic, kb_retrieval, reply_draft
 from app.graph.critic import CritiqueResult
 from app.main import app
+from tests.helpers import ai_message
 from app.models import Category, ClassificationResult, KbMatch, Urgency
 
 pytestmark = pytest.mark.integration
@@ -45,8 +46,9 @@ def fake_llm_and_kb(monkeypatch, test_session):
         )
     )
     f.critic = FakeChain(CritiqueResult(needs_human_review=False, reason=""))
+    f.draft = FakeChain(ai_message("Your lockout clears after 1 hour."))
     monkeypatch.setattr(classifier, "_chain", f.classify)
-    monkeypatch.setattr(reply_draft, "_chain", FakeChain("Your lockout clears after 1 hour."))
+    monkeypatch.setattr(reply_draft, "_chain", f.draft)
     monkeypatch.setattr(critic, "_chain", f.critic)
     monkeypatch.setattr(kb_retrieval, "search_similar", lambda query_text, top_k: [KB_MATCH])
     return f
@@ -123,3 +125,18 @@ def test_an_unknown_ticket_id_is_a_404(fake_llm_and_kb):
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Ticket not found"}
+
+
+def test_a_cut_off_draft_is_saved_for_review_in_the_database(fake_llm_and_kb):
+    cut = "Your account was locked because of too many failed log"
+    fake_llm_and_kb.draft.result = ai_message(cut, "max_tokens")
+
+    posted = client.post("/triage", json=TICKET).json()
+    saved = client.get(f"/tickets/{posted['ticket_id']}").json()
+
+    assert saved["status"] == "pending_review"
+    assert saved["needs_human_review"] is True
+    assert saved["review_reason"] == "Draft reply was cut off at the token limit."
+    assert saved["suggested_reply"] == cut
+    pending = client.get("/tickets", params={"status": "pending_review"}).json()
+    assert [t["ticket_id"] for t in pending] == [posted["ticket_id"]]
