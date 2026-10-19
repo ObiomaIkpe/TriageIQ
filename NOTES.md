@@ -8,8 +8,8 @@ A request to the triage endpoint runs a LangGraph workflow (`app/graph/build.py`
 
 ```
 classify -> route -> [confidence >= threshold?]
-    yes -> retrieve_kb -> draft_reply_node -> critique -> END
-    no  -> flag_low_confidence -> END
+    yes -> retrieve_kb -> draft_reply_node -> critique -> human_review -> END
+    no  -> flag_low_confidence -> human_review -> END
 ```
 
 The graph has one conditional edge, after `route`. The threshold is `low_confidence_threshold` in `app/config.py` (default 0.6); exactly the threshold counts as confident. Low-confidence tickets skip retrieval, drafting and critique, so their response has `suggested_reply: null` and `kb_sources: []`. `triage_ticket` (`app/api/triage.py`) builds the initial state `{"ticket": ticket}`, calls `invoke(...)` on the graph it gets from `get_graph` (built at startup, with `thread_id` = the ticket id), and maps the final state to a `TriageResult`.
@@ -24,6 +24,8 @@ The graph has one conditional edge, after `route`. The threshold is `low_confide
 | `draft_reply_node` | `graph/reply_draft.py` | `draft_reply`, `draft_truncated` | LLM, temperature 0.3, grounded in `kb_context`. `draft_truncated` is true when Claude's stop reason was `max_tokens` |
 | `flag_low_confidence` | `graph/flag_low_confidence.py` | `needs_human_review`, `review_reason` | No LLM. Runs instead of the three nodes below when confidence is under the threshold |
 | `critique` | `graph/critic.py` | `needs_human_review`, `review_reason` | Flags without an LLM call if the KB failed, had no match, or the draft was cut off at the token limit (all applicable reasons are joined). Otherwise an LLM reviews the draft against the ticket, classification and `kb_context` |
+
+| `human_review` | `graph/human_review.py` | `review_decision`, `final_reply` | No LLM. Returns `{}` unless `needs_human_review`. If flagged it calls `interrupt()` with a plain-dict payload (reason, suggested reply, category, urgency, routing target) and waits for a `ReviewDecision` (`approve` / `edit` / `reject`). `final_reply` is the draft on approve, the edited text on edit, `None` on reject (also `None` on approve when there was no draft) |
 
 The node is named `draft_reply_node` because LangGraph does not allow a node name to match a state key (`draft_reply`).
 
@@ -73,6 +75,17 @@ Every successful triage is saved, so results can be read back and, later, paused
 - **Endpoints.** `GET /tickets?status=<triaged|pending_review>&limit=<1-200, default 50>` lists newest first. `GET /tickets/{ticket_id}` returns one ticket, 404 if missing, 422 for a malformed id.
 - **A failed save returns 503.** A database that is unreachable (`sqlalchemy.exc.OperationalError`, or the driver's `psycopg.OperationalError` it wraps) gets a 503 with `Retry-After`, the same as LLM outages. Note that the triage work has already been done and paid for when the save fails, and the response is lost with it.
 - **Shared database helper:** `app/db.py` (engine, session factory, `get_session`), used by both the KB and ticket stores.
+
+## Human review pause (`app/graph/human_review.py`, `app/graph/review.py`)
+
+- **What happens.** Both paths into the end of the graph go through `human_review`. Unflagged: it writes nothing. Flagged: `interrupt()` pauses the run, and `graph.invoke()` returns the state so far plus an `"__interrupt__"` entry. `POST /triage` builds its response from named keys only, so that entry never reaches the client, and a paused run is saved as `pending_review`. No endpoint, DB column or API contract changed.
+- **Resume.** `review.is_paused(graph, ticket_id)` checks `get_state(...).next`. `review.resume_review(graph, ticket_id, ReviewDecision)` raises `ReviewNotPending` (before running anything) for an unknown, finished or already reviewed ticket, otherwise invokes `Command(resume=decision.model_dump())` and returns the final state. Verified on a real PostgresSaver across a simulated restart (new pool, saver and graph).
+- **Re-run rule.** On resume LangGraph re-executes the whole `human_review` node. Nothing before `interrupt()` may have side effects. Tests count the `interrupt()` calls (1 at pause, 2 after resume) and check the classify, draft, critic and KB calls are not repeated.
+- **The payload and decision are plain dicts**, so the checkpoint serializer allowlist needs no new entry.
+- **Known gap: crash between pause and save.** If the app fails after the graph pauses but before `save_ticket`, a paused thread exists with no ticket row, and the client gets a 503. A retry creates a new ticket id, so the orphan thread is never found.
+- **Known limitation (LangGraph 1.2.16): a bad raw resume strands the ticket.** If `graph.invoke(Command(resume=<invalid>))` is called directly, the node raises `ValueError("Invalid review decision: ...")` and the ticket stays paused, but the invalid value is saved as the task's pending write and replayed on every later resume, so even a valid decision then fails. Measured on MemorySaver and on PostgresSaver, in the same process and after a restart. `resume_review` avoids this because it only accepts a validated `ReviewDecision`. Pinned by a strict `xfail` test. A possible fix (not done, it changes the "raise a clear ValueError" rule): make the node loop and call `interrupt()` again on invalid input.
+- **Other resume quirks seen:** `Command(resume=None)` raises an internal `UnboundLocalError`, and `Command(resume={})` is a silent no-op (the ticket stays paused). A dict whose keys are not interrupt-id digests is treated as one resume value.
+- **Not covered:** two reviewers resuming the same ticket at the same moment (a race) was not tested.
 
 ## Gaps and things to consider
 

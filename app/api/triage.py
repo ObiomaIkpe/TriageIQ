@@ -19,6 +19,11 @@ def triage_ticket(ticket: TicketIn, graph=Depends(get_graph)) -> TriageResult:
         initial_state, config={"configurable": {"thread_id": ticket_id}}
     )
 
+    # A ticket flagged for human review makes the run PAUSE at the human_review step;
+    # invoke() then returns the state so far plus an "__interrupt__" entry. The response
+    # below is built only from the named keys, so that entry never reaches the client,
+    # and a paused run counts as a success (the ticket is saved as pending_review).
+
     # Strict lookups on purpose: every node must write its fields, and a
     # missing one should fail loudly (500) instead of silently defaulting.
     classification = final_state["classification"]

@@ -33,7 +33,7 @@ def test_the_graph_starts_at_classify_and_nowhere_else():
     assert [e for e in edges if e[0] == "__start__"] == [("__start__", "classify")]
 
 
-def test_the_pipeline_order_is_unchanged():
+def test_the_pipeline_order_ends_at_human_review():
     edges = {(e.source, e.target) for e in build_triage_graph().get_graph().edges}
 
     assert {
@@ -42,6 +42,13 @@ def test_the_pipeline_order_is_unchanged():
         ("route", "flag_low_confidence"),
         ("retrieve_kb", "draft_reply_node"),
         ("draft_reply_node", "critique"),
-        ("critique", "__end__"),
-        ("flag_low_confidence", "__end__"),
+        ("critique", "human_review"),
+        ("flag_low_confidence", "human_review"),
+        ("human_review", "__end__"),
     } <= edges
+
+
+def test_nothing_reaches_the_end_without_going_through_human_review():
+    edges = {(e.source, e.target) for e in build_triage_graph().get_graph().edges}
+
+    assert {source for source, target in edges if target == "__end__"} == {"human_review"}

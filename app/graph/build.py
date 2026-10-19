@@ -11,6 +11,7 @@ from app.graph.kb_retrieval import retrieve_kb_context
 from app.graph.reply_draft import draft_reply
 from app.graph.critic import critique
 from app.graph.flag_low_confidence import flag_low_confidence
+from app.graph.human_review import human_review
 
 
 def route_by_confidence(state: GraphState) -> str:
@@ -38,6 +39,7 @@ def build_triage_graph(checkpointer: Optional[BaseCheckpointSaver] = None):
     graph.add_node("draft_reply_node", draft_reply)
     graph.add_node("critique", critique)
     graph.add_node("flag_low_confidence", flag_low_confidence)
+    graph.add_node("human_review", human_review)
 
     graph.add_edge(START, "classify")
     graph.add_edge("classify", "route")
@@ -51,7 +53,10 @@ def build_triage_graph(checkpointer: Optional[BaseCheckpointSaver] = None):
     )
     graph.add_edge("retrieve_kb", "draft_reply_node")
     graph.add_edge("draft_reply_node", "critique")
-    graph.add_edge("critique", END)
-    graph.add_edge("flag_low_confidence", END)
+    # Every run ends at human_review. It does nothing for an unflagged ticket and pauses
+    # a flagged one (see app/graph/human_review.py).
+    graph.add_edge("critique", "human_review")
+    graph.add_edge("flag_low_confidence", "human_review")
+    graph.add_edge("human_review", END)
 
     return graph.compile(checkpointer=checkpointer)
