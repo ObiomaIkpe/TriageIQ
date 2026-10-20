@@ -205,6 +205,14 @@ Options: `--dataset PATH`, `--only IDS`, `--out DIR` (default `evals/results`). 
 
 **This makes real Claude and Voyage calls and costs money.** It needs `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY`, and it reads the knowledge base from the database in `DATABASE_URL` (so that database must be up and ingested). It saves no tickets and uses an in-memory checkpointer. Each ticket costs up to 3 Claude calls (classify, draft, critique) and 1 Voyage embedding call; tickets the classifier is unsure about skip the last two Claude calls and the embedding. With the default `VOYAGE_RPM=3` the embedding calls are rate limited, so a full run takes several minutes.
 
+### Retrieval distance report
+
+```bash
+venv/bin/python -m evals.retrieval_report            # optional: --only T01,T05
+```
+
+Shows, for every ticket, the cosine distance to **every** KB article with no cutoff applied, and whether a single cutoff value could accept all correct matches and reject all tickets that should match nothing. It is a measurement for tuning `MAX_DISTANCE` (currently 0.5); it changes nothing. It makes one Voyage embedding call per ticket (20 for the full set, no Claude calls) and only reads the database. At `VOYAGE_RPM=3` expect about 6 minutes. Output goes to `evals/results/retrieval-<timestamp>.json` and `.md`.
+
 Read the numbers with care: the knowledge base is only 5 short articles, so retrieval is easy, and 20 tickets is a small sample. One run is one sample of a non-deterministic model.
 
 ## Project layout
