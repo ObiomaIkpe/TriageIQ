@@ -6,3 +6,6 @@ __pycache__/
 
 # database dumps (they can contain real data)
 *_backup.sql
+
+# eval run output: the .json holds full replies and labels; the .md scorecards stay committable
+evals/results/*.json

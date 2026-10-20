@@ -107,6 +107,14 @@ Every successful triage is saved, so results can be read back and, later, paused
   4. *One shared API key,* no rotation, no per-reviewer revocation, no rate limit.
   5. *The lock is held while the graph runs.* Fine at this scale; a slow graph step keeps a row locked and a database connection busy.
 
+## Eval harness (`evals/`)
+
+- **Pieces.** `evals/scoring.py` is pure (no I/O, no LLM): `score_ticket(label, output)` returns one `{result, expected, actual, detail}` per check, and `summarize(scored)` gives pass/fail/skip counts plus the missed-flag and extra-flag ticket ids. `evals/run_eval.py` is the runner.
+- **State keys read** (same as `app/api/triage.py`): `classification` (`.category`, `.urgency`, `.confidence`), `routing_target`, `draft_reply` (absent for low-confidence tickets), `kb_context` (list of `KbMatch`, field `topic`, closest first), `needs_human_review`, `review_reason`, plus `draft_truncated` and `kb_failed`. A paused run is `invoke()`'s return value with an extra `"__interrupt__"` key; it is scored from that state.
+- **Checks.** Category and urgency compare strings. Urgency is skipped when the label is `null`. The flag check also records `missed_flag` and `extra_flag`. `kb_topic` compares the first source's topic (or `None`). The two phrase checks are skipped with no draft or no phrases.
+- **Runner.** One ticket at a time, in dataset order, a fresh uuid thread id each, on a `MemorySaver` (built with the production serializer). An exception is recorded as the ticket's `error` and the run goes on. It checks both API keys (names only, never values) before the first ticket. It never calls `save_ticket`, so nothing is written to `tickets`; the only database use is the KB lookup in `retrieve_kb`. Latency is wall clock per ticket, errors included.
+- **Not verified.** The runner has only been run with fake chains and a fake KB. No real Claude or Voyage call has gone through it. The KB lookup failing is swallowed by `retrieve_kb` (the ticket gets `kb_failed` and a flag), so a database outage shows up in the scorecard as kb_topic failures, not as errors.
+
 ## Gaps and things to consider
 
 ### 1. Wasted LLM call on low-confidence tickets (RESOLVED)

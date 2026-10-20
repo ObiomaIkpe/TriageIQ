@@ -110,8 +110,8 @@ Baseline already in place:
 
 ## G. Evaluation and quality
 
-- [ ] **G1. Labelled dataset, 100+ tickets,** stratified: every category and urgency, ambiguous cases, multi-intent, multilingual, empty-KB cases, adversarial inputs.
-- [ ] **G2. Eval harness** (`python -m evals.run`) that outputs a report with:
+- [ ] **G1. Labelled dataset, 100+ tickets,** *(started: 20 tickets in `evals/dataset/tickets_v1.jsonl`)* stratified: every category and urgency, ambiguous cases, multi-intent, multilingual, empty-KB cases, adversarial inputs.
+- [ ] **G2. Eval harness** (`python -m evals.run_eval`) that outputs a report with: *(started: M5.1 built the runner and deterministic scoring for category, urgency, flag, retrieved topic and phrase checks; the items below are still open)*
   - [ ] category accuracy, macro-F1, confusion matrix
   - [ ] urgency accuracy with ordinal error
   - [ ] routing correctness

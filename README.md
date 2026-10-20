@@ -183,6 +183,30 @@ TEST_DATABASE_URL=postgresql://triageiq:triageiq@localhost:5433/triageiq_test py
 
 Changing the schema: edit the models, run `alembic revision --autogenerate -m "describe the change"`, review the generated file, and commit it. `alembic check` reports drift between the models and the database.
 
+## Evals
+
+`evals/` holds a labelled set of 20 tickets (`evals/dataset/tickets_v1.jsonl`) and a script that runs each one through the real graph and scores the result. Scoring is deterministic string and value comparison; there is no LLM judge.
+
+What it measures, per ticket:
+
+- **category** and **urgency** equal the label (urgency is skipped when the label has none).
+- **flag**: `needs_human_review` equals `expected_flag`. Tickets that should have been flagged but were not are listed first as MISSED FLAGS, and the reverse as EXTRA FLAGS.
+- **kb_topic**: the topic of the closest retrieved article equals `expected_kb_topic` (no article equals `null`).
+- **must_include / must_not_include**: phrases that must, or must not, appear in the draft reply (case-insensitive). Skipped when there is no draft.
+
+Run it:
+
+```bash
+venv/bin/python -m evals.run_eval                    # all 20 tickets
+venv/bin/python -m evals.run_eval --only T01,T05     # a subset
+```
+
+Options: `--dataset PATH`, `--only IDS`, `--out DIR` (default `evals/results`). It writes `<timestamp>.json` (everything, per ticket) and `<timestamp>.md` (the scorecard, also printed). The `.json` files are git-ignored; the `.md` scorecards can be committed.
+
+**This makes real Claude and Voyage calls and costs money.** It needs `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY`, and it reads the knowledge base from the database in `DATABASE_URL` (so that database must be up and ingested). It saves no tickets and uses an in-memory checkpointer. Each ticket costs up to 3 Claude calls (classify, draft, critique) and 1 Voyage embedding call; tickets the classifier is unsure about skip the last two Claude calls and the embedding. With the default `VOYAGE_RPM=3` the embedding calls are rate limited, so a full run takes several minutes.
+
+Read the numbers with care: the knowledge base is only 5 short articles, so retrieval is easy, and 20 tickets is a small sample. One run is one sample of a non-deterministic model.
+
 ## Project layout
 
 ```
@@ -195,6 +219,7 @@ app/
   db.py, migrations.py engine and sessions; running Alembic from the app
   models.py            Pydantic models and the graph state
 alembic/               migrations (the only place that creates tables)
+evals/                 labelled tickets, deterministic scoring, and the eval runner
 tests/                 unit tests; tests/integration/ needs a real Postgres
 ```
 
@@ -202,7 +227,7 @@ tests/                 unit tests; tests/integration/ needs a real Postgres
 
 This is a working prototype, not a finished product.
 
-- **Not yet measured on labelled data.** Classification accuracy, how often replies are flagged, and reply quality have no benchmark. The 0.6 confidence threshold and the 0.5 distance cutoff are provisional, set from a handful of examples.
+- **Measured only by a small eval.** An eval harness and a 20-ticket labelled set exist (see Evals), but no results are recorded here yet, reply quality is checked only by phrase matching, and there are no calibration or retrieval-recall numbers. The 0.6 confidence threshold and the 0.5 distance cutoff are provisional, set from a handful of examples.
 - **The confidence score is the model's own.** It is not calibrated, so treat it as a rough signal.
 - **Human review works through the API, with gaps.** Flagged tickets pause, and `POST /tickets/{id}/review` approves, edits or rejects them. There is no reviewer interface, no reviewer identity is recorded, there is one shared API key, and edits are not captured as feedback. Reading tickets (`GET /tickets...`) needs no key. If the app fails after the paused run has been resumed but before the decision is saved, the run has finished while the row still says `pending_review`, and a retry gets a `409`.
 - **A bad raw resume value strands a ticket.** Always resume through `resume_review()`, which takes a validated `ReviewDecision`. Resuming the graph by hand with an invalid value raises an error, and LangGraph then replays that same bad value on every later resume, so the ticket can no longer be reviewed.
