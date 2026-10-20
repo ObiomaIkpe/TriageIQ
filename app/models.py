@@ -97,6 +97,9 @@ class GraphState(TypedDict, total=False):
     review_reason: str
     kb_context: list[KbMatch]
     kb_failed: bool
+    # Written by the kb_grader node: {"relevant_topics": [...], "reason": str, "status":
+    # "ok" | "rejected" | "unavailable"}. A plain dict, so it needs no CHECKPOINT_TYPES entry.
+    kb_grade: dict
     # Written by the human_review node. The decision is kept as a plain dict (the
     # output of ReviewDecision.model_dump()), so it needs no CHECKPOINT_TYPES entry.
     review_decision: dict

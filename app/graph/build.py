@@ -8,6 +8,7 @@ from app.models import GraphState
 from app.graph.classifier import classify
 from app.graph.router import route
 from app.graph.kb_retrieval import retrieve_kb_context
+from app.graph.kb_grader import grade_kb
 from app.graph.reply_draft import draft_reply
 from app.graph.critic import critique
 from app.graph.flag_low_confidence import flag_low_confidence
@@ -36,6 +37,7 @@ def build_triage_graph(checkpointer: Optional[BaseCheckpointSaver] = None):
     graph.add_node("classify", classify)
     graph.add_node("route", route)
     graph.add_node("retrieve_kb", retrieve_kb_context)
+    graph.add_node("grade_kb", grade_kb)
     graph.add_node("draft_reply_node", draft_reply)
     graph.add_node("critique", critique)
     graph.add_node("flag_low_confidence", flag_low_confidence)
@@ -51,7 +53,8 @@ def build_triage_graph(checkpointer: Optional[BaseCheckpointSaver] = None):
             "flag_low_confidence": "flag_low_confidence",
         },
     )
-    graph.add_edge("retrieve_kb", "draft_reply_node")
+    graph.add_edge("retrieve_kb", "grade_kb")
+    graph.add_edge("grade_kb", "draft_reply_node")
     graph.add_edge("draft_reply_node", "critique")
     # Every run ends at human_review. It does nothing for an unflagged ticket and pauses
     # a flagged one (see app/graph/human_review.py).

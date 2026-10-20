@@ -19,7 +19,7 @@ def test_the_nodes_and_edges_do_not_depend_on_the_checkpointer():
 
     assert set(plain.get_graph().nodes) == set(with_saver.get_graph().nodes)
     assert {n for n in plain.get_graph().nodes} >= {
-        "classify", "route", "retrieve_kb", "draft_reply_node",
+        "classify", "route", "retrieve_kb", "grade_kb", "draft_reply_node",
         "critique", "flag_low_confidence",
     }
     assert sorted(
@@ -40,7 +40,8 @@ def test_the_pipeline_order_ends_at_human_review():
         ("classify", "route"),
         ("route", "retrieve_kb"),
         ("route", "flag_low_confidence"),
-        ("retrieve_kb", "draft_reply_node"),
+        ("retrieve_kb", "grade_kb"),
+        ("grade_kb", "draft_reply_node"),
         ("draft_reply_node", "critique"),
         ("critique", "human_review"),
         ("flag_low_confidence", "human_review"),
@@ -52,3 +53,18 @@ def test_nothing_reaches_the_end_without_going_through_human_review():
     edges = {(e.source, e.target) for e in build_triage_graph().get_graph().edges}
 
     assert {source for source, target in edges if target == "__end__"} == {"human_review"}
+
+
+def test_retrieval_does_not_reach_the_drafter_without_the_grader():
+    edges = {(e.source, e.target) for e in build_triage_graph().get_graph().edges}
+
+    assert ("retrieve_kb", "draft_reply_node") not in edges
+
+
+def test_no_node_is_named_like_a_state_key():
+    from app.models import GraphState
+
+    nodes = set(build_triage_graph().get_graph().nodes) - {"__start__", "__end__"}
+
+    assert nodes.isdisjoint(GraphState.__annotations__)
+    assert "kb_grade" in GraphState.__annotations__ and "grade_kb" in nodes

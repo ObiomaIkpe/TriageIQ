@@ -65,6 +65,7 @@ def extract_output(state: dict) -> dict:
         "paused": "__interrupt__" in state,
         "draft_truncated": bool(state.get("draft_truncated")),
         "kb_failed": bool(state.get("kb_failed")),
+        "kb_grade": state.get("kb_grade"),
     }
 
 

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.graph.formatting import format_kb_context
+from app.graph.kb_grader import REJECTED_REASON, UNAVAILABLE_REASON
 from app.models import GraphState
 
 
@@ -51,7 +52,13 @@ def critique(state: GraphState) -> GraphState:
     if state.get("kb_failed"):
         reasons.append("Knowledge base unavailable.")
     elif not kb_context:
-        reasons.append("No knowledge base match.")
+        # Empty context after the grader ran has its own reason; with no grade it is a
+        # plain retrieval miss.
+        grade_status = (state.get("kb_grade") or {}).get("status")
+        reasons.append({
+            "rejected": REJECTED_REASON,
+            "unavailable": UNAVAILABLE_REASON,
+        }.get(grade_status, "No knowledge base match."))
     # The drafter ran out of room (LLM_MAX_TOKENS), so the reply stops mid-sentence.
     # There is nothing for the LLM critic to review, so a human has to.
     if state.get("draft_truncated"):

@@ -30,3 +30,21 @@ def triage_graph_override():
     app.dependency_overrides[get_graph] = lambda: graph
     yield graph
     app.dependency_overrides.pop(get_graph, None)
+
+@pytest.fixture(autouse=True)
+def kb_grader_keeps_everything(monkeypatch):
+    """By default the KB grader (a Claude call) keeps every retrieved article.
+
+    Tests that care about grading replace kb_grader._chain themselves. Without this
+    fake, any test that runs the graph with a KB match would call the real model.
+    """
+    import re
+
+    from app.graph import kb_grader
+
+    class KeepAll:
+        def invoke(self, inputs):
+            topics = re.findall(r"ARTICLE START \(topic: (.*)\)", inputs["articles"])
+            return kb_grader.KbGradeResult(relevant_topics=topics, reason="Relevant.")
+
+    monkeypatch.setattr(kb_grader, "_chain", KeepAll())

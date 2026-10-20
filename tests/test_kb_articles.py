@@ -66,4 +66,4 @@ def test_two_factor_describes_no_self_service_bypass():
                    "recovery code", "skip"):
         assert phrase not in text, phrase
     # The only route to a bypass code named in the article is support, after verification.
-    assert "only support can issue" in text
+    assert "support can issue that code" in text

@@ -28,7 +28,8 @@ flowchart TD
         classify["classify<br/>Claude, structured output"] --> route["route<br/>category to team, plain code"]
         route --> gate{"confidence at or above threshold?"}
         gate -- yes --> retrieve["retrieve_kb<br/>Voyage embedding + pgvector search"]
-        retrieve --> draft["draft_reply<br/>Claude, grounded in the KB"]
+        retrieve --> grade["grade_kb<br/>Claude keeps only articles that answer the ticket"]
+        grade --> draft["draft_reply<br/>Claude, grounded in the KB"]
         draft --> critique["critique<br/>rule checks, then Claude"]
         gate -- no --> flag["flag_low_confidence<br/>no KB or LLM calls"]
     end
@@ -44,12 +45,15 @@ flowchart TD
 | `classify` | Claude (structured output) | `classification` |
 | `route` | no | `routing_target` |
 | `retrieve_kb` | no (Voyage embedding + SQL) | `kb_context`, `kb_failed` |
+| `grade_kb` | Claude, only when articles were retrieved | `kb_context` (filtered), `kb_grade` |
 | `draft_reply_node` | Claude | `draft_reply`, `draft_truncated` |
 | `critique` | only when the rule checks pass | `needs_human_review`, `review_reason` |
 | `flag_low_confidence` | no | `needs_human_review`, `review_reason` |
 | `human_review` | no | `review_decision`, `final_reply` (only after a reviewer decides) |
 
 Each node returns only the state keys it writes, so the graph stays safe to branch and parallelise.
+
+Why flagged: a ticket is sent to a human when the classifier is unsure ("Low classifier confidence."), the critic objects, or the knowledge base cannot ground the reply. The KB reasons are "No knowledge base match." (nothing retrieved), "KB article does not answer the ticket." (articles were retrieved but `grade_kb` kept none), "KB relevance check unavailable." (the grader call failed; the request still succeeds) and "Knowledge base unavailable." (retrieval failed). `kb_grade` is internal state and is not part of the API response.
 
 ### Components
 
@@ -125,7 +129,7 @@ Errors: a temporary Claude outage returns `503` with `Retry-After`; so does an u
 - **Routing is plain code, not an LLM.** The model decides what a ticket *is*; a lookup table decides where it goes. That keeps routing predictable, free, and easy to change.
 - **The critic sees the KB.** Reviewing a reply for unsupported claims needs the articles it should be supported by. Rule checks (KB failed, no KB match, draft cut off at the token limit) flag a ticket without spending an LLM call, so only grounded, complete drafts reach the LLM critic.
 - **Low-confidence tickets skip the expensive steps.** A conditional edge sends them straight to human review, with no retrieval, drafting or critique. The threshold is a setting (`LOW_CONFIDENCE_THRESHOLD`, default 0.6).
-- **Retrieval has a similarity cutoff, chosen from measurements.** Search returns up to 3 articles within a cosine distance of 0.5, and may return none. On the sample articles, real matches landed around 0.33 to 0.35 and everything else at 0.56 or more. When nothing is close enough, the drafter is told to say a specialist will follow up instead of guessing. The value is provisional; see the limitations.
+- **Retrieval has a loose cutoff, and a grader decides relevance.** Search returns up to 3 articles within a cosine distance of 0.65 (loosened from 0.5), and may return none. The cutoff only removes clearly unrelated articles: the retrieval reports showed the right article ranked first every time, but no single distance separated articles that answer a ticket from articles that merely share its topic. So the `grade_kb` step asks Claude which retrieved articles directly answer the ticket and keeps only those. When nothing is left, the drafter is told to say a specialist will follow up instead of guessing, and the ticket is flagged. This adds one Claude call per ticket that retrieves at least one article. The values are provisional; see the limitations.
 - **Failures degrade instead of crashing.** If the KB lookup fails, the ticket continues without context and is flagged. Claude calls have a timeout and retries; Voyage calls are rate limited, retried with backoff and cached in memory.
 - **The ticket id exists before the graph runs, and is the run's `thread_id`.** The graph is compiled at startup with a Postgres checkpointer, so every run's state is saved under the ticket's id. That lets a later human-in-the-loop step pause and resume a run by ticket id. A result is saved only after a successful run. If startup cannot reach the database, the app still boots and `/triage` and `/ready` answer `503` until it can.
 - **A flagged ticket pauses the graph for a human.** `human_review` calls LangGraph's `interrupt()` only when `needs_human_review` is true; unflagged tickets pass straight through. `POST /triage` still answers normally: a paused run counts as a success and is saved as `pending_review`, and the pause marker never reaches the client. The paused state lives in the Postgres checkpointer under the ticket id, so it survives a restart. `app/graph/review.py` has `is_paused()` and `resume_review()` (approve, edit or reject). **There is no endpoint to call them yet.** When a run resumes, LangGraph runs the `human_review` node again from its start, so nothing before the `interrupt()` call may have side effects.
@@ -211,7 +215,7 @@ Options: `--dataset PATH`, `--only IDS`, `--out DIR` (default `evals/results`). 
 venv/bin/python -m evals.retrieval_report            # optional: --only T01,T05
 ```
 
-Shows, for every ticket, the cosine distance to **every** KB article with no cutoff applied, and whether a single cutoff value could accept all correct matches and reject all tickets that should match nothing. It is a measurement for tuning `MAX_DISTANCE` (currently 0.5); it changes nothing. It makes one Voyage embedding call per ticket (20 for the full set, no Claude calls) and only reads the database. At `VOYAGE_RPM=3` expect about 6 minutes. Output goes to `evals/results/retrieval-<timestamp>.json` and `.md`.
+Shows, for every ticket, the cosine distance to **every** KB article with no cutoff applied, and whether a single cutoff value could accept all correct matches and reject all tickets that should match nothing. It is a measurement for tuning `MAX_DISTANCE` (currently 0.65); it changes nothing. It makes one Voyage embedding call per ticket (20 for the full set, no Claude calls) and only reads the database. At `VOYAGE_RPM=3` expect about 6 minutes. Output goes to `evals/results/retrieval-<timestamp>.json` and `.md`.
 
 On 2026-10-21 the 5 KB articles were rewritten as realistic help articles (120 to 200 words each). Their policy sentences are unchanged and sit inside the new text word for word, and they were written without reading the eval set. Re-run the ingest to load them (see Quickstart).
 
@@ -237,7 +241,7 @@ tests/                 unit tests; tests/integration/ needs a real Postgres
 
 This is a working prototype, not a finished product.
 
-- **Measured only by a small eval.** An eval harness and a 20-ticket labelled set exist (see Evals), but no results are recorded here yet, reply quality is checked only by phrase matching, and there are no calibration or retrieval-recall numbers. The 0.6 confidence threshold and the 0.5 distance cutoff are provisional, set from a handful of examples.
+- **Measured only by a small eval.** An eval harness and a 20-ticket labelled set exist (see Evals), but no results are recorded here yet, reply quality is checked only by phrase matching, and there are no calibration or retrieval-recall numbers. The 0.6 confidence threshold and the 0.65 distance cutoff are provisional, and the grader prompt has not been measured, set from a handful of examples.
 - **The confidence score is the model's own.** It is not calibrated, so treat it as a rough signal.
 - **Human review works through the API, with gaps.** Flagged tickets pause, and `POST /tickets/{id}/review` approves, edits or rejects them. There is no reviewer interface, no reviewer identity is recorded, there is one shared API key, and edits are not captured as feedback. Reading tickets (`GET /tickets...`) needs no key. If the app fails after the paused run has been resumed but before the decision is saved, the run has finished while the row still says `pending_review`, and a retry gets a `409`.
 - **A bad raw resume value strands a ticket.** Always resume through `resume_review()`, which takes a validated `ReviewDecision`. Resuming the graph by hand with an invalid value raises an error, and LangGraph then replays that same bad value on every later resume, so the ticket can no longer be reviewed.

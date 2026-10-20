@@ -16,9 +16,11 @@ from app.models import KbMatch
 EMBEDDING_MODEL = "voyage-3"
 
 # Cosine distance cutoff for retrieval (0 = identical, higher = less similar).
-# Chosen from measurements on the 5 sample articles: real matches landed at
-# ~0.33-0.35, everything else at 0.56+. Provisional - retune as the KB grows.
-MAX_DISTANCE = 0.5
+# This only removes clearly unrelated articles. No single distance value separated
+# articles that answer a ticket from articles that merely share its topic, so the
+# kb_grader node (app/graph/kb_grader.py) decides relevance on what is left.
+# Loosened from 0.5 to 0.65 so the grader sees the borderline matches.
+MAX_DISTANCE = 0.65
 
 # Retry policy for Voyage calls: 3 attempts total, waiting 2s then 4s.
 MAX_ATTEMPTS = 3

@@ -52,7 +52,7 @@ Baseline already in place:
 - [ ] **B4. Query rewriting.** Condense subject + body into a focused query instead of embedding raw text.
 - [ ] **B5. Chunking** for long articles, with overlap and parent-article IDs.
 - [ ] **B6. Metadata filters** (category, product, language, audience) applied in SQL.
-- [ ] **B7. Cutoff tuned on data.** Replace the provisional 0.5 with a value chosen by precision/recall on labelled retrieval cases; "no-answer" detection reported as its own metric.
+- [ ] **B7. Cutoff tuned on data.** *(M5.2a loosened the cutoff to 0.65 and added a Claude relevance grader, `grade_kb`; neither has been measured with real calls yet)* Replace the provisional 0.5 with a value chosen by precision/recall on labelled retrieval cases; "no-answer" detection reported as its own metric.
 - [ ] **B8. KB management.** CRUD (CLI and authenticated endpoints), idempotent upsert with a unique key, content hash to skip re-embedding, article versions, source URLs. *(partly done: ingest is an idempotent upsert on a unique `topic`; no CRUD, content hash, versions or source URLs)*
 - [ ] **B9. Embedding versioning.** Store model name/version per row, plus a re-embed migration script, so a model change cannot silently corrupt search.
 - [ ] **B10. Vector index** (HNSW) once the KB exceeds a few hundred articles; benchmark before/after.

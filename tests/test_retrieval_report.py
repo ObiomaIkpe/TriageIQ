@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import pytest
 
 from app.graph import classifier, critic, kb_retrieval, reply_draft
+from app.kb.store import MAX_DISTANCE
 from app.models import TicketIn
 from evals import retrieval_report as rr
 
@@ -212,7 +213,7 @@ def fakes(monkeypatch):
 
     def query_all(embedding):
         if embedding.startswith("weather"):
-            return [("account lockout", 0.62), ("password reset", 0.7)]
+            return [("account lockout", 0.72), ("password reset", 0.8)]
         return [("account lockout", 0.33), ("password reset", 0.6)]
 
     monkeypatch.setattr(rr, "embed_query", embed)
@@ -232,8 +233,8 @@ def test_error_is_recorded_and_the_run_continues(fakes, dataset, tmp_path, capsy
     ids = {t["id"]: t for t in result["tickets"]}
     assert ids["R3"]["error"] == "RuntimeError: voyage down"
     assert ids["R1"]["passes_at_cutoff"] is True
-    assert ids["R2"]["passes_at_cutoff"] is True  # null ticket, 0.62 >= 0.5
-    assert result["cutoff"] == 0.5
+    assert ids["R2"]["passes_at_cutoff"] is True  # null ticket, 0.72 >= the real cutoff
+    assert result["cutoff"] == MAX_DISTANCE
     assert result["summary"]["gap"]["exists"] is True
 
 
