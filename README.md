@@ -223,6 +223,28 @@ On 2026-10-21 the 5 KB articles were rewritten as realistic help articles (120 t
 
 Read the numbers with care: the knowledge base is only 5 articles, so retrieval is easy, and 20 tickets is a small sample. One run is one sample of a non-deterministic model.
 
+## Evals: results
+
+A 20-ticket labelled set (AI-drafted, every label human-checked) is run through the real graph and scored deterministically. Run: `venv/bin/python -m evals.run_eval --dataset evals/dataset/tickets_v3.jsonl`.
+
+| Check | Baseline (v1, 20 Oct) | Now (v3, 21 Oct) |
+|---|---|---|
+| Flags (should a human see it?) | 17/20, 3 unnecessary | 20/20 |
+| Right KB article retrieved | 16/20 | 20/20 |
+| Category | 18/20 | 20/20 |
+| Key facts in reply | 4/9 | 10/10 |
+| No invented advice | 15/17 | 16/17 (the miss is a scorer limit) |
+| Urgency | 13/17 | 14/17 |
+| Bad drafts over 3 repeated runs | 3 | 0 |
+
+Labels changed between v1 and v3 (a KB policy decision for one ticket, a written urgency rule, scorer-proof phrases); each change is documented. The KB is five short articles, so real-world scores would be lower.
+
+What changed, in order: a KB relevance grader after retrieval (distance thresholds could not separate answers from non-answers), prompt-injection flagging in the grader, two KB policy gaps fixed, three grounding rules for the drafter, product definitions for the classifier, and a code rule sending "other" tickets to a human.
+
+Known limits: phrase checks cannot tell a reply that refuses a request from one that agrees to it, or recognise paraphrase; three urgency labels remain judgment calls; injection is only checked on tickets that reach the grader.
+
+Write-ups: [eval process](docs/evals-process.txt), [retrieval investigation](docs/findings/retrieval-misses-v1.txt), [drafter drift](docs/findings/drafter-drift-T01.txt), [confidence shift](docs/findings/confidence-shift-other.txt).
+
 ## Project layout
 
 ```
