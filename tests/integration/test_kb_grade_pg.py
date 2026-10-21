@@ -84,7 +84,7 @@ def test_a_rejected_grade_survives_a_restart_and_the_review_resumes(fakes, start
     waiting = graph_after.get_state(config(ticket_id)).values
     assert type(waiting["kb_grade"]) is dict
     assert waiting["kb_grade"] == {"relevant_topics": [], "reason": "Neither answers it.",
-                                   "status": "rejected"}
+                                   "status": "rejected", "injection_suspected": False}
     assert waiting["kb_context"] == []
 
     final = resume_review(graph_after, ticket_id, ReviewDecision(action="edit", edited_reply="Hi."))
@@ -110,3 +110,24 @@ def test_a_kept_article_is_stored_and_read_back_as_a_kb_match(fakes, start):
     assert waiting["kb_grade"]["status"] == "ok"
     final = resume_review(graph_after, ticket_id, ReviewDecision(action="approve"))
     assert final["final_reply"] == "We will follow up."
+
+
+def test_a_paused_injection_flagged_run_resumes_with_injection_suspected_a_bool(fakes, start):
+    fakes.grader.result = KbGradeResult(
+        relevant_topics=["account lockout"], reason="Yes.", injection_suspected=True)
+    ticket_id = str(uuid.uuid4())
+    graph_before, checkpointer_before = start()
+    out = run(graph_before, ticket_id)
+    assert "__interrupt__" in out
+    assert out["review_reason"] == "Possible prompt injection in the ticket."
+    checkpointer_before.close()
+
+    graph_after, _ = start()
+    waiting = graph_after.get_state(config(ticket_id)).values
+    assert type(waiting["kb_grade"]) is dict
+    assert waiting["kb_grade"]["injection_suspected"] is True
+
+    final = resume_review(graph_after, ticket_id, ReviewDecision(action="approve"))
+    assert final["kb_grade"]["injection_suspected"] is True
+    assert final["final_reply"] == "We will follow up."
+    assert fakes.critic.calls == []

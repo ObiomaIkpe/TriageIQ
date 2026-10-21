@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.graph.formatting import format_kb_context
-from app.graph.kb_grader import REJECTED_REASON, UNAVAILABLE_REASON
+from app.graph.kb_grader import INJECTION_REASON, REJECTED_REASON, UNAVAILABLE_REASON
 from app.models import GraphState
 
 
@@ -48,6 +48,14 @@ def critique(state: GraphState) -> GraphState:
     # spending an LLM call, and the same ticket always gets the same verdict.
     # Low classifier confidence is not checked here: the graph sends those
     # tickets to flag_low_confidence and they never reach this node.
+    # Suspected prompt injection comes first and stands alone: it overrides every other
+    # reason, and like the rule checks below it flags the ticket without a Claude call.
+    if (state.get("kb_grade") or {}).get("injection_suspected"):
+        return {
+            "needs_human_review": True,
+            "review_reason": INJECTION_REASON,
+        }
+
     reasons = []
     if state.get("kb_failed"):
         reasons.append("Knowledge base unavailable.")
