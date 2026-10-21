@@ -243,8 +243,6 @@ What changed, in order: a KB relevance grader after retrieval (distance threshol
 
 Known limits: phrase checks cannot tell a reply that refuses a request from one that agrees to it, or recognise paraphrase; three urgency labels remain judgment calls; injection is only checked on tickets that reach the grader.
 
-Write-ups: [eval process](docs/evals-process.txt), [retrieval investigation](docs/findings/retrieval-misses-v1.txt), [drafter drift](docs/findings/drafter-drift-T01.txt), [confidence shift](docs/findings/confidence-shift-other.txt).
-
 ## Project layout
 
 ```
@@ -265,7 +263,7 @@ tests/                 unit tests; tests/integration/ needs a real Postgres
 
 This is a working prototype, not a finished product.
 
-- **Measured only by a small eval.** An eval harness and a 20-ticket labelled set exist (see Evals), but no results are recorded here yet, reply quality is checked only by phrase matching, and there are no calibration or retrieval-recall numbers. The 0.6 confidence threshold and the 0.65 distance cutoff are provisional, and the grader prompt has not been measured, set from a handful of examples.
+- Measured by a 20-ticket labelled eval set; see Evals: results below. The 0.6 confidence threshold and the 0.65 distance cutoff are provisional, and the grader prompt has not been measured, set from a handful of examples.
 - **The confidence score is the model's own.** It is not calibrated, so treat it as a rough signal.
 - **Human review works through the API, with gaps.** Flagged tickets pause, and `POST /tickets/{id}/review` approves, edits or rejects them. There is no reviewer interface, no reviewer identity is recorded, there is one shared API key, and edits are not captured as feedback. Reading tickets (`GET /tickets...`) needs no key. If the app fails after the paused run has been resumed but before the decision is saved, the run has finished while the row still says `pending_review`, and a retry gets a `409`.
 - **A bad raw resume value strands a ticket.** Always resume through `resume_review()`, which takes a validated `ReviewDecision`. Resuming the graph by hand with an invalid value raises an error, and LangGraph then replays that same bad value on every later resume, so the ticket can no longer be reviewed.
