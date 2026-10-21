@@ -67,3 +67,27 @@ def test_two_factor_describes_no_self_service_bypass():
         assert phrase not in text, phrase
     # The only route to a bypass code named in the article is support, after verification.
     assert "support can issue that code" in text
+
+
+LOCKOUT_2FA = ("Failed two-factor authentication codes count as failed login attempts, so "
+               "entering a wrong 2FA code 5 times within 15 minutes also locks the account.")
+BILLING_PLAN_CHANGE = ("This also applies to plan changes made part of the way through a "
+                       "billing period: the difference is prorated.")
+CANCELLATION_SCOPE = ("The no-partial-refunds rule applies only to cancelling a subscription; "
+                      "plan changes made part of the way through a billing period are covered "
+                      "in the billing cycle article.")
+
+
+def test_lockout_says_failed_2fa_codes_count():
+    assert LOCKOUT_2FA in CONTENT["account lockout"]
+    assert CONTENT["account lockout"].endswith(LOCKOUT_2FA)
+
+
+def test_billing_says_plan_changes_are_prorated():
+    assert BILLING_PLAN_CHANGE in CONTENT["billing cycle"]
+    assert CONTENT["billing cycle"].endswith(BILLING_PLAN_CHANGE)
+
+
+def test_cancellation_limits_the_no_refund_rule_to_cancelling():
+    assert CANCELLATION_SCOPE in CONTENT["subscription cancellation"]
+    assert CONTENT["subscription cancellation"].endswith(CANCELLATION_SCOPE)

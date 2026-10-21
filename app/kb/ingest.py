@@ -40,7 +40,9 @@ SAMPLE_DOCS = [
             "month after that. The charge does not move around from month to month. "
             "When a refund is given, it is prorated, which means the amount is worked out "
             "proportionally and not as a flat figure. If you are not sure which day your "
-            "billing date falls on, look at the day you originally signed up."
+            "billing date falls on, look at the day you originally signed up. "
+            "This also applies to plan changes made part of the way through a billing "
+            "period: the difference is prorated."
         ),
     },
     {
@@ -58,7 +60,9 @@ SAMPLE_DOCS = [
             "has passed, the account is available again and you can try to log in as usual. "
             "The rule counts failed login attempts over a 15 minute window, and the lock applies "
             "once there have been 5 of them inside that window. Fewer than 5 failed attempts "
-            "within 15 minutes does not lock the account."
+            "within 15 minutes does not lock the account. "
+            "Failed two-factor authentication codes count as failed login attempts, so "
+            "entering a wrong 2FA code 5 times within 15 minutes also locks the account."
         ),
     },
     {
@@ -77,7 +81,10 @@ SAMPLE_DOCS = [
             "through a billing period does not earn a partial refund for the rest of it. "
             "Because access continues until the end of the current billing period, cancelling "
             "does not cut your access off straight away. Early cancellation means cancelling "
-            "before that billing period has ended, and no partial refunds are issued in that case."
+            "before that billing period has ended, and no partial refunds are issued in that case. "
+            "The no-partial-refunds rule applies only to cancelling a subscription; plan "
+            "changes made part of the way through a billing period are covered in the "
+            "billing cycle article."
         ),
     },
     {
