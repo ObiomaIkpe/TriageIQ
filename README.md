@@ -26,7 +26,7 @@ flowchart TD
 
     subgraph pipeline [LangGraph pipeline]
         classify["classify<br/>Claude, structured output"] --> route["route<br/>category to team, plain code"]
-        route --> gate{"confidence at or above threshold?"}
+        route --> gate{"confident, and not category other?"}
         gate -- yes --> retrieve["retrieve_kb<br/>Voyage embedding + pgvector search"]
         retrieve --> grade["grade_kb<br/>Claude keeps only articles that answer the ticket"]
         grade --> draft["draft_reply<br/>Claude, grounded in the KB"]
@@ -53,7 +53,9 @@ flowchart TD
 
 Each node returns only the state keys it writes, so the graph stays safe to branch and parallelise.
 
-Why flagged: a ticket is sent to a human when the classifier is unsure ("Low classifier confidence."), the critic objects, or the knowledge base cannot ground the reply. The KB reasons are "No knowledge base match." (nothing retrieved), "KB article does not answer the ticket." (articles were retrieved but `grade_kb` kept none), "KB relevance check unavailable." (the grader call failed; the request still succeeds) and "Possible prompt injection in the ticket." (the grader suspects the ticket tries to instruct or redirect an automated system; this reason overrides every other one, and the ticket still gets its normal draft) and "Knowledge base unavailable." (retrieval failed). `kb_grade` is internal state and is not part of the API response.
+Why flagged: a ticket is sent to a human when the classifier is unsure ("Low classifier confidence."), the classifier calls it "other" ("Ticket could not be categorised."), the critic objects, or the knowledge base cannot ground the reply. The KB reasons are "No knowledge base match." (nothing retrieved), "KB article does not answer the ticket." (articles were retrieved but `grade_kb` kept none), "KB relevance check unavailable." (the grader call failed; the request still succeeds) and "Possible prompt injection in the ticket." (the grader suspects the ticket tries to instruct or redirect an automated system; this reason overrides every other one, and the ticket still gets its normal draft) and "Knowledge base unavailable." (retrieval failed). `kb_grade` is internal state and is not part of the API response.
+
+Tickets classified as `other` skip retrieval and drafting and go straight to human review, exactly like low-confidence tickets, whatever their confidence. The reason is that the classifier can be confident a ticket is "other" (its definition includes tickets too vague to tell), so confidence alone is not a safe signal for vague tickets. If both apply, the reason is "Low classifier confidence." Their `routing_target` is unchanged (`general-queue`, or `general-queue-urgent`).
 
 ### Components
 

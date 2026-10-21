@@ -4,7 +4,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.config import settings
-from app.models import GraphState
+from app.models import Category, GraphState
 from app.graph.classifier import classify
 from app.graph.router import route
 from app.graph.kb_retrieval import retrieve_kb_context
@@ -19,9 +19,14 @@ def route_by_confidence(state: GraphState) -> str:
     """Name of the node to run after `route`.
 
     Exactly the threshold counts as confident (>=), so only values strictly
-    below it are treated as low confidence.
+    below it are treated as low confidence. A ticket classified as "other" goes the
+    same way whatever its confidence: the classifier can be confident that a vague
+    ticket is "other", so confidence alone is not a safe signal for those.
     """
-    if state["classification"].confidence >= settings.low_confidence_threshold:
+    classification = state["classification"]
+    if classification.category == Category.other:
+        return "flag_low_confidence"
+    if classification.confidence >= settings.low_confidence_threshold:
         return "retrieve_kb"
     return "flag_low_confidence"
 

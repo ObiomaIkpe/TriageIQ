@@ -43,3 +43,20 @@ def test_branch_follows_the_setting(monkeypatch):
 
     assert route_by_confidence(make_state(0.7)) == "flag_low_confidence"
     assert route_by_confidence(make_state(0.8)) == "retrieve_kb"
+
+
+def make_other_state(confidence: float, category=Category.other) -> dict:
+    state = make_state(confidence)
+    state["classification"].category = category
+    return state
+
+
+@pytest.mark.parametrize("confidence", [0.0, 0.59, 0.6, 0.95, 1.0])
+def test_category_other_always_goes_to_the_flag_node(confidence):
+    assert route_by_confidence(make_other_state(confidence)) == "flag_low_confidence"
+
+
+@pytest.mark.parametrize("category", [c for c in Category if c != Category.other])
+def test_every_other_category_still_branches_on_confidence(category):
+    assert route_by_confidence(make_other_state(0.95, category)) == "retrieve_kb"
+    assert route_by_confidence(make_other_state(0.2, category)) == "flag_low_confidence"
