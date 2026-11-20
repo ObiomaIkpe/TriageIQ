@@ -61,9 +61,9 @@ Tickets classified as `other` skip retrieval and drafting and go straight to hum
 
 ```mermaid
 flowchart LR
-    client([Client]) --> gateway["NestJS gateway<br/>(M3, foundation only)"]
+    client([Client]) --> gateway["NestJS gateway<br/>(M3.2: ticket intake, no worker yet)"]
     gateway --> app
-    gateway --- redis[("Redis<br/>beside the gateway, not used for tickets yet")]
+    gateway --- redis[("Redis<br/>the triage queue, beside the gateway")]
     app["FastAPI app<br/>(uvicorn)"] --> anthropic["Anthropic API<br/>classify, draft, critique"]
     app --> voyage["Voyage AI<br/>embeddings"]
     app --> pg[("Postgres + pgvector<br/>kb_documents, tickets, graph checkpoints")]
@@ -71,7 +71,7 @@ flowchart LR
     alembic --> pg
 ```
 
-The gateway is new and does not handle tickets yet (see [Gateway (M3)](#gateway-m3)). Until it does, clients still call the FastAPI app directly, and the app stays reachable on port 8000.
+The gateway accepts and queues tickets, but nothing takes them off the queue yet (see [Gateway (M3)](#gateway-m3)). To get a triage result today, clients still call `POST /triage` on the FastAPI app directly, and the app stays reachable on port 8000.
 
 ## API
 
@@ -250,9 +250,9 @@ Known limits: phrase checks cannot tell a reply that refuses a request from one 
 
 ## Gateway (M3)
 
-`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. Those come in later steps (M3.2 to M3.5). **Right now it only starts, checks its settings, and reports whether it and its dependencies are healthy.** It does not accept tickets, run queues, authenticate or rate limit.
+`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. It is built in steps (M3.1 to M3.5). **So far it starts, checks its settings, reports health, and accepts tickets onto a queue (M3.2). Nothing takes them off the queue yet: a worker that calls the Python service arrives in M3.3, so every job stays `queued` until then.** There is no authentication, rate limiting, retry or duplicate protection yet.
 
-Redis runs beside it (compose service `redis`, appendonly persistence on, published on host port **6380**) for the queue that comes next.
+Redis holds the queue (compose service `redis`, appendonly persistence on, published on host port **6380**, bound to localhost).
 
 Run it with the rest of the stack (`docker compose up --build -d`); the gateway is published on port **3000**. To run it by itself you need Node 24:
 
@@ -284,7 +284,62 @@ Endpoints:
 
 Reasons are short fixed phrases (`timeout`, `connection refused`, `host not found`, `unreachable`, `status 503`). They never include URLs or stack traces. Redis being down at startup does not stop the gateway; it keeps retrying and `/ready` answers 503 until Redis is back.
 
-Tests (Vitest; lint is oxlint): `npm test`, `npm run test:e2e` and `npm run lint` inside `gateway/`.
+### Ticket intake and job status
+
+`POST /tickets` checks a ticket, stores it on the BullMQ queue named `triage`, and answers at once with a job id. `GET /jobs/:id` reports where that job is. This is not the same as the Python `POST /triage`: it does not wait for the AI work, and it returns no category or reply.
+
+```bash
+curl -i -X POST http://localhost:3000/tickets \
+  -H 'Content-Type: application/json' \
+  -d '{"subject": "Cannot log in", "body": "I forgot my password.", "customer_id": "cust-42"}'
+```
+
+```
+HTTP/1.1 202 Accepted
+Location: /jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
+
+{"job_id":"3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34","status":"queued","status_url":"/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34"}
+```
+
+```bash
+curl http://localhost:3000/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
+```
+
+```json
+{"job_id": "3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34", "status": "queued", "received_at": "2026-11-20T10:00:00.000Z"}
+```
+
+When the job is `done` the response also has `"result"` (what the worker returned). When it is `failed` it has `"error"`, a one-line reason with no stack trace.
+
+| `status` | Meaning (BullMQ state) |
+|---|---|
+| `queued` | waiting, delayed, prioritized or waiting-children |
+| `running` | active |
+| `done` | completed |
+| `failed` | failed |
+
+Rules and limits:
+
+| Rule | Result |
+|---|---|
+| `subject`: text, trimmed, 1 to 200 characters. `body`: text, trimmed, 1 to 5000. `customer_id`: optional text, at most 100. Any other field is rejected | otherwise `400 {"detail":"Invalid ticket","errors":[{"field":"subject","problem":"must not be empty"}]}`. The messages never repeat what you sent |
+| Content type must be `application/json` | otherwise `415` |
+| JSON body at most 100 kb | otherwise `413`, before the body is parsed |
+| Malformed JSON | `400 {"detail":"Request body is not valid JSON"}` |
+| The job could not be stored within about 2 seconds (Redis down) | `503 {"detail":"Ticket intake is temporarily unavailable; please retry"}`. It never answers 202 for a ticket it did not store |
+| `GET /jobs/:id` with an id that is not a UUID | `400 {"detail":"Malformed job id"}` |
+| `GET /jobs/:id` with an unknown id | `404 {"detail":"Job not found"}` |
+| `GET /jobs/:id` while Redis is down | `503` |
+
+The field names match the Python `TicketIn`, but the gateway is stricter: the Python service accepts an empty subject or body, no length limits, and `"customer_id": null`, while the gateway rejects all three. A ticket the gateway accepts is always valid for the Python service. Finished jobs stay in Redis for 1 day (failed ones for 7 days) and are then removed.
+
+Tests (Vitest; lint is oxlint): `npm test`, `npm run test:e2e` and `npm run lint` inside `gateway/`. Tests that need a real Redis are skipped unless `REDIS_TEST_URL` is set, for example:
+
+```bash
+docker run --rm -d --name gw-redis-test -p 6390:6379 redis:8.10.3-alpine
+REDIS_TEST_URL=redis://localhost:6390 npm run test:e2e
+docker stop gw-redis-test
+```
 
 ## Project layout
 
@@ -298,7 +353,7 @@ app/
   db.py, migrations.py engine and sessions; running Alembic from the app
   models.py            Pydantic models and the graph state
 alembic/               migrations (the only place that creates tables)
-gateway/               NestJS gateway (M3.1: config, Redis, /health and /ready only)
+gateway/               NestJS gateway (M3.2: config, Redis, /health, /ready, POST /tickets, GET /jobs/:id; no worker yet)
 evals/                 labelled tickets, deterministic scoring, and the eval runner
 tests/                 unit tests; tests/integration/ needs a real Postgres
 ```
