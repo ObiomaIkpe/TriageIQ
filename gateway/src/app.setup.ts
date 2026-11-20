@@ -35,5 +35,4 @@ export const bodyErrorHandler: ErrorRequestHandler = (error, _request, response,
 export function configureApp(app: NestExpressApplication): void {
   app.useBodyParser('json', { limit: BODY_LIMIT });
   app.use(bodyErrorHandler);
-  app.enableShutdownHooks();
 }

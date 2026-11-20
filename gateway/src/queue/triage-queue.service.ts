@@ -75,10 +75,17 @@ export class TriageQueueService {
   /** The job's current state and data, or undefined when there is no such job. */
   async findJob(id: string): Promise<JobSnapshot | undefined> {
     return this.guarded(async () => {
-      const job = await this.queue.getJob(id);
+      let job = await this.queue.getJob(id);
       if (!job) return undefined;
+      const state = await job.getState();
+      if (state === 'completed' || state === 'failed') {
+        // The job above may have been read just BEFORE it finished, so its result (or failure
+        // reason) could still be empty. Both states are final, so read it once more.
+        job = await this.queue.getJob(id);
+        if (!job) return undefined;
+      }
       return {
-        state: await job.getState(),
+        state,
         data: job.data,
         returnvalue: job.returnvalue,
         failedReason: job.failedReason,

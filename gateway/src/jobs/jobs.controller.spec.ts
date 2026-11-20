@@ -65,6 +65,38 @@ describe('JobsController.get', () => {
     });
   });
 
+  it('a job that finishes between the two reads still shows its final result', async () => {
+    // First read: job still running, no result yet. It then completes. Second read: final.
+    const before = new FakeJob(DATA, 'completed'); // getState() answers after it finished
+    before.returnvalue = null;
+    const after = new FakeJob(DATA, 'completed');
+    after.returnvalue = { category: 'billing' };
+    const queue = new FakeQueue();
+    const reads = [before, after];
+    queue.getJob = () => Promise.resolve(reads.shift());
+
+    expect(await setup(queue).get(ID)).toEqual({
+      job_id: ID,
+      status: 'done',
+      received_at: DATA.received_at,
+      result: { category: 'billing' },
+    });
+  });
+
+  it('the same for a job that fails between the two reads', async () => {
+    const before = new FakeJob(DATA, 'failed');
+    const after = new FakeJob(DATA, 'failed');
+    after.failedReason = 'rejected by triage service (422)';
+    const queue = new FakeQueue();
+    const reads = [before, after];
+    queue.getJob = () => Promise.resolve(reads.shift());
+
+    expect(await setup(queue).get(ID)).toMatchObject({
+      status: 'failed',
+      error: 'rejected by triage service (422)',
+    });
+  });
+
   it('result and error are absent unless done or failed', async () => {
     const body = await withJob('active', { returnvalue: 'x', failedReason: 'y' }).get(ID);
     expect(body).not.toHaveProperty('result');

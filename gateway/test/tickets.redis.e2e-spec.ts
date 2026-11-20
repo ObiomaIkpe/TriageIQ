@@ -4,7 +4,8 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { afterAll, beforeAll, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
-import { stubEnv } from './app-helpers.js';
+import { WorkerModule } from '../src/worker/worker.module.js';
+import { NoWorkerModule, stubEnv } from './app-helpers.js';
 
 /**
  * Runs against a REAL Redis. Skipped unless REDIS_TEST_URL is set, e.g.
@@ -23,7 +24,11 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
   beforeAll(async () => {
     stubEnv(REDIS_TEST_URL);
     const { AppModule } = await import('../src/app.module.js');
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    // No worker here: this file checks intake only, and a worker would take the job off the queue.
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideModule(WorkerModule)
+      .useModule(NoWorkerModule)
+      .compile();
     app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
     configureApp(app);
     await app.init();
@@ -63,7 +68,7 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
       received_at: get.body.received_at,
     });
     expect(new Date(get.body.received_at).getTime()).toBeGreaterThanOrEqual(before - 1);
-    // Nothing consumes the queue yet (no worker until M3.3), so it must still be waiting.
+    // No worker runs in this file (see beforeAll), so the job must still be waiting.
     expect(await job?.getState()).toBe('waiting');
   });
 

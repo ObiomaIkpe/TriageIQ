@@ -40,10 +40,14 @@ services:
   gateway:
     build: ./gateway
     restart: unless-stopped
+    # Must stay longer than TRIAGE_TIMEOUT_MS, so a running job can finish before the container is killed.
+    stop_grace_period: 130s
     environment:
       PORT: "3000"
       REDIS_URL: redis://redis:6379
       TRIAGE_SERVICE_URL: http://app:8000
+      WORKER_CONCURRENCY: "2"
+      TRIAGE_TIMEOUT_MS: "120000"
     ports:
       - "3000:3000"
     depends_on:

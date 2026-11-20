@@ -61,7 +61,7 @@ Tickets classified as `other` skip retrieval and drafting and go straight to hum
 
 ```mermaid
 flowchart LR
-    client([Client]) --> gateway["NestJS gateway<br/>(M3.2: ticket intake, no worker yet)"]
+    client([Client]) --> gateway["NestJS gateway<br/>(M3.3: ticket intake + triage worker)"]
     gateway --> app
     gateway --- redis[("Redis<br/>the triage queue, beside the gateway")]
     app["FastAPI app<br/>(uvicorn)"] --> anthropic["Anthropic API<br/>classify, draft, critique"]
@@ -71,7 +71,7 @@ flowchart LR
     alembic --> pg
 ```
 
-The gateway accepts and queues tickets, but nothing takes them off the queue yet (see [Gateway (M3)](#gateway-m3)). To get a triage result today, clients still call `POST /triage` on the FastAPI app directly, and the app stays reachable on port 8000.
+The gateway accepts tickets, queues them, and its worker sends each one to the FastAPI app and keeps the result (see [Gateway (M3)](#gateway-m3)). The gateway does not yet add authentication, rate limits or duplicate protection, so the app stays reachable on port 8000 and clients can still call `POST /triage` directly.
 
 ## API
 
@@ -250,7 +250,7 @@ Known limits: phrase checks cannot tell a reply that refuses a request from one 
 
 ## Gateway (M3)
 
-`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. It is built in steps (M3.1 to M3.5). **So far it starts, checks its settings, reports health, and accepts tickets onto a queue (M3.2). Nothing takes them off the queue yet: a worker that calls the Python service arrives in M3.3, so every job stays `queued` until then.** There is no authentication, rate limiting, retry or duplicate protection yet.
+`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. It is built in steps (M3.1 to M3.5). **So far it starts, checks its settings, reports health, accepts tickets onto a queue (M3.2), and runs a worker that sends each queued ticket to the Python service `POST /triage` and stores the result on the job (M3.3).** There is no authentication, rate limiting, dead-letter list or duplicate protection yet (M3.4 and M3.5), and one failure can still create a second ticket (see "Known gap" below).
 
 Redis holds the queue (compose service `redis`, appendonly persistence on, published on host port **6380**, bound to localhost).
 
@@ -263,13 +263,15 @@ npm install
 npm run start:dev
 ```
 
-Settings (all three are required; the gateway refuses to start if one is missing or invalid, and names each bad setting without printing its value):
+Settings. The first three are required; the last two are optional and have defaults. The gateway refuses to start if one is missing or invalid, and names each bad setting without printing its value:
 
 | Variable | Local default | Purpose |
 |---|---|---|
 | `PORT` | `3000` | Port the gateway listens on (1 to 65535) |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection (`redis://` or `rediss://`). In Docker, compose sets `redis://redis:6379` |
 | `TRIAGE_SERVICE_URL` | `http://localhost:8000` | Base URL of the Python service. In Docker, compose sets `http://app:8000` |
+| `WORKER_CONCURRENCY` | `2` | How many tickets the worker sends to the Python service at the same time (1 to 10). Each ticket costs several Claude calls and a Voyage call, so this also protects the API rate limits |
+| `TRIAGE_TIMEOUT_MS` | `120000` | How long the worker waits for one answer from the Python service (1000 to 600000). A triage run makes several LLM calls, so this is generous |
 
 Endpoints:
 
@@ -309,12 +311,19 @@ curl http://localhost:3000/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
 {"job_id": "3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34", "status": "queued", "received_at": "2026-11-20T10:00:00.000Z"}
 ```
 
-When the job is `done` the response also has `"result"` (what the worker returned). When it is `failed` it has `"error"`, a one-line reason with no stack trace.
+When the job is `done` the response also has `"result"`: the Python service's full triage answer (`ticket_id`, `reference`, `category`, `urgency`, `confidence`, `routing_target`, `suggested_reply`, `kb_sources`, `needs_human_review`, `review_reason`). A ticket flagged for human review is still `done`: the worker only reports that triage ran, and the ticket waits in Postgres as `pending_review`. When a job is `failed` it has `"error"`, a short fixed reason with no URL, stack trace or ticket text.
+
+```json
+{"job_id": "3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34", "status": "done", "received_at": "2026-11-20T10:00:00.000Z",
+ "result": {"ticket_id": "9b1d...", "reference": "TIQ-7K2M9Q", "category": "account", "needs_human_review": true, "...": "..."}}
+
+{"job_id": "...", "status": "failed", "received_at": "...", "error": "rejected by triage service (422)"}
+```
 
 | `status` | Meaning (BullMQ state) |
 |---|---|
-| `queued` | waiting, delayed, prioritized or waiting-children |
-| `running` | active |
+| `queued` | waiting, delayed (including waiting to retry), prioritized or waiting-children |
+| `running` | active (the worker is waiting for the Python service) |
 | `done` | completed |
 | `failed` | failed |
 
@@ -333,7 +342,26 @@ Rules and limits:
 
 The field names match the Python `TicketIn`, but the gateway is stricter: the Python service accepts an empty subject or body, no length limits, and `"customer_id": null`, while the gateway rejects all three. A ticket the gateway accepts is always valid for the Python service. Finished jobs stay in Redis for 1 day (failed ones for 7 days) and are then removed.
 
-Tests (Vitest; lint is oxlint): `npm test`, `npm run test:e2e` and `npm run lint` inside `gateway/`. Tests that need a real Redis are skipped unless `REDIS_TEST_URL` is set, for example:
+### The worker and retries
+
+The worker runs inside the gateway process. For each job it sends `{subject, body, customer_id}` to `POST {TRIAGE_SERVICE_URL}/triage` and waits up to `TRIAGE_TIMEOUT_MS`. A job gets at most **5 attempts**. After a failed attempt that is worth repeating, it waits `max(Retry-After, 10 s x 2^(n-1))` after attempt n, never more than 5 minutes: 10 s, 20 s, 40 s, then 80 s.
+
+| Answer from the Python service | What happens | Why |
+|---|---|---|
+| `2xx` with JSON | job `done`, the JSON is the result | |
+| `503`, `429` | retry, waiting at least the `Retry-After` it sent (seconds or an HTTP date) | The service says "later". Python sends `503` with `Retry-After: 30` when Claude or the database is unavailable |
+| `502`, `504`, timeout, connection refused, DNS failure, connection reset | retry (no `Retry-After` is read) | The service or a proxy in front of it is unreachable or slow |
+| `400`, `404`, `409`, `422` and any other `4xx` | `failed` at once | The request itself is wrong. Sending it again gets the same answer |
+| `500`, `501` and any other `5xx` | `failed` at once | **A `500` is not retried on purpose.** The Python service returns `500` for problems a retry cannot fix, such as an invalid Anthropic key or a bug, and every retry would repeat several paid LLM calls |
+| `2xx` that is not valid JSON | `failed` at once | Something is wrong with the service, not the load |
+
+When the attempts run out the job is `failed` with the last reason. Failure reasons are short fixed phrases such as `triage service unavailable (503)`, `timeout` or `rejected by triage service (422)`: never a URL, response body or ticket text. The worker logs one line per attempt (job id, attempt, outcome, duration) and never the ticket text. Jobs queued before M3.3 keep the options they were queued with (one attempt, no backoff).
+
+**Stopping the gateway.** On `SIGTERM` the gateway stops taking work and waits for the jobs that are running, then exits. Docker only waits 10 seconds by default and then kills the container. A job that was running at that moment is not lost, but BullMQ only notices after the job's lock runs out (about a minute) and then runs it again, so the Python service can receive the same ticket twice. To avoid this, give the gateway a stop timeout longer than `TRIAGE_TIMEOUT_MS` (for example `stop_grace_period: 130s` in `docker-compose.yml`); the compose file does not set one yet.
+
+**Known gap (fixed in M3.4).** If the worker stops after the Python service has saved the ticket but before the job is marked `done` (a crash, a killed container, a timeout that fires just after Python finished), the retry sends the ticket again and Python saves a second one. Until M3.4 adds idempotency, treat a retry after a timeout as possibly creating a duplicate ticket.
+
+Tests (Vitest; lint is oxlint): `npm test`, `npm run test:e2e` and `npm run lint` inside `gateway/`. Tests that need a real Redis (including the worker retry tests, which take about 30 seconds because they use the real backoff) are skipped unless `REDIS_TEST_URL` is set, for example:
 
 ```bash
 docker run --rm -d --name gw-redis-test -p 6390:6379 redis:8.10.3-alpine
@@ -353,7 +381,7 @@ app/
   db.py, migrations.py engine and sessions; running Alembic from the app
   models.py            Pydantic models and the graph state
 alembic/               migrations (the only place that creates tables)
-gateway/               NestJS gateway (M3.2: config, Redis, /health, /ready, POST /tickets, GET /jobs/:id; no worker yet)
+gateway/               NestJS gateway (M3.3: config, Redis, /health, /ready, POST /tickets, GET /jobs/:id, triage worker)
 evals/                 labelled tickets, deterministic scoring, and the eval runner
 tests/                 unit tests; tests/integration/ needs a real Postgres
 ```

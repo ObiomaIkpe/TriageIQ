@@ -29,6 +29,9 @@ describe('validateEnv', () => {
       PORT: 3000,
       REDIS_URL: 'redis://localhost:6379',
       TRIAGE_SERVICE_URL: 'http://localhost:8000',
+      // The two optional settings fall back to their defaults.
+      WORKER_CONCURRENCY: 2,
+      TRIAGE_TIMEOUT_MS: 120000,
     });
   });
 
@@ -100,8 +103,59 @@ describe('validateEnv', () => {
       const match = /^([A-Z_]+)=(.*)$/.exec(line.trim());
       if (match) env[match[1]] = match[2];
     }
-    expect(Object.keys(env).sort()).toEqual(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL']);
+    expect(Object.keys(env).sort()).toEqual([
+      'PORT',
+      'REDIS_URL',
+      'TRIAGE_SERVICE_URL',
+      'TRIAGE_TIMEOUT_MS',
+      'WORKER_CONCURRENCY',
+    ]);
     expect(() => validateEnv(env)).not.toThrow();
+  });
+});
+
+describe('worker settings', () => {
+  it('use their defaults when missing or blank', () => {
+    for (const blank of [undefined, '', '   ']) {
+      const config = validateEnv({ ...VALID, WORKER_CONCURRENCY: blank, TRIAGE_TIMEOUT_MS: blank });
+      expect(config.WORKER_CONCURRENCY).toBe(2);
+      expect(config.TRIAGE_TIMEOUT_MS).toBe(120000);
+    }
+  });
+
+  it('are read as numbers', () => {
+    const config = validateEnv({ ...VALID, WORKER_CONCURRENCY: '10', TRIAGE_TIMEOUT_MS: '1000' });
+    expect(config.WORKER_CONCURRENCY).toBe(10);
+    expect(config.TRIAGE_TIMEOUT_MS).toBe(1000);
+    expect(validateEnv({ ...VALID, TRIAGE_TIMEOUT_MS: '600000' }).TRIAGE_TIMEOUT_MS).toBe(600000);
+    expect(validateEnv({ ...VALID, WORKER_CONCURRENCY: '1' }).WORKER_CONCURRENCY).toBe(1);
+  });
+
+  it.each([
+    ['WORKER_CONCURRENCY', '0'],
+    ['WORKER_CONCURRENCY', '11'],
+    ['WORKER_CONCURRENCY', '2.5'],
+    ['WORKER_CONCURRENCY', '-1'],
+    ['WORKER_CONCURRENCY', 'many'],
+    ['TRIAGE_TIMEOUT_MS', '999'],
+    ['TRIAGE_TIMEOUT_MS', '600001'],
+    ['TRIAGE_TIMEOUT_MS', '1500.5'],
+    ['TRIAGE_TIMEOUT_MS', 'soon'],
+  ])('%s=%s -> invalid, error names it and not the value', (name, value) => {
+    const error = failure({ ...VALID, [name]: value });
+    expect(error.message).toContain(`${name} is invalid`);
+    expect(error.message).not.toContain(`=${value}`);
+    expect(error.problems).toHaveLength(1);
+  });
+
+  it('never put an invalid value in the error', () => {
+    const error = failure({
+      ...VALID,
+      WORKER_CONCURRENCY: `${SECRET}-a`,
+      TRIAGE_TIMEOUT_MS: `${SECRET}-b`,
+    });
+    expect(error.message).not.toContain(SECRET);
+    expect(error.problems).toHaveLength(2);
   });
 });
 

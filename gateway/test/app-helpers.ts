@@ -1,10 +1,12 @@
 import { getQueueToken } from '@nestjs/bullmq';
+import { Module } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { QUEUE_TIMEOUT_MS, TRIAGE_QUEUE } from '../src/queue/queue.constants.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
+import { WorkerModule } from '../src/worker/worker.module.js';
 import type { FakeQueue } from './fake-queue.js';
 
 /** Valid settings for the app. Call before loading the app module. */
@@ -13,6 +15,10 @@ export function stubEnv(redisUrl = 'redis://localhost:6379') {
   vi.stubEnv('REDIS_URL', redisUrl);
   vi.stubEnv('TRIAGE_SERVICE_URL', 'http://localhost:8000');
 }
+
+/** Stands in for WorkerModule, so a test that only checks intake never runs a worker. */
+@Module({})
+export class NoWorkerModule {}
 
 const fakeRedisClient = {
   ping: async () => 'PONG',
@@ -35,6 +41,8 @@ export async function startAppWithFakeQueue(
     .useValue(queue)
     .overrideProvider(QUEUE_TIMEOUT_MS)
     .useValue(timeoutMs)
+    .overrideModule(WorkerModule)
+    .useModule(NoWorkerModule)
     .compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
   configureApp(app);
