@@ -61,12 +61,17 @@ Tickets classified as `other` skip retrieval and drafting and go straight to hum
 
 ```mermaid
 flowchart LR
+    client([Client]) --> gateway["NestJS gateway<br/>(M3, foundation only)"]
+    gateway --> app
+    gateway --- redis[("Redis<br/>beside the gateway, not used for tickets yet")]
     app["FastAPI app<br/>(uvicorn)"] --> anthropic["Anthropic API<br/>classify, draft, critique"]
     app --> voyage["Voyage AI<br/>embeddings"]
     app --> pg[("Postgres + pgvector<br/>kb_documents, tickets, graph checkpoints")]
     app --> alembic["Alembic migrations<br/>run at startup"]
     alembic --> pg
 ```
+
+The gateway is new and does not handle tickets yet (see [Gateway (M3)](#gateway-m3)). Until it does, clients still call the FastAPI app directly, and the app stays reachable on port 8000.
 
 ## API
 
@@ -243,6 +248,44 @@ What changed, in order: a KB relevance grader after retrieval (distance threshol
 
 Known limits: phrase checks cannot tell a reply that refuses a request from one that agrees to it, or recognise paraphrase; three urgency labels remain judgment calls; injection is only checked on tickets that reach the grader.
 
+## Gateway (M3)
+
+`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. Those come in later steps (M3.2 to M3.5). **Right now it only starts, checks its settings, and reports whether it and its dependencies are healthy.** It does not accept tickets, run queues, authenticate or rate limit.
+
+Redis runs beside it (compose service `redis`, appendonly persistence on, published on host port **6380**) for the queue that comes next.
+
+Run it with the rest of the stack (`docker compose up --build -d`); the gateway is published on port **3000**. To run it by itself you need Node 24:
+
+```bash
+cd gateway
+cp .env.example .env     # set REDIS_URL=redis://localhost:6380 if you use the compose Redis
+npm install
+npm run start:dev
+```
+
+Settings (all three are required; the gateway refuses to start if one is missing or invalid, and names each bad setting without printing its value):
+
+| Variable | Local default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | Port the gateway listens on (1 to 65535) |
+| `REDIS_URL` | `redis://localhost:6379` | Redis connection (`redis://` or `rediss://`). In Docker, compose sets `redis://redis:6379` |
+| `TRIAGE_SERVICE_URL` | `http://localhost:8000` | Base URL of the Python service. In Docker, compose sets `http://app:8000` |
+
+Endpoints:
+
+- `GET /health` is liveness and checks nothing else: `200 {"status":"ok"}`.
+- `GET /ready` pings Redis and calls `GET {TRIAGE_SERVICE_URL}/ready`, in parallel, each with a 1.5 second timeout. A non-2xx answer from the Python service counts as down.
+
+```json
+200 {"status":"ready","checks":{"redis":"ok","triage":"ok"}}
+
+503 {"status":"not_ready","checks":{"redis":"ok","triage":"down"},"reasons":{"triage":"status 503"}}
+```
+
+Reasons are short fixed phrases (`timeout`, `connection refused`, `host not found`, `unreachable`, `status 503`). They never include URLs or stack traces. Redis being down at startup does not stop the gateway; it keeps retrying and `/ready` answers 503 until Redis is back.
+
+Tests (Vitest; lint is oxlint): `npm test`, `npm run test:e2e` and `npm run lint` inside `gateway/`.
+
 ## Project layout
 
 ```
@@ -255,6 +298,7 @@ app/
   db.py, migrations.py engine and sessions; running Alembic from the app
   models.py            Pydantic models and the graph state
 alembic/               migrations (the only place that creates tables)
+gateway/               NestJS gateway (M3.1: config, Redis, /health and /ready only)
 evals/                 labelled tickets, deterministic scoring, and the eval runner
 tests/                 unit tests; tests/integration/ needs a real Postgres
 ```

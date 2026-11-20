@@ -218,3 +218,14 @@ The full, exhaustive roadmap lives in `ROADMAP.md` (sections A-L, with a suggest
 - Blocking: this is a plain def, not async def. FastAPI runs plain def endpoints in a threadpool, so the blocking invoke does not freeze the event loop. The blocking-invoke concern formerly listed as gap #4 is therefore a non-issue for the current code. It would only apply if someone changed this to async def without switching to ainvoke. The note has been corrected.
 - Status code: the endpoint uses the default 200, which is correct since nothing is persisted.
 - Unused import: GraphState is used for the annotation on line 11, so that import is fine.
+
+## Gateway foundation (M3.1)
+
+- **Same repo.** The gateway lives in `gateway/` next to the Python service, not in its own repository. One `docker compose` file runs both, and one commit can change both sides of a contract.
+- **ioredis.** BullMQ (the planned queue in M3.2) is built on ioredis, so the gateway uses the same client library from the start instead of adding a second Redis client later. One client is provided through Nest DI. It connects in the background and retries, so the app boots with Redis down; its error handler logs only an error code, never the URL.
+- **Python stays reachable.** Port 8000 is still published and clients can still call the Python service directly. That only changes at M3.5, once the gateway has auth and rate limits. Until then the gateway adds no protection.
+- **Config.** `@nestjs/config` with a zod schema. The error message is built from the setting NAME and a fixed hint, never the value, so a password in `REDIS_URL` cannot reach a log. A first version used `new URL()` inside a zod refine and leaked the input in a raw TypeError; a test caught it, and the parse is now wrapped so no raw error can escape.
+- **Tooling is the Nest 12 scaffold's:** Vitest, oxlint, ESM, TypeScript 6 (TypeScript 7 exists, but the scaffold pins 6, and ts-jest, the usual Jest TypeScript transformer, only supports versions below 7; I did not test Vitest or oxlint on 7). The scaffold's `@nestjs/observe`, `@nestjs/mau`, `nest deploy` script and generated agent docs were removed on purpose.
+- **Node 24.** The Dockerfile uses `node:24-slim`, and the tests were run inside a `node:24` container so the tested Node matches the runtime Node.
+- **/ready shape.** A failing check is `"down"` in `checks`, and a sibling `reasons` object holds the short reason. The top-level status is `not_ready` (the Python service uses the same word). Only the status code of the Python `/ready` is used.
+- **Redis is published on 6380 with no password**, the same way Postgres is published on 5433. Docker binds published ports on all interfaces, so on a shared network use `127.0.0.1:6380:6379`.

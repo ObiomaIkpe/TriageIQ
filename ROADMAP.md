@@ -79,6 +79,7 @@ Baseline already in place:
 
 ## D. Scale and async processing
 
+- [x] **D1a. Gateway foundation (M3.1).** NestJS service in `gateway/` with validated config, an ioredis client, `/health` and `/ready`, and Redis in compose. No ticket handling, queue, auth or rate limiting yet (M3.2 to M3.5).
 - [ ] **D1. Queue + workers** (Celery/RQ/Arq): `POST /triage` returns `202` with a ticket ID; `GET /triage/{id}` returns status/result.
 - [ ] **D2. Signed webhooks** for completion, with retries.
 - [ ] **D3. Batch endpoint** for bulk triage.

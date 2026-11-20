@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: triageiq
       POSTGRES_DB: triageiq
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - triageiq_pgdata:/var/lib/postgresql/data
 
@@ -23,5 +23,35 @@ services:
     depends_on:
       - db
 
+  redis:
+    image: redis:8.10.3-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - triageiq_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build: ./gateway
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      REDIS_URL: redis://redis:6379
+      TRIAGE_SERVICE_URL: http://app:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_started
+
 volumes:
   triageiq_pgdata:
+  triageiq_redisdata:
