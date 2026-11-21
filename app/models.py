@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
+from app.tickets.reference import REFERENCE_PATTERN
+
 
 class Category(str, Enum):
     billing = "billing"
@@ -28,6 +30,14 @@ class TicketIn(BaseModel):
     # Optional idempotency key. When given, it becomes the ticket's id and the run's
     # thread id, and the same id can be sent again without triaging or saving twice.
     ticket_id: Optional[UUID] = None
+    # Optional ticket reference (TKT-XXXXXX), made by the gateway at accept time. When given, it is
+    # the ticket's reference; when absent Python makes one, as before. A supplied reference that
+    # already belongs to a DIFFERENT ticket is a 409 (code reference_conflict), never a silent change.
+    reference: Optional[str] = Field(default=None, pattern=REFERENCE_PATTERN)
+    # Who wrote in, from the public form. Stored and shown to reviewers, but NEVER sent to the model:
+    # the graph is run with a copy of the ticket that has these removed (see app/api/triage.py).
+    customer_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    customer_email: Optional[str] = Field(default=None, min_length=1, max_length=254)
 
 
 class ClassificationResult(BaseModel):
@@ -82,6 +92,9 @@ class TicketRecord(TriageResult):
     reviewed_at: Optional[datetime] = None
     # None for a ticket not reviewed yet, and for one reviewed before reviewers were recorded.
     reviewed_by: Optional[ReviewedBy] = None
+    # From the public form; None for tickets that came in through an API client.
+    customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
 
 
 class ReviewDecision(BaseModel):

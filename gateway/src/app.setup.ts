@@ -1,7 +1,9 @@
 import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { ErrorRequestHandler } from 'express';
+import { json } from 'express';
 import helmet from 'helmet';
+import { PUBLIC_BODY_LIMIT } from './public-tickets/public.constants.js';
 
 /** JSON bodies larger than this get a 413 before they are parsed. */
 export const BODY_LIMIT = '100kb';
@@ -42,6 +44,9 @@ export function configureApp(app: NestExpressApplication): void {
   // First, so every response (errors and 401s included) carries the security headers.
   // helmet's defaults also remove X-Powered-By.
   app.use(helmet());
+  // The public form is open to the internet, so its body limit is much smaller (a ticket is a few KB at most).
+  // This parser runs first for that path and leaves nothing for the general one; too large is a 413 from the same handler.
+  app.use('/public', json({ limit: PUBLIC_BODY_LIMIT }));
   app.useBodyParser('json', { limit: BODY_LIMIT });
   app.use(bodyErrorHandler);
 }

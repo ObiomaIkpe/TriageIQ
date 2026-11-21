@@ -6,6 +6,7 @@ import { DatabaseModule } from './database/database.module.js';
 import { DeadLettersModule } from './dead-letters/dead-letters.module.js';
 import { HealthModule } from './health/health.module.js';
 import { JobsModule } from './jobs/jobs.module.js';
+import { PublicTicketsModule } from './public-tickets/public-tickets.module.js';
 import { RedisModule } from './redis/redis.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
 import { TriageApiModule } from './triage-api/triage-api.module.js';
@@ -22,6 +23,7 @@ import { WorkerModule } from './worker/worker.module.js';
     AuthModule,
     HealthModule,
     TicketsModule,
+    PublicTicketsModule,
     TriageApiModule,
     JobsModule,
     DeadLettersModule,

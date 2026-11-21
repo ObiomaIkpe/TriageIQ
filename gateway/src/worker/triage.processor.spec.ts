@@ -188,3 +188,50 @@ describe('TriageProcessor sends the job id as ticket_id', () => {
     expect(sent(fetchFn)).not.toHaveProperty('ticket_id');
   });
 });
+
+describe('TriageProcessor with a reference and contact details (public form)', () => {
+  const ID = '3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34';
+  const PUBLIC_DATA: TicketJobData = { ...DATA, reference: 'TKT-ABC234', customer_name: 'Ọbiọma', customer_email: 'a@example.com' };
+  const publicJob = { id: ID, data: PUBLIC_DATA, attemptsMade: 0, opts: { attempts: 8 } } as unknown as Job<TicketJobData>;
+  const sent = (fetchFn: typeof fetch) =>
+    JSON.parse(((fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit])[1].body as string);
+  afterEach(() => vi.restoreAllMocks());
+
+  it('sends reference, customer_name and customer_email to Python with the ticket', async () => {
+    const fetchFn = reply(200, '{}');
+    await new TriageProcessor(config, fetchFn).process(publicJob);
+    expect(sent(fetchFn)).toEqual({
+      subject: SUBJECT, body: BODY, customer_id: 'c1', ticket_id: ID,
+      reference: 'TKT-ABC234', customer_name: 'Ọbiọma', customer_email: 'a@example.com',
+    });
+  });
+
+  it('an older job with none of them sends none of them', async () => {
+    const fetchFn = reply(200, '{}');
+    await new TriageProcessor(config, fetchFn).process({ id: ID, data: DATA, attemptsMade: 0, opts: {} } as unknown as Job<TicketJobData>);
+    expect(Object.keys(sent(fetchFn))).toEqual(['subject', 'body', 'customer_id', 'ticket_id']);
+  });
+
+  it('409 reference_conflict -> UnrecoverableError (dead letter) and a loud ERROR line with the reference but no ticket text', async () => {
+    const lines: string[] = [];
+    vi.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => void lines.push(String(m)));
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation((m: unknown) => void lines.push(String(m)));
+    const fetchFn = reply(409, JSON.stringify({ detail: { code: 'reference_conflict', message: 'x' } }));
+    const error = await new TriageProcessor(config, fetchFn).process(publicJob).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect((error as Error).message).toBe('reference conflict');
+    const log = lines.join('\n');
+    expect(log).toContain('REFERENCE CONFLICT');
+    expect(log).toContain('TKT-ABC234');
+    expect(log).not.toMatch(/SECRET|a@example.com|Ọbiọma/);
+  });
+
+  it('any other 409 is an ordinary rejection, not the loud case', async () => {
+    const lines: string[] = [];
+    vi.spyOn(Logger.prototype, 'error').mockImplementation((m: unknown) => void lines.push(String(m)));
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const error = await new TriageProcessor(config, reply(409, '{"detail":"other"}')).process(publicJob).catch((e: unknown) => e);
+    expect((error as Error).message).toBe('rejected by triage service (409)');
+    expect(lines).toEqual([]);
+  });
+});

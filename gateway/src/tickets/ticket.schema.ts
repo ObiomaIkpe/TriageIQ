@@ -44,9 +44,13 @@ function isMissing(input: unknown, field: string): boolean {
 export function parseTicket(input: unknown): ParseResult {
   const result = ticketSchema.safeParse(input);
   if (result.success) return { ok: true, data: result.data };
+  return { ok: false, problems: problemsFrom(result.error, input) };
+}
 
+/** Field problems from a failed zod parse, worded without ever quoting a submitted value. Shared by every body schema. */
+export function problemsFrom(error: z.ZodError, input: unknown): FieldProblem[] {
   const problems: FieldProblem[] = [];
-  for (const issue of result.error.issues) {
+  for (const issue of error.issues) {
     const field = issue.path.map(String).join('.');
     switch (issue.code) {
       case 'unrecognized_keys':
@@ -73,5 +77,5 @@ export function parseTicket(input: unknown): ParseResult {
         problems.push({ field: field || '(body)', problem: 'is invalid' });
     }
   }
-  return { ok: false, problems };
+  return problems;
 }

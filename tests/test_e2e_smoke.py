@@ -44,6 +44,8 @@ class FakeGateway:
         self.sessions = {}  # session token -> email, for the cookie login
         self.allowed_origins = {ALLOWED_ORIGIN}
         self.last_token = None
+        self.public_calls = []  # (headers, body) of every POST /public/tickets
+        self.public_reads_before_found = 1  # the ticket is not there for the first read: the step must poll
 
     def new_ticket(self, subject):
         vague = "Help" in subject
@@ -135,6 +137,8 @@ def make_handler(fake: FakeGateway):
                 return self.send(200, {"status": "ready", "checks": {"redis": "ok", "triage": triage}})
             if path.startswith("/auth/"):
                 return self.handle_auth(method, path)
+            if method == "POST" and path == "/public/tickets":
+                return self.public_ticket()
             who = self.client()
             if who is None:
                 return self.send(200 if "open_gateway" in fake.faults else 401, {"detail": "Missing or invalid API key"})
@@ -154,6 +158,9 @@ def make_handler(fake: FakeGateway):
                 reference = path.rsplit("/", 1)[1]
                 for record in fake.tickets.values():
                     if record["reference"] == reference:
+                        if record.get("hidden_reads", 0) > 0:
+                            record["hidden_reads"] -= 1
+                            return self.send(404, {"detail": "Ticket not found"})
                         other = dict(record, subject="different") if "reads_differ" in fake.faults else record
                         return self.send(200, other)
                 return self.send(404, {"detail": "Ticket not found"})
@@ -174,6 +181,27 @@ def make_handler(fake: FakeGateway):
                     fake.tickets[ticket_id]["reviewed_by"] = {"id": f"client:{reviewer_name}", "name": reviewer_name}
                 return self.send(200, fake.tickets[ticket_id])
             return self.send(404, {"detail": "no such route"})
+
+        def public_ticket(self):
+            payload = self.body()
+            fake.public_calls.append((dict(self.headers), payload))
+            if "public_disabled" in fake.faults:
+                return self.send(404, {"message": "Not Found"})
+            if self.headers.get("Origin") not in fake.allowed_origins:
+                return self.send(403, {"message": "Origin not allowed"})
+            if not self.headers.get("Idempotency-Key"):
+                return self.send(400, {"message": "Please check the form and try again."})
+            if payload.get("turnstile_token") != "XXXX.DUMMY.TOKEN.XXXX":
+                return self.send(403, {"message": "Verification failed, please try again."})
+            record = fake.new_ticket(payload["subject"])
+            record["customer_id"] = "public-form"
+            record["customer_name"] = payload["name"]
+            record["customer_email"] = payload["email"] if "email_not_lowercased" in fake.faults else payload["email"].strip().lower()
+            record["hidden_reads"] = fake.public_reads_before_found
+            body = {"reference": record["reference"], "message": "Thanks, we received your message."}
+            if "public_leaks_job_id" in fake.faults:
+                body["job_id"] = str(uuid.uuid4())
+            self.send(202, body)
 
         def create(self, client):
             payload = self.body()
@@ -264,15 +292,15 @@ def test_all_steps_pass_against_a_healthy_gateway(gateway, capsys):
 
     assert code == 0, out
     # steps 1 to 9 as before; the optional login step 10 is skipped without reviewer credentials
-    assert results(out) == {**{n: "PASS" for n in range(1, 10)}, 10: "SKIP"}
-    assert re.search(r"Summary: 9 passed, 0 failed, 1 skipped in \d+\.\ds", out)
+    assert results(out) == {**{n: "PASS" for n in range(1, 10)}, 10: "SKIP", 11: "SKIP"}
+    assert re.search(r"Summary: 9 passed, 0 failed, 2 skipped in \d+\.\ds", out)
     assert err == ""
 
 
 def test_every_step_line_has_a_status_and_a_detail(gateway, capsys):
     _, out, _ = run(gateway, capsys)
     lines = [l for l in out.splitlines() if l.startswith("[")]
-    assert len(lines) == 10
+    assert len(lines) == 11
     for line in lines:
         assert re.match(r"^\[(PASS|FAIL|SKIP)\] step \d+: .+ - .+", line)
 
@@ -336,7 +364,7 @@ def test_a_failing_step_skips_the_steps_that_depend_on_it_and_the_rest_still_run
     assert [found[n] for n in (4, 5, 6)] == ["SKIP", "SKIP", "SKIP"]  # all need step 3 or 4
     assert "depends on step 3" in out
     assert [found[n] for n in (1, 2, 7, 8, 9)] == ["PASS"] * 5  # independent steps still ran
-    assert re.search(r"Summary: 5 passed, 1 failed, 4 skipped", out)
+    assert re.search(r"Summary: 5 passed, 1 failed, 5 skipped", out)
 
 
 def test_a_dependant_of_a_skipped_step_is_skipped_too(gateway, capsys):
@@ -496,8 +524,8 @@ def test_all_ten_steps_pass_with_reviewer_credentials(gateway, capsys):
     code, out, err = run(gateway, capsys, login=True)
 
     assert code == 0, out
-    assert results(out) == {n: "PASS" for n in range(1, 11)}
-    assert re.search(r"Summary: 10 passed, 0 failed, 0 skipped", out)
+    assert results(out) == {**{n: "PASS" for n in range(1, 11)}, 11: "SKIP"}
+    assert re.search(r"Summary: 10 passed, 0 failed, 1 skipped", out)
     assert err == ""
 
 
@@ -607,3 +635,61 @@ def test_step_8_uses_the_configured_reviewer_client_name(gateway, capsys):
 def test_the_script_documents_the_reviewer_client_setting():
     assert "E2E_REVIEWER_CLIENT" in SCRIPT.read_text()
 
+
+
+# --- step 11: the public form -----------------------------------------------------------------
+
+def test_step_11_is_skipped_unless_E2E_PUBLIC_FORM_is_1(gateway, capsys):
+    code, out, _ = run(gateway, capsys)
+    assert results(out)[11] == "SKIP" and "E2E_PUBLIC_FORM=1" in out
+    assert gateway.public_calls == []  # no real submission without the switch
+    assert code == 0
+
+
+def test_step_11_submits_with_the_dummy_token_and_origin_then_the_reviewer_reads_the_contact_details(gateway, capsys):
+    code, out, _ = run(gateway, capsys, extra_env={"E2E_PUBLIC_FORM": "1"})
+
+    assert code == 0, out
+    assert results(out)[11] == "PASS"
+    headers, body = gateway.public_calls[0]
+    assert body["turnstile_token"] == "XXXX.DUMMY.TOKEN.XXXX"
+    assert headers["Origin"] == ALLOWED_ORIGIN
+    assert headers["Idempotency-Key"].startswith("e2e-")
+    assert "Authorization" not in headers  # the public route needs no key
+    assert set(body) == {"name", "email", "subject", "message", "turnstile_token"}
+    assert body["subject"].startswith("[e2e ")
+    assert ("POST", "/public/tickets") in gateway.requests
+
+
+def test_step_11_polls_until_the_ticket_exists(gateway, capsys):
+    gateway.public_reads_before_found = 3
+    code, out, _ = run(gateway, capsys, extra_env={"E2E_PUBLIC_FORM": "1"})
+    assert results(out)[11] == "PASS", out
+    assert [r for r in gateway.requests if r[1].startswith("/tickets/reference/")].__len__() >= 4
+
+
+@pytest.mark.parametrize(
+    "fault, text",
+    [
+        ("public_disabled", "expected 202, got 404"),
+        ("public_leaks_job_id", "only a reference and a message"),
+        ("email_not_lowercased", "customer_email did not round-trip"),
+    ],
+)
+def test_step_11_fails_when_the_public_form_misbehaves(gateway, capsys, fault, text):
+    gateway.faults.add(fault)
+    code, out, _ = run(gateway, capsys, extra_env={"E2E_PUBLIC_FORM": "1"})
+    assert code == 1
+    assert results(out)[11] == "FAIL" and text in out
+
+
+def test_step_11_fails_with_a_wrong_origin_and_does_not_affect_the_steps_before_it(gateway, capsys):
+    code, out, _ = run(gateway, capsys, extra_env={"E2E_PUBLIC_FORM": "1", "E2E_ORIGIN": "http://evil.example"})
+    found = results(out)
+    assert found[11] == "FAIL" and "got 403" in out
+    assert all(found[n] == "PASS" for n in range(1, 10))
+
+
+def test_the_script_documents_the_public_form_setting():
+    text = open(smoke.__file__).read()
+    assert "E2E_PUBLIC_FORM" in text and "one model call" in text.lower()

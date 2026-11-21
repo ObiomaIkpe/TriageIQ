@@ -67,6 +67,7 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
       customer_id: 'cust-42',
       received_at: get.body.received_at,
       client: 'ops', // the API client that submitted it
+      reference: expect.stringMatching(/^TKT-[A-HJKMNP-Z2-9]{6}$/), // made by the gateway at accept time
     });
     expect(new Date(get.body.received_at).getTime()).toBeGreaterThanOrEqual(before - 1);
     // No worker runs in this file (see beforeAll), so the job must still be waiting.

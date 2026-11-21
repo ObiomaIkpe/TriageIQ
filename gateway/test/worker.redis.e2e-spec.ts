@@ -147,7 +147,7 @@ describe.skipIf(!REDIS_TEST_URL)('triage worker against a real Redis and a fake 
     });
     expect(callsFor('S-OK')).toHaveLength(1);
     // The Python service gets exactly the TicketIn fields, and the job id as ticket_id.
-    expect(callsFor('S-OK')[0].keys.sort()).toEqual(['body', 'customer_id', 'subject', 'ticket_id']);
+    expect(callsFor('S-OK')[0].keys.sort()).toEqual(['body', 'customer_id', 'reference', 'subject', 'ticket_id']);
     expect(callsFor('S-OK')[0].ticketId).toBe(id);
   });
 

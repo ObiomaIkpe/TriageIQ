@@ -42,6 +42,14 @@ export function stubAuthEnv(rateLimitPerMinute = '10000') {
   vi.stubEnv('LOGIN_MAX_FAILURES_PER_EMAIL', '5');
   vi.stubEnv('LOGIN_WINDOW_MINUTES', '15');
   vi.stubEnv('TRUST_PROXY', 'false');
+  // The public form is off unless a test turns it on; its other settings are stated so a local gateway/.env cannot leak in.
+  vi.stubEnv('PUBLIC_FORM_ENABLED', 'false');
+  vi.stubEnv('TURNSTILE_SECRET_KEY', '');
+  vi.stubEnv('TURNSTILE_VERIFY_URL', 'https://challenges.cloudflare.com/turnstile/v0/siteverify');
+  vi.stubEnv('TURNSTILE_EXPECTED_HOSTNAMES', '');
+  vi.stubEnv('TURNSTILE_EXPECTED_ACTION', '');
+  vi.stubEnv('PUBLIC_MAX_PER_IP_PER_HOUR', '5');
+  vi.stubEnv('PUBLIC_DAILY_CAP', '200');
   vi.stubEnv('GATEWAY_CLIENTS', JSON.stringify(TEST_REGISTRY));
   vi.stubEnv('RATE_LIMIT_PER_MINUTE', rateLimitPerMinute);
 }

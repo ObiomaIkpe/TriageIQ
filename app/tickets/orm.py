@@ -38,6 +38,9 @@ class TicketRow(Base):
     # Who decided, as a snapshot at review time. Both NULL for tickets reviewed before this existed.
     reviewed_by_id: Mapped[Optional[str]] = mapped_column(Text)
     reviewed_by_name: Mapped[Optional[str]] = mapped_column(Text)
+    # Who wrote in (public form only). Never part of what the model sees.
+    customer_name: Mapped[Optional[str]] = mapped_column(Text)
+    customer_email: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

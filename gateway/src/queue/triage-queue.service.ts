@@ -14,6 +14,18 @@ export interface TicketJobData {
   received_at: string;
   /** The API client that submitted the ticket. Missing on jobs created before M3.5a. */
   client?: string;
+  /** TKT-XXXXXX, made by the gateway at accept time. Missing on older jobs: Python then makes one. */
+  reference?: string;
+  /** Public form only. Kept out of every log and every model prompt. */
+  customer_name?: string;
+  customer_email?: string;
+}
+
+/** What a job carries beyond the ticket itself. */
+export interface JobExtras {
+  reference?: string;
+  customer_name?: string;
+  customer_email?: string;
 }
 
 /** The parts of a BullMQ Job this service reads. */
@@ -81,6 +93,7 @@ export class TriageQueueService {
     ticket: TicketInput,
     client: string,
     jobId: string = randomUUID(),
+    extras: JobExtras = {},
   ): Promise<{ jobId: string; receivedAt: string }> {
     const receivedAt = new Date().toISOString();
     const data: TicketJobData = {
@@ -89,6 +102,9 @@ export class TriageQueueService {
       customer_id: ticket.customer_id,
       received_at: receivedAt,
       client,
+      ...(extras.reference === undefined ? {} : { reference: extras.reference }),
+      ...(extras.customer_name === undefined ? {} : { customer_name: extras.customer_name }),
+      ...(extras.customer_email === undefined ? {} : { customer_email: extras.customer_email }),
     };
     await this.guarded(async (expired) => {
       // Wait for a live connection BEFORE sending the write. Otherwise, with Redis down, the

@@ -11,6 +11,20 @@ function problems(value: unknown): string[] {
   return result.problems;
 }
 
+describe('parseClients: the reserved name', () => {
+  it('rejects a client named public-form (that name owns the public form tickets)', () => {
+    const list = problems([entry({ name: 'public-form' })]);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toContain('reserved');
+  });
+
+  it('allows names that merely look similar', () => {
+    for (const name of ['public', 'public-forms', 'public-form-2', 'my-public-form']) {
+      expect(parse([entry({ name })]).ok).toBe(true);
+    }
+  });
+});
+
 describe('parseClients', () => {
   it('accepts a valid registry and returns the entries', () => {
     const result = parse([entry(), entry({ name: 'ops-1', role: 'reviewer', key_sha256: 'cd'.repeat(32) })]);

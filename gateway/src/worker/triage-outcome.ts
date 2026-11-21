@@ -16,6 +16,10 @@ export type TriageOutcome =
 export const REASON_TIMEOUT = 'timeout';
 export const REASON_INVALID_JSON = 'invalid response from triage service';
 export const REASON_UNEXPECTED = 'unexpected error contacting triage service';
+/** Python refused because the reference this gateway chose already belongs to a different ticket. A retry cannot fix it. */
+export const REASON_REFERENCE_CONFLICT = 'reference conflict';
+/** The code Python puts in the 409 body (app/api/triage.py, REFERENCE_CONFLICT). */
+const REFERENCE_CONFLICT_CODE = 'reference_conflict';
 
 /** Classifies an HTTP response from POST /triage that was not a 2xx. */
 export function classifyStatus(
@@ -98,6 +102,11 @@ export interface TriagePayload {
   customer_id?: string;
   /** The gateway job id. Python uses it to triage and save a ticket at most once. */
   ticket_id?: string;
+  /** The reference the gateway already gave the customer. Python keeps it as is (409 if it is taken). */
+  reference?: string;
+  /** Public form only. Python stores them for reviewers and never gives them to the model. */
+  customer_name?: string;
+  customer_email?: string;
 }
 
 /**
@@ -128,10 +137,29 @@ export async function callTriage(
       }
     }
 
+    if (response.status === 409) {
+      // The one error body that is read: a 409 with the code reference_conflict is a different problem
+      // (and a loud one) from any other 4xx. Only the code is looked at; nothing from the body is kept.
+      const code = await readErrorCode(response);
+      if (code === REFERENCE_CONFLICT_CODE) return { kind: 'fail', reason: REASON_REFERENCE_CONFLICT };
+      return classifyStatus(response.status, response.headers.get('retry-after'));
+    }
     // The body of an error answer is never used. Drop it so the connection is freed.
     await response.body?.cancel().catch(() => undefined);
     return classifyStatus(response.status, response.headers.get('retry-after'));
   } catch (error) {
     return classifyError(error);
+  }
+}
+
+/** The `detail.code` of a Python error answer, or undefined. Reads at most 4 KB and never throws. */
+async function readErrorCode(response: Response): Promise<string | undefined> {
+  try {
+    const text = (await response.text()).slice(0, 4096);
+    const parsed = JSON.parse(text) as { detail?: { code?: unknown } };
+    const code = parsed.detail?.code;
+    return typeof code === 'string' ? code : undefined;
+  } catch {
+    return undefined;
   }
 }

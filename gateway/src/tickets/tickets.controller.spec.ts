@@ -37,6 +37,7 @@ describe('TicketsController.create', () => {
 
     expect(result).toEqual({
       job_id: expect.stringMatching(UUID),
+      reference: expect.stringMatching(/^TKT-[A-HJKMNP-Z2-9]{6}$/),
       status: 'queued',
       status_url: `/jobs/${result.job_id}`,
     });
@@ -59,6 +60,7 @@ describe('TicketsController.create', () => {
       body: 'Help',
       customer_id: 'c1',
       client: 'alice',
+      reference: result.reference,
       received_at: expect.any(String),
     });
     const receivedAt = new Date(added.data.received_at).getTime();

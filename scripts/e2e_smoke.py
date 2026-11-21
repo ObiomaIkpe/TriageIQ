@@ -18,6 +18,11 @@ Settings (environment variables):
   E2E_ORIGIN                 the Origin to send with login and logout (default http://localhost:5173;
                              it must be one of the gateway's ALLOWED_ORIGINS)
 
+  E2E_PUBLIC_FORM            set to 1 to also run step 11, the public ticket form (POST /public/tickets). OFF by default.
+                             It needs the gateway to run with PUBLIC_FORM_ENABLED=true and Cloudflare's DUMMY Turnstile
+                             secret (see gateway/.env.example), and it COSTS ONE MODEL CALL SET (one real ticket). It
+                             sends Cloudflare's dummy token, so a gateway with a real secret refuses it (step 11 fails).
+
 A key, a password or a session cookie is never printed, not even in part. Exit code: 0 nothing failed, 1 something failed,
 2 a required setting is missing or invalid.
 """
@@ -37,6 +42,8 @@ DEFAULT_ORIGIN = "http://localhost:5173"
 SESSION_COOKIE = "tiq_session"
 REFERENCE_PATTERN = re.compile(r"^TKT-[A-Z2-9]{6}$")
 CUSTOMER_ID = "e2e-smoke"
+# Cloudflare's documented dummy token: accepted only by its dummy secrets, rejected by a real one.
+TURNSTILE_DUMMY_TOKEN = "XXXX.DUMMY.TOKEN.XXXX"
 REQUEST_TIMEOUT_SECONDS = 60
 EXIT_OK, EXIT_FAILED, EXIT_BAD_SETTINGS = 0, 1, 2
 
@@ -282,6 +289,52 @@ class Smoke:
         expect_status(after, 401, "GET /auth/me after logout")
         return "login sets an HttpOnly SameSite=Strict cookie; /auth/me and GET /tickets work with it; after logout /auth/me is 401"
 
+    def step_public_form(self) -> str:
+        if not self.keys.get("public_form"):
+            raise Skipped("set E2E_PUBLIC_FORM=1 to run it (it creates one real ticket: one model call set)")
+        email = f"E2E-Smoke+{self.run_id}@Example.com"  # mixed case on purpose: it is stored lower-cased
+        name = "E2E Smoke Ọbiọma"
+        reply = self.gateway.request(
+            "POST",
+            "/public/tickets",
+            None,
+            {
+                "name": name,
+                "email": email,
+                "subject": self.subject("Public form: where is my invoice?"),
+                "message": "Hello, I cannot find the invoice for my last order. Could you resend it?",
+                "turnstile_token": TURNSTILE_DUMMY_TOKEN,
+            },
+            {"Origin": self.keys["origin"], "Idempotency-Key": f"e2e-{self.run_id}"},
+        )
+        expect_status(reply, 202, "POST /public/tickets")
+        body = reply.body or {}
+        reference = body.get("reference")
+        if not isinstance(reference, str) or not REFERENCE_PATTERN.match(reference):
+            raise Failed("the 202 answer has no valid reference")
+        if set(body) != {"reference", "message"}:
+            raise Failed("the public answer must hold only a reference and a message (nothing about processing)")
+
+        # The ticket exists once the job has run: poll as the reviewer until it is there.
+        deadline = time.monotonic() + self.timeout
+        while True:
+            read = self.gateway.request("GET", f"/tickets/reference/{reference}", self.keys["reviewer"])
+            if read.status == 200:
+                break
+            if read.status != 404:
+                raise Failed(f"GET /tickets/reference/<reference>: expected 200 or 404, got {read.status}")
+            if time.monotonic() >= deadline:
+                raise Failed(f"the ticket was still not there after {self.timeout:g}s")
+            time.sleep(self.interval)
+        ticket = read.body or {}
+        if ticket.get("customer_email") != email.lower():
+            raise Failed("customer_email did not round-trip (expected the trimmed, lower-cased address)")
+        if ticket.get("customer_name") != name:
+            raise Failed("customer_name did not round-trip")
+        if ticket.get("customer_id") != "public-form":
+            raise Failed('customer_id is not "public-form"')
+        return f"202 with reference {reference}; the reviewer reads it back with customer_name and customer_email intact"
+
     # (number, name, function, steps it needs to have passed)
     def steps(self) -> list:
         return [
@@ -295,6 +348,7 @@ class Smoke:
             (8, "the reviewer reviews it once; a second review is refused", self.step_review_once_then_conflict, [7]),
             (9, "a submitter cannot use the reviewer routes", self.step_submitter_is_forbidden, []),
             (10, "a reviewer logs in with a session cookie, uses it, and logs out", self.step_reviewer_session, []),
+            (11, "the public form takes a ticket (E2E_PUBLIC_FORM=1; costs one model call set)", self.step_public_form, []),
         ]
 
     def run(self, out: Callable[[str], None]) -> int:
@@ -364,6 +418,7 @@ def main(argv=None, env=None, out: Callable[[str], None] = print) -> int:
             "reviewer_email": reviewer_email,
             "reviewer_password": reviewer_password,
             "origin": origin,
+            "public_form": (env.get("E2E_PUBLIC_FORM") or "").strip() == "1",
         },
         run_id,
         args.timeout,

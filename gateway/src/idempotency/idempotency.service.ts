@@ -37,11 +37,26 @@ export interface SubmitResult {
   jobId: string;
   /** True when the key was already known: no new job was created. */
   replayed: boolean;
+  /** The ticket reference this key was answered with. Missing for keys stored before references moved to the gateway. */
+  reference?: string;
 }
+
+export interface SubmitOptions {
+  /** The reference to give a NEW job (and to remember with the key, so a replay returns the same one). */
+  reference?: string;
+  /** Replaces the default fingerprint (a route whose body has more than a ticket, such as the public form). */
+  fingerprint?: string;
+  /** Contact details that travel with the job (public form). */
+  contact?: { customer_name: string; customer_email: string };
+}
+
+/** What a read-only look at a key found. */
+export type PeekResult = { kind: 'none' } | { kind: 'replay'; jobId: string; reference?: string };
 
 interface StoredKey {
   job_id: string;
   fingerprint: string;
+  reference?: string;
 }
 
 /** Claim, replay or reject: the whole rule for a request that carries an Idempotency-Key. */
@@ -61,15 +76,25 @@ export class IdempotencyService {
    * request with the same key gets the same job id back, or a conflict if its ticket differs.
    * Every Redis call has the usual deadline; trouble becomes QueueUnavailableError (503).
    */
-  async submit(principalId: string, key: string, ticket: TicketInput, ownerId: string = principalId): Promise<SubmitResult> {
+  async submit(
+    principalId: string,
+    key: string,
+    ticket: TicketInput,
+    ownerId: string = principalId,
+    options: SubmitOptions = {},
+  ): Promise<SubmitResult> {
     // One namespace per principal ("client:<name>" or "user:<uuid>"): the same Idempotency-Key from two
     // callers is two different keys, and a client can never collide with a user.
     const redisKey = `${IDEMPOTENCY_KEY_PREFIX}${principalId}:${key}`;
-    const fingerprint = fingerprintTicket(ticket);
+    const fingerprint = options.fingerprint ?? fingerprintTicket(ticket);
 
     for (let round = 0; round < MAX_CLAIM_ROUNDS; round += 1) {
       const jobId = randomUUID();
-      const value = JSON.stringify({ job_id: jobId, fingerprint } satisfies StoredKey);
+      const value = JSON.stringify({
+        job_id: jobId,
+        fingerprint,
+        ...(options.reference === undefined ? {} : { reference: options.reference }),
+      } satisfies StoredKey);
 
       const claimed = await this.queue.guarded(async (expired) => {
         await waitUntilReady(this.redis, expired);
@@ -81,8 +106,12 @@ export class IdempotencyService {
 
       if (claimed) {
         try {
-          await this.queue.enqueue(ticket, ownerId, jobId);
-          return { jobId, replayed: false };
+          await this.queue.enqueue(ticket, ownerId, jobId, {
+            reference: options.reference,
+            customer_name: options.contact?.customer_name,
+            customer_email: options.contact?.customer_email,
+          });
+          return { jobId, replayed: false, reference: options.reference };
         } catch (error) {
           // Nothing was queued, so the key must not keep pointing at a job that does not
           // exist: the client's retry with the same key has to work.
@@ -99,9 +128,26 @@ export class IdempotencyService {
 
       const known = parseStored(stored);
       if (known.fingerprint !== fingerprint) throw new IdempotencyConflictError();
-      return { jobId: known.job_id, replayed: true };
+      return { jobId: known.job_id, replayed: true, reference: known.reference };
     }
     throw new QueueUnavailableError();
+  }
+
+  /**
+   * Looks at a key WITHOUT claiming it: the same fingerprint means a completed request (replay: answer with
+   * the original job and reference, spend nothing), another fingerprint is a conflict, no key means go on.
+   * Cheap on purpose (one GET), so a retry costs no Turnstile call and no limit or cap slot.
+   */
+  async peek(principalId: string, key: string, fingerprint: string): Promise<PeekResult> {
+    const redisKey = `${IDEMPOTENCY_KEY_PREFIX}${principalId}:${key}`;
+    const stored = await this.queue.guarded(async (expired) => {
+      await waitUntilReady(this.redis, expired);
+      return this.redis.get(redisKey);
+    });
+    if (stored === null) return { kind: 'none' };
+    const known = parseStored(stored);
+    if (known.fingerprint !== fingerprint) throw new IdempotencyConflictError();
+    return { kind: 'replay', jobId: known.job_id, reference: known.reference };
   }
 
   /** Best effort. If Redis is gone too, the key expires on its own after the TTL. */
@@ -125,7 +171,8 @@ function parseStored(raw: string): StoredKey {
     typeof (value as StoredKey).job_id === 'string' &&
     typeof (value as StoredKey).fingerprint === 'string'
   ) {
-    return value as StoredKey;
+    const reference = (value as StoredKey).reference;
+    return { ...(value as StoredKey), reference: typeof reference === 'string' ? reference : undefined };
   }
   throw new Error('unreadable idempotency record');
 }

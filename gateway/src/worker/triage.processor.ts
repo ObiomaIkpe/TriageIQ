@@ -9,7 +9,7 @@ import { TRIAGE_QUEUE } from '../queue/queue.constants.js';
 import { shortReason } from '../jobs/job-status.js';
 import type { TicketJobData } from '../queue/triage-queue.service.js';
 import { triageBackoffStrategy } from './backoff.js';
-import { callTriage, type TriageOutcome } from './triage-outcome.js';
+import { callTriage, REASON_REFERENCE_CONFLICT, type TriageOutcome } from './triage-outcome.js';
 import { RetryableTriageError } from './triage.errors.js';
 
 const logger = new Logger('TriageWorker');
@@ -42,17 +42,29 @@ export class TriageProcessor extends WorkerHost implements OnApplicationBootstra
     const attempt = job.attemptsMade + 1;
     const started = Date.now();
 
-    const { subject, body, customer_id } = job.data;
+    const { subject, body, customer_id, reference, customer_name, customer_email } = job.data;
     const outcome = await callTriage(
       this.fetchFn,
       this.config.get('TRIAGE_SERVICE_URL', { infer: true }),
       // The job id is the same on every attempt, so Python can recognise a repeat.
       // Every gateway job id is a UUID; anything else is left out rather than sent.
-      { subject, body, customer_id, ...(isUuid(job.id) ? { ticket_id: job.id } : {}) },
+      {
+        subject,
+        body,
+        customer_id,
+        ...(isUuid(job.id) ? { ticket_id: job.id } : {}),
+        ...(reference === undefined ? {} : { reference }),
+        ...(customer_name === undefined ? {} : { customer_name }),
+        ...(customer_email === undefined ? {} : { customer_email }),
+      },
       this.config.get('TRIAGE_TIMEOUT_MS', { infer: true }),
     );
 
     this.logAttempt(job, attempt, outcome, Date.now() - started);
+    if (outcome.kind === 'fail' && outcome.reason === REASON_REFERENCE_CONFLICT) {
+      // Loud on purpose: the customer was already told this reference, and it belongs to another ticket.
+      logger.error(`REFERENCE CONFLICT job=${job.id} reference=${reference ?? 'unknown'}: dead-lettered, needs a person`);
+    }
 
     switch (outcome.kind) {
       case 'success':
