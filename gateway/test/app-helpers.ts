@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
+import { IDEMPOTENCY_REDIS } from '../src/idempotency/idempotency.constants.js';
 import { QUEUE_TIMEOUT_MS, TRIAGE_QUEUE } from '../src/queue/queue.constants.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { WorkerModule } from '../src/worker/worker.module.js';
@@ -39,6 +40,8 @@ export async function startAppWithFakeQueue(
     .useValue(fakeRedisClient)
     .overrideProvider(getQueueToken(TRIAGE_QUEUE))
     .useValue(queue)
+    .overrideProvider(IDEMPOTENCY_REDIS)
+    .useValue(queue.kv)
     .overrideProvider(QUEUE_TIMEOUT_MS)
     .useValue(timeoutMs)
     .overrideModule(WorkerModule)

@@ -160,3 +160,31 @@ describe('TriageProcessor dead-letter log', () => {
     }
   });
 });
+
+describe('TriageProcessor sends the job id as ticket_id', () => {
+  const ID = '3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34';
+  const withId = (id: string | undefined, attemptsMade = 0) =>
+    ({ id, data: DATA, attemptsMade, opts: { attempts: 8 } }) as unknown as Job<TicketJobData>;
+  const sent = (fetchFn: typeof fetch) =>
+    JSON.parse(((fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit])[1].body as string);
+
+  it('puts job.id in the body next to subject, body and customer_id', async () => {
+    const fetchFn = reply(200, '{}');
+    await new TriageProcessor(config, fetchFn).process(withId(ID));
+    expect(sent(fetchFn)).toEqual({ subject: SUBJECT, body: BODY, customer_id: 'c1', ticket_id: ID });
+  });
+
+  it('sends the same value on a later attempt of the same job', async () => {
+    const first = reply(200, '{}');
+    const retry = reply(200, '{}');
+    await new TriageProcessor(config, first).process(withId(ID, 0));
+    await new TriageProcessor(config, retry).process(withId(ID, 3));
+    expect(sent(retry).ticket_id).toBe(sent(first).ticket_id);
+  });
+
+  it.each(['job-1', '123', '', undefined])('an id that is not a UUID (%s) is left out, not sent', async (id) => {
+    const fetchFn = reply(200, '{}');
+    await new TriageProcessor(config, fetchFn).process(withId(id));
+    expect(sent(fetchFn)).not.toHaveProperty('ticket_id');
+  });
+});

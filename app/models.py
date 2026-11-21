@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional, TypedDict
+from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -24,6 +25,9 @@ class TicketIn(BaseModel):
     subject: str
     body: str
     customer_id: Optional[str] = None
+    # Optional idempotency key. When given, it becomes the ticket's id and the run's
+    # thread id, and the same id can be sent again without triaging or saving twice.
+    ticket_id: Optional[UUID] = None
 
 
 class ClassificationResult(BaseModel):

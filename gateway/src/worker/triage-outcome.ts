@@ -96,6 +96,8 @@ export interface TriagePayload {
   subject: string;
   body: string;
   customer_id?: string;
+  /** The gateway job id. Python uses it to triage and save a ticket at most once. */
+  ticket_id?: string;
 }
 
 /**

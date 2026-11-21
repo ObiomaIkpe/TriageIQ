@@ -2,6 +2,7 @@ import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type Job, UnrecoverableError } from 'bullmq';
+import { z } from 'zod';
 import type { AppConfig } from '../config/env.schema.js';
 import { FETCH } from '../health/health.constants.js';
 import { TRIAGE_QUEUE } from '../queue/queue.constants.js';
@@ -45,7 +46,9 @@ export class TriageProcessor extends WorkerHost implements OnApplicationBootstra
     const outcome = await callTriage(
       this.fetchFn,
       this.config.get('TRIAGE_SERVICE_URL', { infer: true }),
-      { subject, body, customer_id },
+      // The job id is the same on every attempt, so Python can recognise a repeat.
+      // Every gateway job id is a UUID; anything else is left out rather than sent.
+      { subject, body, customer_id, ...(isUuid(job.id) ? { ticket_id: job.id } : {}) },
       this.config.get('TRIAGE_TIMEOUT_MS', { infer: true }),
     );
 
@@ -95,4 +98,8 @@ export class TriageProcessor extends WorkerHost implements OnApplicationBootstra
 /** One WARN line when a job lands in the dead-letter list. Never the ticket text. */
 export function logDeadLetter(jobId: string | undefined, attemptsMade: number, reason: string) {
   logger.warn(`dead-letter job=${jobId} attempts_made=${attemptsMade} reason=${shortReason(reason)}`);
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && z.uuid().safeParse(value).success;
 }

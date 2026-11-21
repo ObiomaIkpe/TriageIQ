@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import { vi } from 'vitest';
 import { FakeQueue } from '../../test/fake-queue.js';
 import { TriageQueueService, type QueueLike } from '../queue/triage-queue.service.js';
+import { IdempotencyService } from '../idempotency/idempotency.service.js';
 import { INTAKE_UNAVAILABLE, TicketsController } from './tickets.controller.js';
 
 const TIMEOUT_MS = 40;
@@ -10,7 +11,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 
 function setup(queue: FakeQueue) {
   const service = new TriageQueueService(queue as QueueLike, TIMEOUT_MS);
-  const controller = new TicketsController(service);
+  const controller = new TicketsController(service, new IdempotencyService(service, queue.kv));
   const setHeader = vi.fn();
   const response = { setHeader } as unknown as Response;
   return { controller, setHeader, response };
