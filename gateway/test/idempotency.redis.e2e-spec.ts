@@ -8,6 +8,8 @@ import { configureApp } from '../src/app.setup.js';
 import { WorkerModule } from '../src/worker/worker.module.js';
 import { NoWorkerModule, stubEnv } from './app-helpers.js';
 import { api } from './auth-helpers.js';
+import { PG_POOL } from '../src/database/database.constants.js';
+import { fakeGatewayDb } from './app-helpers.js';
 
 /**
  * Idempotency-Key against a REAL Redis (real SET NX EX, the real Lua compare-and-delete).
@@ -47,6 +49,8 @@ describe.skipIf(!REDIS_TEST_URL)('Idempotency-Key against a real Redis', () => {
     stubEnv(REDIS_TEST_URL);
     const { AppModule } = await import('../src/app.module.js');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(PG_POOL)
+      .useValue(fakeGatewayDb)
       .overrideModule(WorkerModule)
       .useModule(NoWorkerModule)
       .compile();

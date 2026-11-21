@@ -566,7 +566,7 @@ Location: /jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
 {"job_id":"3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34","reference":"TKT-7K3M9Q","status":"queued","status_url":"/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34"}
 ```
 
-`reference` is the ticket's human-friendly reference. Since M4.2 the **gateway** makes it at accept time (the same format Python always used: `TKT-` and six characters with no `0 O 1 I L`) and sends it to Python with the ticket, so the answer can carry it at once. A repeat with the same `Idempotency-Key` returns the same reference. Python still makes one itself if a ticket arrives without it (older jobs, direct calls).
+`reference` is the ticket's human-friendly reference. Since M4.2 the **gateway** makes it at accept time (the same format Python always used: `TKT-` and six characters with no `0 O 1 I L`) and sends it to Python with the ticket, so the answer can carry it at once. A repeat with the same `Idempotency-Key` returns the same reference. Python still makes one itself if a ticket arrives without it (older jobs, direct calls). **References are reserved:** before a reference is used, the gateway inserts it into the `ticket_references` table of its own database (`INSERT ... ON CONFLICT DO NOTHING RETURNING`, migration `002`); if it is already taken it generates another, up to 5 tries, then answers `503` and logs loudly. A replay with the same `Idempotency-Key` reuses the stored reference and reserves nothing, and a honeypot's fake reference is never reserved. Python's `409 reference_conflict` remains as the backstop (references Python generated before this are not in the table).
 
 ```bash
 curl -H "Authorization: Bearer $TIQ_KEY" http://localhost:3000/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
@@ -633,6 +633,20 @@ curl -i -X POST localhost:3000/tickets \
 **Idempotency keys are per client.** They are stored as `idem:<client name>:<key>`, so the same `Idempotency-Key` from two clients is two different keys and creates two jobs. (Keys stored under the old format, `idem:<key>`, simply expire within 24 hours.)
 
 **How the two hops fit together.** The key protects the client-to-gateway hop (no duplicate job). The `ticket_id` protects the gateway-to-Python hop (no duplicate ticket): the worker sends its job id, which is the same on every attempt and every dead-letter retry, and the Python service answers from the existing ticket instead of triaging again. Together a ticket is triaged and saved once even when the client retries, the worker is killed after Python saved the ticket, or a dead-lettered job is retried.
+
+### The reviewer web UI (M4.3a: login page and app shell)
+
+`web/` is the reviewer UI: React, Vite, TypeScript (strict), Tailwind CSS v4, React Router and TanStack Query. So far it has the **login page** and a placeholder **/queue** page (the real queue comes in M4.3b, the public form page in M4.3c). It is not containerised yet.
+
+```bash
+# the stack must be up (docker compose up -d), gateway/.env needs ALLOWED_ORIGINS=http://localhost:5173 and COOKIE_SECURE=false
+cd web
+npm install        # once
+npm run dev        # http://localhost:5173, then open it and log in as a reviewer
+npm test           # also: npm run lint, npm run typecheck, npm run build
+```
+
+**The `/api` rule.** The UI calls the API **only under `/api/...`**, and the dev server (port 5173) forwards `/api/*` to the gateway at `http://localhost:3000` with the `/api` prefix removed (`/api/auth/me` becomes `/auth/me`; set `TIQ_GATEWAY_URL` to use another address). The browser therefore talks to one origin only: the session cookie is same-origin (`SameSite=Strict` works) and nothing needs CORS. The browser's `Origin` header reaches the gateway unchanged, which is what its Origin check wants. UI routes never start with `/api`. Production (M6, Caddy) will do the same rewrite. The UI keeps no token or user data in `localStorage` or `sessionStorage`: the session is the `HttpOnly` cookie, and the browser's memory is cleared on logout.
 
 ### Public ticket form: `POST /public/tickets` (M4.2)
 
@@ -815,6 +829,7 @@ app/
   db.py, migrations.py engine and sessions; running Alembic from the app
   models.py            Pydantic models and the graph state
 alembic/               migrations (the only place that creates tables)
+web/                   reviewer web UI (React + Vite + Tailwind): login page and app shell (M4.3a)
 gateway/               NestJS gateway: config, auth/roles/rate limit, intake, worker, dead letters, idempotency, reviewer routes,
                        reviewer accounts (src/users, src/database, migrations/, src/scripts/reviewers.ts)
 scripts/e2e_smoke.py   end-to-end smoke test through the gateway (stdlib only; spends model calls)

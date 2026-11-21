@@ -4,6 +4,7 @@ import type { AppConfig } from '../config/env.schema.js';
 import { IdempotencyConflictError, IdempotencyService } from '../idempotency/idempotency.service.js';
 import { QueueUnavailableError } from '../queue/with-timeout.js';
 import { newReference } from '../tickets/reference.js';
+import { ReferenceService, ReferenceUnavailableError } from '../tickets/reference.service.js';
 import { fingerprintPublicTicket, type PublicTicketInput } from './public-ticket.schema.js';
 import { PUBLIC_STORE, PUBLIC_CLOCK, PUBLIC_FORM_CLIENT, PUBLIC_FORM_CUSTOMER_ID, PUBLIC_FORM_PRINCIPAL_ID, PUBLIC_IP_WINDOW_SECONDS } from './public.constants.js';
 import type { PublicStore } from './public-store.js';
@@ -55,6 +56,7 @@ export class PublicIntakeService {
     @Inject(TurnstileService) private readonly turnstile: TurnstileService,
     @Inject(PUBLIC_STORE) private readonly store: PublicStore,
     @Inject(PUBLIC_CLOCK) private readonly clock: () => number,
+    @Inject(ReferenceService) private readonly references: ReferenceService,
   ) {
     this.maxPerIp = config.get('PUBLIC_MAX_PER_IP_PER_HOUR', { infer: true });
     this.cap = config.get('PUBLIC_DAILY_CAP', { infer: true });
@@ -117,7 +119,8 @@ export class PublicIntakeService {
         { subject: input.subject, body: input.message, customer_id: PUBLIC_FORM_CUSTOMER_ID },
         PUBLIC_FORM_CLIENT,
         {
-          reference: newReference(),
+          reference: newReference(), // a candidate: reserved in the database once the key is claimed
+          reserveReference: (first) => this.references.reserve(first),
           fingerprint,
           contact: { customer_name: input.name, customer_email: input.email },
         },
@@ -144,7 +147,7 @@ export class PublicIntakeService {
 
   private mapFailure(error: unknown, ip: string): IntakeOutcome {
     if (error instanceof IdempotencyConflictError) return this.done({ kind: 'conflict' }, ip);
-    if (error instanceof QueueUnavailableError) return this.done({ kind: 'unavailable' }, ip);
+    if (error instanceof QueueUnavailableError || error instanceof ReferenceUnavailableError) return this.done({ kind: 'unavailable' }, ip);
     throw error;
   }
 

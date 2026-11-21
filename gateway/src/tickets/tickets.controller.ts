@@ -21,6 +21,7 @@ import { TriageQueueService } from '../queue/triage-queue.service.js';
 import { QueueUnavailableError } from '../queue/with-timeout.js';
 import { JsonContentGuard } from './json-content.guard.js';
 import { newReference } from './reference.js';
+import { ReferenceService, ReferenceUnavailableError } from './reference.service.js';
 import { parseTicket } from './ticket.schema.js';
 
 export const INTAKE_UNAVAILABLE = 'Ticket intake is temporarily unavailable; please retry';
@@ -30,6 +31,7 @@ export class TicketsController {
   constructor(
     @Inject(TriageQueueService) private readonly queue: TriageQueueService,
     @Inject(IdempotencyService) private readonly idempotency: IdempotencyService,
+    @Inject(ReferenceService) private readonly references: ReferenceService,
   ) {}
 
   /**
@@ -56,14 +58,20 @@ export class TicketsController {
     }
 
     // The reference is made here, at accept time, for every ticket (one code path), and goes to Python with the job.
-    const reference = newReference();
+    // It is RESERVED in the gateway database first, so no two tickets can get the same one. With an Idempotency-Key the
+    // reservation happens only after the key is claimed (a replay reuses the stored reference and reserves nothing).
+    const candidate = newReference();
     let jobId: string;
-    let answeredReference: string | undefined = reference;
+    let answeredReference: string | undefined;
     try {
       if (key.key === undefined) {
-        ({ jobId } = await this.queue.enqueue(parsed.data, principal.ownerId, undefined, { reference }));
+        answeredReference = await this.references.reserve(candidate);
+        ({ jobId } = await this.queue.enqueue(parsed.data, principal.ownerId, undefined, { reference: answeredReference }));
       } else {
-        const submitted = await this.idempotency.submit(principal.id, key.key, parsed.data, principal.ownerId, { reference });
+        const submitted = await this.idempotency.submit(principal.id, key.key, parsed.data, principal.ownerId, {
+          reference: candidate,
+          reserveReference: (first) => this.references.reserve(first),
+        });
         jobId = submitted.jobId;
         // A replay answers with the reference the first request got (undefined only for keys stored before this existed).
         answeredReference = submitted.reference;
@@ -73,7 +81,7 @@ export class TicketsController {
       if (error instanceof IdempotencyConflictError) {
         throw new UnprocessableEntityException({ detail: error.message });
       }
-      if (error instanceof QueueUnavailableError) {
+      if (error instanceof QueueUnavailableError || error instanceof ReferenceUnavailableError) {
         throw new ServiceUnavailableException({ detail: INTAKE_UNAVAILABLE });
       }
       throw error;

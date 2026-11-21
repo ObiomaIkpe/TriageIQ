@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { IdempotencyModule } from '../idempotency/idempotency.module.js';
+import { ReferencesModule } from '../tickets/references.module.js';
 import { QueueModule } from '../queue/queue.module.js';
 import { FETCH } from '../health/health.constants.js';
 import { PublicEnabledGuard } from './public-enabled.guard.js';
@@ -10,7 +11,7 @@ import { DEFAULT_TURNSTILE_TIMEOUT_MS, PUBLIC_CLOCK, PUBLIC_STORE, TURNSTILE_TIM
 import { TurnstileService } from './turnstile.service.js';
 
 @Module({
-  imports: [QueueModule, IdempotencyModule],
+  imports: [QueueModule, IdempotencyModule, ReferencesModule],
   controllers: [PublicTicketsController],
   providers: [
     PublicIntakeService,

@@ -5,15 +5,19 @@ import { FakeQueue } from '../../test/fake-queue.js';
 import { TriageQueueService, type QueueLike } from '../queue/triage-queue.service.js';
 import { clientPrincipal } from '../auth/principal.js';
 import { IdempotencyService } from '../idempotency/idempotency.service.js';
+import { ReferenceUnavailableError } from './reference.service.js';
 import { INTAKE_UNAVAILABLE, TicketsController } from './tickets.controller.js';
 
 const TIMEOUT_MS = 40;
 const ALICE = clientPrincipal('alice', 'submitter');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-function setup(queue: FakeQueue) {
+/** Reserves whatever it is asked to (the database is not involved in these tests). */
+const reserveAnything = { reserve: async (first?: string) => first as string } as never;
+
+function setup(queue: FakeQueue, references: unknown = reserveAnything) {
   const service = new TriageQueueService(queue as QueueLike, TIMEOUT_MS);
-  const controller = new TicketsController(service, new IdempotencyService(service, queue.kv));
+  const controller = new TicketsController(service, new IdempotencyService(service, queue.kv), references as never);
   const setHeader = vi.fn();
   const response = { setHeader } as unknown as Response;
   return { controller, setHeader, response };
@@ -147,5 +151,79 @@ describe('TicketsController.create', () => {
     queue.becomeReady(); // up before the deadline
     await expect(pending).resolves.toMatchObject({ status: 'queued' });
     expect(queue.added).toHaveLength(1);
+  });
+});
+
+describe('TicketsController: reference reservation', () => {
+  const calls: (string | undefined)[] = [];
+  const references = { reserve: async (first?: string) => (calls.push(first), 'TKT-RESRVD'.replace('RESRVD', 'AAAAAA')) };
+  beforeEach(() => { calls.length = 0; });
+  const ticket = { subject: 'Hi', body: 'Help' };
+
+  it('without a key: reserves once, and the reserved reference is the one queued and returned', async () => {
+    const queue = new FakeQueue();
+    const { controller, response } = setup(queue, references);
+    const result = await controller.create(ticket, response, undefined, ALICE);
+    expect(calls).toHaveLength(1);
+    expect(result.reference).toBe('TKT-AAAAAA');
+    expect(queue.added[0].data.reference).toBe('TKT-AAAAAA');
+  });
+
+  it('with a key: a new key reserves once and the key remembers the RESERVED reference (not the first candidate)', async () => {
+    const queue = new FakeQueue();
+    const { controller, response } = setup(queue, references);
+    const first = await controller.create(ticket, response, 'k1', ALICE);
+    expect(first.reference).toBe('TKT-AAAAAA');
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse([...queue.kv.entries.values()][0].value).reference).toBe('TKT-AAAAAA');
+  });
+
+  it('a replay of the same key reserves nothing and returns the same reference', async () => {
+    const queue = new FakeQueue();
+    const { controller, response } = setup(queue, references);
+    const first = await controller.create(ticket, response, 'k1', ALICE);
+    const again = await controller.create(ticket, response, 'k1', ALICE);
+    expect(calls).toHaveLength(1);
+    expect(again.reference).toBe(first.reference);
+    expect(queue.added).toHaveLength(1);
+  });
+
+  it('a conflicting reuse of the key (different ticket) reserves nothing', async () => {
+    const queue = new FakeQueue();
+    const { controller, response } = setup(queue, references);
+    await controller.create(ticket, response, 'k1', ALICE);
+    await failure(controller.create({ subject: 'Other', body: 'x' }, response, 'k1', ALICE));
+    expect(calls).toHaveLength(1);
+  });
+
+  it('when no reference can be reserved: 503, nothing queued, and the key is released so a retry works', async () => {
+    const queue = new FakeQueue();
+    let fail = true;
+    const flaky = { reserve: async (first?: string) => { if (fail) throw new ReferenceUnavailableError(); return first as string; } };
+    const { controller, response } = setup(queue, flaky);
+    const error = await failure(controller.create(ticket, response, 'k1', ALICE));
+    expect(error.getStatus()).toBe(503);
+    expect(queue.added).toHaveLength(0);
+    expect(queue.kv.entries.size).toBe(0);
+    fail = false;
+    expect((await controller.create(ticket, response, 'k1', ALICE)).reference).toMatch(/^TKT-/);
+  });
+
+  it('without a key the same failure is a 503 too', async () => {
+    const queue = new FakeQueue();
+    const { controller, response } = setup(queue, { reserve: async () => { throw new ReferenceUnavailableError(); } });
+    expect((await failure(controller.create(ticket, response, undefined, ALICE))).getStatus()).toBe(503);
+    expect(queue.added).toHaveLength(0);
+  });
+
+  it('when the first candidate was taken, the key is updated to the reference that was really reserved', async () => {
+    const queue = new FakeQueue();
+    const taken = { reserve: async () => 'TKT-ZZZZZZ' };
+    const { controller, response } = setup(queue, taken);
+    const result = await controller.create(ticket, response, 'k1', ALICE);
+    expect(result.reference).toBe('TKT-ZZZZZZ');
+    expect(JSON.parse([...queue.kv.entries.values()][0].value).reference).toBe('TKT-ZZZZZZ');
+    const replay = await controller.create(ticket, response, 'k1', ALICE);
+    expect(replay.reference).toBe('TKT-ZZZZZZ');
   });
 });

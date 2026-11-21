@@ -22,6 +22,8 @@ function setup(settings: { perIp?: number; cap?: number } = {}) {
     submit: { replayed: false } as { replayed: boolean } | Error,
     turnstile: { kind: 'ok' } as TurnstileResult,
   };
+  const reserved: (string | undefined)[] = [];
+  const references = { reserve: async (first?: string) => (reserved.push(first), first as string) };
   const idempotency = {
     peek: async () => {
       log.push('peek');
@@ -38,8 +40,8 @@ function setup(settings: { perIp?: number; cap?: number } = {}) {
   const submitted: unknown[][] = [];
   const turnstile = { verify: async () => (log.push('turnstile'), state.turnstile) };
   const config = new ConfigService({ PUBLIC_MAX_PER_IP_PER_HOUR: settings.perIp ?? 5, PUBLIC_DAILY_CAP: settings.cap ?? 200 });
-  const service = new PublicIntakeService(config as never, idempotency as never, turnstile as never, store as never, clock.fn);
-  return { service, store, clock, state, log, submitted };
+  const service = new PublicIntakeService(config as never, idempotency as never, turnstile as never, store as never, clock.fn, references as never);
+  return { service, store, clock, state, log, submitted, reserved };
 }
 
 describe('PublicIntakeService order of checks', () => {
@@ -203,5 +205,37 @@ describe('UTC day helpers', () => {
     expect(secondsUntilUtcMidnight(Date.parse('2026-11-21T23:59:59.500Z'))).toBe(1);
     expect(secondsUntilUtcMidnight(Date.parse('2026-12-31T23:00:00Z'))).toBe(3600); // across a year end
     expect(utcDay(Date.parse('2026-11-21T23:59:59Z'))).toBe('2026-11-21');
+  });
+});
+
+describe('PublicIntakeService reference reservation', () => {
+  it('reserves only for a new submission: never for a replay, a honeypot, or anything refused before the claim', async () => {
+    const t = setup({ perIp: 1 });
+    await t.service.accept(input({ website: 'x' }), 'a', '1.1.1.1'); // honeypot (counts one IP hit)
+    expect(t.reserved).toEqual([]);
+    t.state.peek = { kind: 'replay', jobId: 'j', reference: 'TKT-ABC234' };
+    await t.service.accept(input(), 'b', '2.2.2.2'); // replay
+    expect(t.reserved).toEqual([]);
+    t.state.peek = { kind: 'none' };
+    await t.service.accept(input(), 'c', '1.1.1.1'); // over the IP limit
+    t.state.turnstile = { kind: 'failed', codes: ['x'] };
+    await t.service.accept(input(), 'd', '3.3.3.3'); // Turnstile failed
+    expect(t.reserved).toEqual([]);
+  });
+
+  it('hands the reservation to the idempotency claim as a callback, and a failure to reserve gives the cap slot back', async () => {
+    const t = setup();
+    await t.service.accept(input(), 'k', '1.1.1.1');
+    const options = t.submitted[0][4] as { reserveReference: (c?: string) => Promise<string>; reference: string };
+    expect(await options.reserveReference(options.reference)).toBe(options.reference);
+    expect(t.reserved).toEqual([options.reference]);
+  });
+
+  it('no reference reservable -> unavailable (503) and the cap slot is given back', async () => {
+    const t = setup();
+    const { ReferenceUnavailableError } = await import('../tickets/reference.service.js');
+    t.state.submit = new ReferenceUnavailableError();
+    expect((await t.service.accept(input(), 'k', '1.1.1.1')).kind).toBe('unavailable');
+    expect(t.store.capUsed(utcDay(t.clock.now))).toBe(0);
   });
 });

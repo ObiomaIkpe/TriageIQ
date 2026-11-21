@@ -1,6 +1,6 @@
 import type { KeyValueClient } from '../src/idempotency/idempotency.constants.js';
 import { RATE_LIMIT_SCRIPT } from '../src/auth/rate-limit.guard.js';
-import { COMPARE_AND_DELETE_SCRIPT } from '../src/idempotency/idempotency.service.js';
+import { COMPARE_AND_DELETE_SCRIPT, SET_REFERENCE_SCRIPT } from '../src/idempotency/idempotency.service.js';
 import type { JobLike, QueueLike, TicketJobData } from '../src/queue/triage-queue.service.js';
 
 /** An in-memory stand-in for the three Redis commands the idempotency keys use. */
@@ -60,10 +60,21 @@ export class FakeKeyValue implements KeyValueClient {
     return Promise.resolve(this.entries.get(key)?.value ?? null);
   }
 
-  eval(script: string, _numberOfKeys: number, key: string, jobId: string) {
+  eval(script: string, _numberOfKeys: number, key: string, jobId: string, ...rest: string[]) {
     if (script === RATE_LIMIT_SCRIPT) return this.count(key, Number(jobId));
     if (this.hangs()) return new Promise<never>(() => undefined);
     if (this.evalError) return Promise.reject(this.evalError);
+    if (script === SET_REFERENCE_SCRIPT) {
+      // eval(script, 1, key, jobId, newValue): what the Lua does, keeping the TTL
+      const held = this.entries.get(key);
+      const newValue = rest[0];
+      if (held && (JSON.parse(held.value) as { job_id: string }).job_id === jobId) {
+        held.value = newValue;
+        this.log.push(`setref ${key}`);
+        return Promise.resolve(1);
+      }
+      return Promise.resolve(0);
+    }
     if (script !== COMPARE_AND_DELETE_SCRIPT) return Promise.reject(new Error('unknown script'));
     const entry = this.entries.get(key);
     if (entry && (JSON.parse(entry.value) as { job_id: string }).job_id === jobId) {

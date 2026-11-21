@@ -8,6 +8,8 @@ import { afterAll, beforeAll, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { stubEnv } from './app-helpers.js';
 import { api } from './auth-helpers.js';
+import { PG_POOL } from '../src/database/database.constants.js';
+import { fakeGatewayDb } from './app-helpers.js';
 
 /**
  * The real app WITH its worker, a REAL Redis, and a fake triage server started in the test.
@@ -94,7 +96,9 @@ describe.skipIf(!REDIS_TEST_URL)('triage worker against a real Redis and a fake 
     vi.stubEnv('TRIAGE_TIMEOUT_MS', '1000');
 
     const { AppModule } = await import('../src/app.module.js');
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(PG_POOL)
+      .useValue(fakeGatewayDb).compile();
     app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
     configureApp(app);
     await app.init();
