@@ -1,0 +1,7 @@
+# Publishes the Python app on this machine only, for local debugging (curl, /docs).
+# Not part of the normal stack: the gateway is the only way in.
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d
+services:
+  app:
+    ports:
+      - "127.0.0.1:8000:8000"

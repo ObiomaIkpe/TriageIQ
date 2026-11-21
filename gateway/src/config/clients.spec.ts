@@ -102,6 +102,7 @@ describe('validateEnv with the client registry and the rate limit', () => {
     REDIS_URL: 'redis://localhost:6379',
     TRIAGE_SERVICE_URL: 'http://localhost:8000',
     GATEWAY_CLIENTS: JSON.stringify([entry()]),
+    TRIAGE_REVIEW_API_KEY: 'a-review-key',
   };
 
   function failure(env: Record<string, unknown>): ConfigValidationError {

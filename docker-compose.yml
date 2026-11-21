@@ -18,8 +18,8 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://triageiq:triageiq@db:5432/triageiq
-    ports:
-      - "127.0.0.1:8000:8000"
+    # No ports: the Python service is reached only by the gateway, at app:8000 on the compose
+    # network. To publish it on localhost for debugging, add docker-compose.debug.yml.
     depends_on:
       - db
 

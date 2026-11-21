@@ -24,7 +24,11 @@ export const TEST_REGISTRY: RegisteredClient[] = [
 ];
 
 /** The registry and a limit high enough that tests which poll a lot are never limited. */
+/** Stands in for Python's REVIEW_API_KEY in tests. Not a real key. */
+export const TEST_REVIEW_KEY = 'test-review-key-not-real-0000';
+
 export function stubAuthEnv(rateLimitPerMinute = '10000') {
+  vi.stubEnv('TRIAGE_REVIEW_API_KEY', TEST_REVIEW_KEY);
   vi.stubEnv('GATEWAY_CLIENTS', JSON.stringify(TEST_REGISTRY));
   vi.stubEnv('RATE_LIMIT_PER_MINUTE', rateLimitPerMinute);
 }

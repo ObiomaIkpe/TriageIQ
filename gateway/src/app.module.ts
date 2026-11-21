@@ -7,6 +7,7 @@ import { HealthModule } from './health/health.module.js';
 import { JobsModule } from './jobs/jobs.module.js';
 import { RedisModule } from './redis/redis.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
+import { TriageApiModule } from './triage-api/triage-api.module.js';
 import { WorkerModule } from './worker/worker.module.js';
 
 @Module({
@@ -17,6 +18,7 @@ import { WorkerModule } from './worker/worker.module.js';
     AuthModule,
     HealthModule,
     TicketsModule,
+    TriageApiModule,
     JobsModule,
     DeadLettersModule,
     WorkerModule,

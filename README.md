@@ -71,7 +71,7 @@ flowchart LR
     alembic --> pg
 ```
 
-The gateway accepts tickets, queues them, and its worker sends each one to the FastAPI app and keeps the result (see [Gateway (M3)](#gateway-m3)). The gateway does not yet add authentication, rate limits or duplicate protection, so the app stays reachable on port 8000 of the machine running compose (and only there: the port is bound to `127.0.0.1`), and anyone on that machine can still call `POST /triage` directly.
+The gateway accepts tickets, queues them, and its worker sends each one to the FastAPI app and keeps the result (see [Gateway (M3)](#gateway-m3)). **The gateway is the only way in:** the compose file does not publish the app's port, so the Python API cannot be reached from the host (only from other containers, at `app:8000`). Reviewers read tickets and submit review decisions through the gateway, which forwards the call and adds the review key itself. For local debugging you can publish the app on `127.0.0.1:8000` with `docker-compose.debug.yml` (see below).
 
 ## API
 
@@ -85,6 +85,8 @@ The gateway accepts tickets, queues them, and its worker sends each one to the F
 | `GET /health` | Liveness: the process is up |
 | `GET /ready` | Readiness: Postgres answers and the KB table exists |
 | `GET /docs` | Interactive OpenAPI docs |
+
+> **The Python API is not published in the normal stack.** The examples below call it on `localhost:8000`, which works only with the debug override (`docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d`, which publishes the app on `127.0.0.1:8000` and nothing else). Otherwise submit tickets through the gateway (`POST /tickets`) and read and review them through the gateway's reviewer routes (see "Reviewer routes" under Gateway (M3)).
 
 Example (the values are illustrative):
 
@@ -129,6 +131,8 @@ The text of a repeated request is not compared: the row (or the saved run) from 
 
 ### Reviewing a flagged ticket
 
+This is the Python endpoint itself (debug override only). Reviewers normally use `POST /tickets/:id/review` on the gateway, which sends this same request for them with the key attached.
+
 ```bash
 curl -X POST localhost:8000/tickets/<ticket_id>/review \
   -H "Content-Type: application/json" \
@@ -166,7 +170,7 @@ docker compose up --build -d
 docker compose exec app python -m app.kb.ingest   # seeds 5 sample FAQ articles
 ```
 
-On the Voyage free tier (3 requests per minute) seeding takes about a minute; the built-in rate limiter waits as needed. Then send the `curl` request above, or open http://localhost:8000/docs.
+On the Voyage free tier (3 requests per minute) seeding takes about a minute; the built-in rate limiter waits as needed. Then submit a ticket through the gateway (`POST /tickets`, see Gateway (M3)). To call the Python API directly, or open http://localhost:8000/docs, start the stack with the debug override: `docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d`.
 
 The app container applies the database migrations at startup. Postgres is also published on host port **5433** (bound to `127.0.0.1`).
 
@@ -266,7 +270,7 @@ Known limits: phrase checks cannot tell a reply that refuses a request from one 
 
 Redis holds the queue (compose service `redis`, appendonly persistence on, published on host port **6380**, bound to localhost).
 
-Run it with the rest of the stack (`docker compose up --build -d`); the gateway is published on port **3000**, bound to `127.0.0.1` like every other published port (the Python app on 8000, Postgres on 5433, Redis on 6380), so nothing is reachable from other machines unless you change that or put a proxy in front. To run it by itself you need Node 24:
+Run it with the rest of the stack (`docker compose up --build -d`); the gateway is published on port **3000**, bound to `127.0.0.1` like the other published ports (Postgres on 5433, Redis on 6380), so nothing is reachable from other machines unless you change that or put a proxy in front. **The Python app's port is not published at all** (only the gateway reaches it, at `app:8000`). To publish it on `127.0.0.1:8000` for debugging, add the override file: `docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d`. To run it by itself you need Node 24:
 
 ```bash
 cd gateway
@@ -275,7 +279,7 @@ npm install
 npm run start:dev
 ```
 
-Settings. The first three are required; the last two are optional and have defaults. The gateway refuses to start if one is missing or invalid, and names each bad setting without printing its value:
+Settings. The first three, `GATEWAY_CLIENTS` and `TRIAGE_REVIEW_API_KEY` are required; `WORKER_CONCURRENCY`, `TRIAGE_TIMEOUT_MS` and `RATE_LIMIT_PER_MINUTE` are optional and have defaults. The gateway refuses to start if one is missing or invalid, and names each bad setting without printing its value:
 
 | Variable | Local default | Purpose |
 |---|---|---|
@@ -283,6 +287,7 @@ Settings. The first three are required; the last two are optional and have defau
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection (`redis://` or `rediss://`). In Docker, compose sets `redis://redis:6379` |
 | `TRIAGE_SERVICE_URL` | `http://localhost:8000` | Base URL of the Python service. In Docker, compose sets `http://app:8000` |
 | `WORKER_CONCURRENCY` | `2` | How many tickets the worker sends to the Python service at the same time (1 to 10). Each ticket costs several Claude calls and a Voyage call, so this also protects the API rate limits |
+| `TRIAGE_REVIEW_API_KEY` | none (required) | The same value as the Python app's `REVIEW_API_KEY` (root `.env`). The gateway sends it as `X-API-Key` when it forwards a review decision. Set it in `gateway/.env`. The gateway refuses to start without it, and an empty value counts as missing |
 | `TRIAGE_TIMEOUT_MS` | `120000` | How long the worker waits for one answer from the Python service (1000 to 600000). A triage run makes several LLM calls, so this is generous |
 
 Endpoints:
@@ -338,6 +343,38 @@ curl -i -H "Authorization: Bearer $TIQ_KEY" localhost:3000/jobs/00000000-0000-40
 ```
 
 Responses also carry the security headers from `helmet` (such as `X-Content-Type-Options: nosniff`, `Strict-Transport-Security`, `Content-Security-Policy`), and `X-Powered-By` is removed. Plain HTTP only: put a TLS-terminating proxy in front before exposing the port.
+
+### Reviewer routes: read and review tickets through the gateway
+
+These four routes are for the **`reviewer` role only** (a submitter gets `403 {"detail":"Not allowed"}`). The gateway checks the request, then makes a **new** request to the Python service and passes the answer on. It never forwards your `Authorization` header or any other header of yours; the only credential Python sees is `TRIAGE_REVIEW_API_KEY`. `POST /tickets` (intake) is unchanged.
+
+| Gateway route | Forwards to | Checked first (otherwise `400`, nothing sent to Python) |
+|---|---|---|
+| `GET /tickets?status=&limit=` | `GET /tickets` | `status` is `triaged`, `pending_review`, `approved`, `edited` or `rejected`; `limit` is 1 to 200. Any other query parameter is dropped |
+| `GET /tickets/:id` | `GET /tickets/{id}` | `id` is a UUID |
+| `GET /tickets/reference/:reference` | `GET /tickets/reference/{reference}` | `reference` looks like `TKT-7K3M9Q` (`TKT-` and 6 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`) |
+| `POST /tickets/:id/review` | `POST /tickets/{id}/review` | `id` is a UUID; body is `{"action": "approve" \| "edit" \| "reject", "edited_reply"?, "note"?}`, `edit` needs a non-blank `edited_reply`, unknown fields are rejected; content type `application/json` (else `415`) |
+
+```bash
+curl -s -H "Authorization: Bearer $TIQ_REVIEWER_KEY" "localhost:3000/tickets?status=pending_review&limit=10"
+curl -s -H "Authorization: Bearer $TIQ_REVIEWER_KEY" localhost:3000/tickets/<ticket_id>
+curl -s -H "Authorization: Bearer $TIQ_REVIEWER_KEY" localhost:3000/tickets/reference/TKT-7K3M9Q
+curl -s -X POST -H "Authorization: Bearer $TIQ_REVIEWER_KEY" -H 'Content-Type: application/json' \
+  -d '{"action":"edit","edited_reply":"Your account unlocks after 1 hour.","note":"shortened"}' \
+  localhost:3000/tickets/<ticket_id>/review
+```
+
+The request and response shapes are Python's (see "Reviewing a flagged ticket" and `GET /tickets` above). Answers:
+
+| Python answers | The gateway answers |
+|---|---|
+| `2xx`, `400`, `404`, `409`, `422` | the same status and JSON body |
+| `401`, or `503` "Review is disabled" (the gateway's review key is wrong or Python has none) | `502 {"detail":"Triage service rejected the gateway"}` and a warning in the gateway log. Fix `TRIAGE_REVIEW_API_KEY` |
+| any other `503` (database or Claude trouble) | `503 {"detail":"Triage service unavailable; please retry"}` |
+| any other status, or an answer that is not JSON | `502 {"detail":"Triage service error"}` |
+| no connection, or no answer within 10 s (reads) or 30 s (review) | `503 {"detail":"Triage service unavailable; please retry"}` |
+
+Python's error text, stack traces and internal URLs never reach the client. Each call is logged with the client name, the route, Python's status and the duration, never ticket text or keys. **A review decision does not yet record which reviewer made it**: Python sees only the gateway's key. That comes with user login in M4.
 
 ### Ticket intake and job status
 
@@ -525,7 +562,7 @@ This is a working prototype, not a finished product.
 - **Human review works through the API, with gaps.** Flagged tickets pause, and `POST /tickets/{id}/review` approves, edits or rejects them. There is no reviewer interface, no reviewer identity is recorded, there is one shared API key, and edits are not captured as feedback. Reading tickets (`GET /tickets...`) needs no key. If the app fails after the paused run has been resumed but before the decision is saved, the run has finished while the row still says `pending_review`, and a retry gets a `409`.
 - **A bad raw resume value strands a ticket.** Always resume through `resume_review()`, which takes a validated `ReviewDecision`. Resuming the graph by hand with an invalid value raises an error, and LangGraph then replays that same bad value on every later resume, so the ticket can no longer be reviewed.
 - **Migration `0002` is applied to a database the next time the app starts against it**, because migrations run at startup. It adds the ticket reference, the review columns and the `approved`, `edited` and `rejected` statuses.
-- **Authentication and limits are on the gateway only.** The gateway needs an API key and limits each client, but the Python service on port 8000 is still open to anyone who can reach it, which with the port bound to `127.0.0.1` means anyone on the machine running compose (M3.5b closes that), and the review endpoint there still uses its own shared `X-API-Key`. Each ticket costs up to three Claude calls and one embedding call.
+- **Authentication and limits are on the gateway only.** The gateway needs an API key and limits each client, but the Python service's own endpoints have no per-client authentication, but its port is no longer published, so only the gateway (and anything else on the compose network) can reach it. Review decisions are sent with one shared key and do not record which reviewer made them. Each ticket costs up to three Claude calls and one embedding call.
 - **Prompt injection is only partly covered.** Ticket text goes into the prompts. The KB grader also reports `injection_suspected`, and a suspected ticket is flagged for a human. But that check only runs on tickets that reach the grader, meaning tickets with at least one candidate article; a ticket with no candidate article, or one the grader call failed on, is not checked. A check on every ticket at intake is future work. The grader is itself an LLM reading the ticket, and its detection has not been measured.
 - **Long replies are cut off, and flagged.** Every Claude call is capped at `LLM_MAX_TOKENS` (700, about 500 words). A draft that runs longer stops mid-sentence. The app detects this (Claude's stop reason is `max_tokens`) and flags the ticket for review with the reason "Draft reply was cut off at the token limit.", but the cut-off text is still returned as `suggested_reply`. If the classifier or critic is cut off, the request fails with a `500`. How often cut-offs happen has not been measured yet, so the cap itself is untuned.
 - **A failed save loses the response, unless the request carried a `ticket_id`.** If the database goes down after the work is done, the client gets a 503. Without a `ticket_id` the triage has to be paid for again on retry, and for a flagged ticket the graph has already paused, so a paused thread exists with no ticket row and nothing can find it. With a `ticket_id` (the gateway always sends one) the retry rebuilds the answer from the saved run and saves the row, with no new model calls.
