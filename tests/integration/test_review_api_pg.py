@@ -37,6 +37,8 @@ KEY = "dummy-review-key"
 HEADERS = {"X-API-Key": KEY}
 DRAFT = "Your lockout clears after 1 hour."
 TICKET = {"subject": "Cannot log in", "body": "Account locked."}
+# The gateway always sends who is reviewing (a machine client here); see tests/integration/test_reviewed_by_pg.py.
+REVIEWER = {"id": "client:ops", "name": "ops"}
 
 
 class FakeChain:
@@ -93,7 +95,9 @@ def create(client):
 
 
 def review(client, ticket_id, body, headers=HEADERS):
-    return client.post(f"/tickets/{ticket_id}/review", json=body, headers=headers)
+    return client.post(
+        f"/tickets/{ticket_id}/review", json={"reviewer": REVIEWER, **body}, headers=headers
+    )
 
 
 def stored(ticket_id):
@@ -337,7 +341,7 @@ def race(client_factory, ticket_ids, monkeypatch):
             barrier.wait()  # both threads fire together
             response = http.post(
                 f"/tickets/{ticket_id}/review",
-                json={"action": "approve", "note": note},
+                json={"action": "approve", "note": note, "reviewer": REVIEWER},
                 headers=HEADERS,
             )
             return response.status_code, note
@@ -389,7 +393,9 @@ def test_two_simultaneous_reviews_with_different_decisions(fakes, graph, monkeyp
     def post(body):
         http = TestClient(app)
         barrier.wait()
-        return http.post(f"/tickets/{ticket_id}/review", json=body, headers=HEADERS).status_code
+        return http.post(
+            f"/tickets/{ticket_id}/review", json={"reviewer": REVIEWER, **body}, headers=HEADERS
+        ).status_code
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         codes = list(pool.map(post, [{"action": "approve"}, {"action": "reject"}]))

@@ -498,7 +498,7 @@ describe('reviewer login, sessions and cookie auth (in-memory infrastructure)', 
 
     it('Redis (the counters) unavailable -> 503, no session, and no password was checked', async () => {
       world = await startLoginApp();
-      world.counters.read = async () => {
+      world.counters.attempt = async () => {
         throw Object.assign(new Error('Connection is closed.'), { code: 'ECONNRESET' });
       };
       const response = await login(world).expect(503);

@@ -4,24 +4,54 @@ import type { AppConfig } from '../config/env.schema.js';
 import { IDEMPOTENCY_REDIS, type KeyValueClient } from '../idempotency/idempotency.constants.js';
 import { waitUntilReady } from '../idempotency/redis-ready.js';
 import { TriageQueueService } from '../queue/triage-queue.service.js';
-import { RATE_LIMIT_SCRIPT } from './rate-limit.guard.js';
 
 export const COUNTER_STORE = Symbol('COUNTER_STORE');
 export const LOGIN_FAIL_IP_PREFIX = 'login_fail:ip:';
 export const LOGIN_FAIL_EMAIL_PREFIX = 'login_fail:email:';
 
-/** Reads a counter WITHOUT changing it: { count, seconds left }. 0 and -2 mean "no such counter". */
-export const READ_COUNTER_SCRIPT = `
-local count = tonumber(redis.call('GET', KEYS[1]) or '0')
-return { count, redis.call('TTL', KEYS[1]) }
+/**
+ * Counts one login attempt against BOTH the IP key and the email key in a single step, setting each
+ * key's expiry when it is new, and returns both counts with the seconds left: { ipCount, ipTtl,
+ * emailCount, emailTtl }. Counting and checking are the same atomic step, so a burst of concurrent
+ * attempts cannot slip past the limit between a check and a count.
+ */
+export const ATTEMPT_SCRIPT = `
+local function hit(key)
+  local count = redis.call('INCR', key)
+  local ttl = redis.call('TTL', key)
+  if count == 1 or ttl < 0 then
+    redis.call('EXPIRE', key, ARGV[1])
+    ttl = tonumber(ARGV[1])
+  end
+  return { count, ttl }
+end
+local ip = hit(KEYS[1])
+local email = hit(KEYS[2])
+return { ip[1], ip[2], email[1], email[2] }
 `;
 
-/** Where the failure counters live. Redis in production; tests use an in-memory one. */
+/**
+ * After a SUCCESSFUL login: forget the email's counter and take this attempt back off the IP counter
+ * (never below 0), so that at rest the counters still mean "failures", not "attempts".
+ */
+export const SUCCESS_SCRIPT = `
+redis.call('DEL', KEYS[2])
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+if count > 0 then redis.call('DECR', KEYS[1]) end
+return 1
+`;
+
+export interface Hit {
+  count: number;
+  ttlSeconds: number;
+}
+
+/** Where the attempt counters live. Redis in production; tests use an in-memory one. */
 export interface CounterStore {
-  read(key: string): Promise<{ count: number; ttlSeconds: number }>;
-  /** Counts one failure; the first one of a window starts the expiry. */
-  increment(key: string, windowSeconds: number): Promise<void>;
-  remove(key: string): Promise<void>;
+  /** Counts an attempt on both keys atomically and returns the new counts. */
+  attempt(ipKey: string, emailKey: string, windowSeconds: number): Promise<{ ip: Hit; email: Hit }>;
+  /** A successful login: delete the email key, decrement the IP key (floor 0). */
+  success(ipKey: string, emailKey: string): Promise<void>;
 }
 
 @Injectable()
@@ -39,17 +69,18 @@ export class RedisCounterStore implements CounterStore {
     });
   }
 
-  async read(key: string) {
-    const reply = (await this.run(() => this.redis.eval(READ_COUNTER_SCRIPT, 1, key))) as [number, number];
-    return { count: Number(reply[0]), ttlSeconds: Number(reply[1]) };
+  async attempt(ipKey: string, emailKey: string, windowSeconds: number) {
+    const reply = (await this.run(() =>
+      this.redis.eval(ATTEMPT_SCRIPT, 2, ipKey, emailKey, String(windowSeconds)),
+    )) as number[];
+    return {
+      ip: { count: Number(reply[0]), ttlSeconds: Number(reply[1]) },
+      email: { count: Number(reply[2]), ttlSeconds: Number(reply[3]) },
+    };
   }
 
-  async increment(key: string, windowSeconds: number) {
-    await this.run(() => this.redis.eval(RATE_LIMIT_SCRIPT, 1, key, String(windowSeconds)));
-  }
-
-  async remove(key: string) {
-    await this.run(() => this.redis.eval("return redis.call('DEL', KEYS[1])", 1, key));
+  async success(ipKey: string, emailKey: string) {
+    await this.run(() => this.redis.eval(SUCCESS_SCRIPT, 2, ipKey, emailKey));
   }
 }
 
@@ -58,11 +89,15 @@ export type LimitDecision =
   | { limited: true; reason: 'rate_limited_ip' | 'rate_limited_email'; retryAfterSeconds: number };
 
 /**
- * Failed-login limits, one fixed window each: per client IP and per email (by the SHA-256 of the
- * normalized address, so Redis never holds an email). Only FAILURES count; a success clears the email's
- * counter. `check` runs before any password hashing, so a limited caller costs no Argon2 work.
- * A counter at or above the maximum blocks: with a maximum of 5, five failures are allowed and the sixth
- * attempt is refused.
+ * Login attempt limits, one fixed window each: per client IP and per email (by the SHA-256 of the
+ * normalized address, so Redis never holds an email).
+ *
+ * The attempt is COUNTED FIRST, atomically, and the answer comes from the count itself. The count
+ * must not pass the maximum: with a maximum of 5, attempts 1 to 5 go on to the password check and
+ * attempt 6 is refused with Retry-After, however many arrive at once. A refused attempt costs no
+ * Argon2 work. A successful login deletes the email's counter and takes its own attempt off the IP
+ * counter, so counters at rest mean failures. (The earlier design checked and counted in two steps
+ * and a burst of concurrent attempts overshot the limit by about the concurrency.)
  */
 @Injectable()
 export class LoginLimiter {
@@ -79,28 +114,24 @@ export class LoginLimiter {
     this.windowSeconds = config.get('LOGIN_WINDOW_MINUTES', { infer: true }) * 60;
   }
 
-  async check(ip: string, emailHash: string): Promise<LimitDecision> {
-    const [byIp, byEmail] = await Promise.all([
-      this.store.read(LOGIN_FAIL_IP_PREFIX + ip),
-      this.store.read(LOGIN_FAIL_EMAIL_PREFIX + emailHash),
-    ]);
+  /** Counts this attempt and says whether it may go on. */
+  async attempt(ip: string, emailHash: string): Promise<LimitDecision> {
+    const { ip: byIp, email: byEmail } = await this.store.attempt(
+      LOGIN_FAIL_IP_PREFIX + ip,
+      LOGIN_FAIL_EMAIL_PREFIX + emailHash,
+      this.windowSeconds,
+    );
     const blocked: { reason: 'rate_limited_ip' | 'rate_limited_email'; wait: number }[] = [];
-    if (byIp.count >= this.maxPerIp) blocked.push({ reason: 'rate_limited_ip', wait: byIp.ttlSeconds });
-    if (byEmail.count >= this.maxPerEmail) blocked.push({ reason: 'rate_limited_email', wait: byEmail.ttlSeconds });
+    if (byIp.count > this.maxPerIp) blocked.push({ reason: 'rate_limited_ip', wait: byIp.ttlSeconds });
+    if (byEmail.count > this.maxPerEmail) blocked.push({ reason: 'rate_limited_email', wait: byEmail.ttlSeconds });
     if (blocked.length === 0) return { limited: false };
     // Report the one that lasts longest, so a retry after Retry-After is not refused again at once.
     const worst = blocked.reduce((a, b) => (b.wait > a.wait ? b : a));
     return { limited: true, reason: worst.reason, retryAfterSeconds: Math.max(1, worst.wait) };
   }
 
-  async recordFailure(ip: string, emailHash: string): Promise<void> {
-    await Promise.all([
-      this.store.increment(LOGIN_FAIL_IP_PREFIX + ip, this.windowSeconds),
-      this.store.increment(LOGIN_FAIL_EMAIL_PREFIX + emailHash, this.windowSeconds),
-    ]);
-  }
-
-  async clearEmail(emailHash: string): Promise<void> {
-    await this.store.remove(LOGIN_FAIL_EMAIL_PREFIX + emailHash);
+  /** A successful login: the email starts again from zero and the IP loses this attempt. */
+  async succeeded(ip: string, emailHash: string): Promise<void> {
+    await this.store.success(LOGIN_FAIL_IP_PREFIX + ip, LOGIN_FAIL_EMAIL_PREFIX + emailHash);
   }
 }

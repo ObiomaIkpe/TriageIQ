@@ -168,6 +168,10 @@ def make_handler(fake: FakeGateway):
                     return self.send(409, {"detail": "Ticket is not waiting for a review"})
                 fake.reviewed.add(ticket_id)
                 fake.tickets[ticket_id]["status"] = "edited"
+                if "no_reviewed_by" not in fake.faults:
+                    # who decided: the gateway records the authenticated principal; here, the API client's name
+                    reviewer_name = "someone-else" if "wrong_reviewer" in fake.faults else name
+                    fake.tickets[ticket_id]["reviewed_by"] = {"id": f"client:{reviewer_name}", "name": reviewer_name}
                 return self.send(200, fake.tickets[ticket_id])
             return self.send(404, {"detail": "no such route"})
 
@@ -358,6 +362,8 @@ def test_a_dependant_of_a_skipped_step_is_skipped_too(gateway, capsys):
         ("reads_differ", 6),
         ("not_flagged", 7),
         ("review_twice_ok", 8),
+        ("no_reviewed_by", 8),
+        ("wrong_reviewer", 8),
         ("submitter_allowed", 9),
     ],
 )
@@ -563,4 +569,41 @@ def test_the_script_documents_the_new_settings():
     source = SCRIPT.read_text()
     for name in ("E2E_REVIEWER_EMAIL", "E2E_REVIEWER_PASSWORD", "E2E_ORIGIN"):
         assert name in source
+
+
+# --- step 8 also checks who decided the review ---------------------------------------------
+
+def test_step_8_checks_the_review_is_recorded_as_the_reviewer_client(gateway, capsys):
+    code, out, _ = run(gateway, capsys)
+    assert code == 0
+    assert results(out)[8] == "PASS"
+    assert "reviewed_by client:ops" in out
+    (ticket,) = [t for t in gateway.tickets.values() if t["status"] == "edited"]
+    assert ticket["reviewed_by"] == {"id": "client:ops", "name": "ops"}
+
+
+def test_step_8_fails_when_the_ticket_has_no_reviewed_by(gateway, capsys):
+    gateway.faults.add("no_reviewed_by")
+    code, out, _ = run(gateway, capsys)
+    assert code == 1
+    assert results(out)[8] == "FAIL"
+    assert "reviewed_by.id is not client:ops" in out
+
+
+def test_step_8_fails_when_the_wrong_reviewer_is_recorded(gateway, capsys):
+    gateway.faults.add("wrong_reviewer")
+    code, out, _ = run(gateway, capsys)
+    assert code == 1 and results(out)[8] == "FAIL"
+
+
+def test_step_8_uses_the_configured_reviewer_client_name(gateway, capsys):
+    code, out, _ = run(gateway, capsys, extra_env={"E2E_REVIEWER_CLIENT": "ops"})
+    assert code == 0 and results(out)[8] == "PASS"
+    # a name that is not the key's client is a mismatch
+    code, out, _ = run(gateway, capsys, extra_env={"E2E_REVIEWER_CLIENT": "alice"})
+    assert code == 1 and results(out)[8] == "FAIL" and "client:alice" in out
+
+
+def test_the_script_documents_the_reviewer_client_setting():
+    assert "E2E_REVIEWER_CLIENT" in SCRIPT.read_text()
 

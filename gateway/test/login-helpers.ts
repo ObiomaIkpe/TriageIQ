@@ -23,7 +23,30 @@ export const fakeFetch = (async () =>
  * The real app with a real PasswordHasher but in-memory sessions, counters and users, and a clock the
  * test moves. Seeds two reviewers: ada (enabled) and off (disabled), both with PASSWORD.
  */
-export async function startLoginApp() {
+export interface PythonCall {
+  url: string;
+  method: string;
+  body: unknown;
+  headers: Record<string, string>;
+}
+
+/** A fake Python that records every call and answers with `answer` (default: an empty list). */
+export function recordingPython(answer: () => { status: number; body: unknown } = () => ({ status: 200, body: [] })) {
+  const calls: PythonCall[] = [];
+  const fetchFn = (async (url: string, init?: RequestInit) => {
+    calls.push({
+      url: String(url),
+      method: String(init?.method ?? 'GET'),
+      body: typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined,
+      headers: { ...(init?.headers as Record<string, string>) },
+    });
+    const { status, body } = answer();
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  return { calls, fetchFn };
+}
+
+export async function startLoginApp(fetchFn: typeof fetch = fakeFetch) {
   const clock = new FakeClock();
   const users = new MemoryUsers(clock);
   const sessionStore = new MemorySessionStore(clock);
@@ -45,7 +68,7 @@ export async function startLoginApp() {
       .overrideProvider(UsersRepository)
       .useValue(users)
       .overrideProvider(FETCH)
-      .useValue(fakeFetch),
+      .useValue(fetchFn),
   );
   const verify = vi.spyOn(app.get(PasswordHasher, { strict: false }), 'verify');
   return { app, clock, users, sessionStore, counters, queue, ada, off, verify, hash, http: () => request(app.getHttpServer()) };

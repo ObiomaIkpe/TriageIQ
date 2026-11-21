@@ -1,9 +1,9 @@
 from datetime import datetime
 from enum import Enum
-from typing import Literal, Optional, TypedDict
+from typing import Annotated, Literal, Optional, TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 
 class Category(str, Enum):
@@ -64,6 +64,13 @@ class TriageResult(BaseModel):
     review_reason: Optional[str] = None
 
 
+class ReviewedBy(BaseModel):
+    """Who decided a reviewed ticket, as stored: the id and the name AT THE TIME of the review."""
+
+    id: str
+    name: str
+
+
 class TicketRecord(TriageResult):
     status: TicketStatus
     subject: str
@@ -73,6 +80,8 @@ class TicketRecord(TriageResult):
     final_reply: Optional[str] = None
     review_note: Optional[str] = None
     reviewed_at: Optional[datetime] = None
+    # None for a ticket not reviewed yet, and for one reviewed before reviewers were recorded.
+    reviewed_by: Optional[ReviewedBy] = None
 
 
 class ReviewDecision(BaseModel):
@@ -88,6 +97,30 @@ class ReviewDecision(BaseModel):
         if self.action == "edit" and not (self.edited_reply or "").strip():
             raise ValueError("action 'edit' requires a non-empty edited_reply")
         return self
+
+
+# "user:<uuid>" for a logged-in reviewer, "client:<name>" for a machine client (a gateway API client).
+REVIEWER_ID_PATTERN = (
+    r"^(user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|client:[a-z0-9-]{1,40})$"
+)
+
+
+class Reviewer(BaseModel):
+    """Who is making a review decision. Sent by the gateway, never by an end client."""
+
+    id: str = Field(pattern=REVIEWER_ID_PATTERN)
+    # Trimmed, then 1 to 100 characters. Any Unicode: names are not limited to ASCII.
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+class ReviewRequest(ReviewDecision):
+    """The body of POST /tickets/{id}/review: the decision plus who is making it.
+
+    ReviewDecision stays exactly as it was: it is what the graph resumes with, and the reviewer is
+    not part of the graph's state. Only the endpoint sees the reviewer.
+    """
+
+    reviewer: Reviewer
 
 
 class GraphState(TypedDict, total=False):

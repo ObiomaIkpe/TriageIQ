@@ -97,3 +97,19 @@ export function parseReviewDecision(input: unknown): ReviewParse {
     },
   };
 }
+
+/** Python's reviewed_by on a ticket: who decided it, or null (not reviewed, or reviewed before it was recorded). */
+export const reviewedBySchema = z.object({ id: z.string().min(1), name: z.string().min(1) });
+
+/**
+ * A ticket as Python returns it, checked loosely: every field is passed through untouched, only
+ * reviewed_by is checked, and it may be missing (an older Python) or null.
+ */
+export const ticketRecordSchema = z.looseObject({ reviewed_by: reviewedBySchema.nullish() });
+
+/** True if `body` is a ticket record or a list of them whose reviewed_by (if any) is well formed. */
+export function isTicketPayload(body: unknown): boolean {
+  return Array.isArray(body)
+    ? body.every((item) => ticketRecordSchema.safeParse(item).success)
+    : ticketRecordSchema.safeParse(body).success;
+}

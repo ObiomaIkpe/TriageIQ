@@ -13,6 +13,7 @@ from app.models import (
     ClassificationResult,
     KbMatch,
     ReviewDecision,
+    Reviewer,
     TicketIn,
     TicketStatus,
     TriageResult,
@@ -48,9 +49,12 @@ def saved(needs_human_review=True):
     return result
 
 
-def review(test_session, ticket_id, decision, final_reply):
+REVIEWER = Reviewer(id="client:ops", name="ops")
+
+
+def review(test_session, ticket_id, decision, final_reply, reviewer=REVIEWER):
     with test_session.begin() as session:
-        return store.record_review(session, ticket_id, decision, final_reply)
+        return store.record_review(session, ticket_id, decision, final_reply, reviewer)
 
 
 def raw_row(test_session, ticket_id):
@@ -147,7 +151,7 @@ def test_the_caller_owns_the_transaction(test_session):
 
     with pytest.raises(RuntimeError):
         with test_session.begin() as session:
-            store.record_review(session, result.ticket_id, ReviewDecision(action="approve"), "x")
+            store.record_review(session, result.ticket_id, ReviewDecision(action="approve"), "x", REVIEWER)
             raise RuntimeError("something later failed")
 
     assert store.get_ticket(result.ticket_id).status == TicketStatus.pending_review

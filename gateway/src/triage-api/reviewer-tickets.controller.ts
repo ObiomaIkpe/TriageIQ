@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   Body,
   Controller,
@@ -12,14 +13,16 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { CurrentPrincipal, Roles } from '../auth/auth.decorators.js';
-import type { Principal } from '../auth/principal.js';
+import { reviewerFor, type Principal } from '../auth/principal.js';
 import { JsonContentGuard } from '../tickets/json-content.guard.js';
 import {
   isReference,
+  isTicketPayload,
   isUuid,
   parseListQuery,
   parseReviewDecision,
 } from './passthrough.schemas.js';
+import { MSG_ERROR } from './triage-api.constants.js';
 import { TriageClient, type TriageAnswer } from './triage-client.js';
 
 /**
@@ -110,21 +113,28 @@ export class ReviewerTicketsController {
     if (!decision.ok) {
       throw new BadRequestException({ detail: 'Invalid review decision', errors: decision.problems });
     }
+    const reviewer = reviewerFor(principal);
     this.send(
       response,
       await this.triage.call({
         method: 'POST',
         path: `/tickets/${id}/review`,
-        body: decision.data,
+        // The client's validated decision, plus WHO is reviewing, taken from the authenticated principal.
+        // The strict schema above already refused a `reviewer` field in the client's own body.
+        body: { ...decision.data, reviewer },
         kind: 'review',
         route: 'POST /tickets/:id/review',
         client: principal.label,
+        reviewer: reviewer.id,
       }),
     );
   }
 
-  /** Python's status and JSON body, as they are. */
+  /** Python's status and JSON body, as they are, if a successful answer has a well-formed reviewed_by. */
   private send(response: Response, answer: TriageAnswer): void {
+    if (answer.status >= 200 && answer.status < 300 && !isTicketPayload(answer.body)) {
+      throw new BadGatewayException({ detail: MSG_ERROR });
+    }
     response.status(answer.status).json(answer.body);
   }
 }

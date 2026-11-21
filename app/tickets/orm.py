@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Double, Index, Text, UniqueConstraint, func, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Double, Index, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,6 +35,9 @@ class TicketRow(Base):
     final_reply: Mapped[Optional[str]] = mapped_column(Text)
     review_note: Mapped[Optional[str]] = mapped_column(Text)
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Who decided, as a snapshot at review time. Both NULL for tickets reviewed before this existed.
+    reviewed_by_id: Mapped[Optional[str]] = mapped_column(Text)
+    reviewed_by_name: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -46,4 +49,9 @@ class TicketRow(Base):
         # The name matches the index the raw-SQL setup created.
         Index("tickets_status_created_idx", "status", "created_at"),
         UniqueConstraint("reference", name="tickets_reference_key"),
+        # A review is saved with its author or not at all: the two columns are both set or both NULL.
+        CheckConstraint(
+            "(reviewed_by_id IS NULL) = (reviewed_by_name IS NULL)",
+            name="tickets_reviewed_by_both_or_neither",
+        ),
     )

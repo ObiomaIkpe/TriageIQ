@@ -42,6 +42,7 @@ def test_tickets_columns_match_the_migrations():
         "category", "urgency", "confidence", "routing_target",
         "suggested_reply", "kb_sources", "needs_human_review", "review_reason",
         "final_reply", "review_note", "reviewed_at",
+        "reviewed_by_id", "reviewed_by_name",
         "created_at", "updated_at",
     ]
 
@@ -52,6 +53,7 @@ def test_tickets_nullable_columns_are_only_the_optional_ones():
     assert nullable == {
         "customer_id", "suggested_reply", "review_reason",
         "final_reply", "review_note", "reviewed_at",
+        "reviewed_by_id", "reviewed_by_name",
     }
 
 

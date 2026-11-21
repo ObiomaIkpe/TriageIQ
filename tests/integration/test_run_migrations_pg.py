@@ -32,7 +32,7 @@ def test_running_it_again_is_a_no_op(clean_database):
     with engine.connect() as conn:
         versions = conn.execute(text("SELECT version_num FROM alembic_version")).all()
     engine.dispose()
-    assert versions == [("0002",)]
+    assert versions == [("0003",)]
 
 
 def test_running_it_leaves_the_apps_logging_alone(clean_database):

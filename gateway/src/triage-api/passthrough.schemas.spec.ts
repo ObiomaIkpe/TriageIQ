@@ -1,4 +1,12 @@
-import { isReference, isUuid, parseListQuery, parseReviewDecision } from './passthrough.schemas.js';
+import {
+  isReference,
+  isTicketPayload,
+  isUuid,
+  parseListQuery,
+  parseReviewDecision,
+  reviewedBySchema,
+  ticketRecordSchema,
+} from './passthrough.schemas.js';
 
 describe('parseListQuery', () => {
   it('no parameters -> nothing forwarded (Python applies its defaults)', () => {
@@ -122,5 +130,52 @@ describe('parseReviewDecision', () => {
       expect(parseReviewDecision(body).ok).toBe(false);
     }
     expect(JSON.stringify(parseReviewDecision({ action: 'SECRETVALUE', note: 'SECRETNOTE' }))).not.toContain('SECRET');
+  });
+});
+
+describe('a client cannot send its own reviewer', () => {
+  it.each([
+    [{ action: 'approve', reviewer: { id: 'client:ops', name: 'ops' } }, 'reviewer'],
+    [{ action: 'approve', reviewer: null }, 'reviewer'],
+    [{ action: 'approve', reviewer: 'x' }, 'reviewer'],
+    [{ action: 'approve', reviewed_by: { id: 'client:ops', name: 'ops' } }, 'reviewed_by'],
+  ])('%j is refused as an unknown field', (body, field) => {
+    expect(parseReviewDecision(body)).toEqual({ ok: false, problems: [{ field, problem: 'unknown field' }] });
+  });
+
+  it('the parsed decision never contains a reviewer', () => {
+    const parsed = parseReviewDecision({ action: 'edit', edited_reply: 'hi', note: 'n' });
+    expect(parsed.ok && 'reviewer' in parsed.data).toBe(false);
+  });
+});
+
+describe('reviewed_by in Python responses', () => {
+  it('reviewedBySchema takes an id and a name', () => {
+    expect(reviewedBySchema.safeParse({ id: 'user:3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34', name: 'Ọbiọma Ụzọ' }).success).toBe(true);
+    expect(reviewedBySchema.safeParse({ id: 'client:ops', name: 'ops', extra: 1 }).success).toBe(true); // forward compatible
+    for (const bad of [null, {}, { id: 'a' }, { name: 'a' }, { id: '', name: 'a' }, { id: 'a', name: '' }, { id: 1, name: 'a' }, 'x']) {
+      expect(reviewedBySchema.safeParse(bad).success).toBe(false);
+    }
+  });
+
+  it('a ticket record validates with reviewed_by as an object, as null, or absent', () => {
+    for (const record of [{ reviewed_by: { id: 'client:ops', name: 'ops' } }, { reviewed_by: null }, {}, { subject: 's', reviewed_by: null }]) {
+      expect(ticketRecordSchema.safeParse(record).success).toBe(true);
+    }
+  });
+
+  it('every other field passes through untouched (only reviewed_by is checked)', () => {
+    const parsed = ticketRecordSchema.parse({ anything: [1, 2], nested: { a: 1 }, reviewed_by: null });
+    expect(parsed).toEqual({ anything: [1, 2], nested: { a: 1 }, reviewed_by: null });
+  });
+
+  it('isTicketPayload accepts a record or a list of records, and refuses a bad reviewed_by anywhere', () => {
+    expect(isTicketPayload({ reviewed_by: null })).toBe(true);
+    expect(isTicketPayload([{ reviewed_by: null }, { reviewed_by: { id: 'a', name: 'b' } }, {}])).toBe(true);
+    expect(isTicketPayload([])).toBe(true);
+    expect(isTicketPayload({ reviewed_by: 'nope' })).toBe(false);
+    expect(isTicketPayload([{ reviewed_by: null }, { reviewed_by: { id: 'a' } }])).toBe(false);
+    expect(isTicketPayload('a string')).toBe(false);
+    expect(isTicketPayload(null)).toBe(false);
   });
 });

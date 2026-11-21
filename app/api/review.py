@@ -6,7 +6,7 @@ from app.api.auth import require_review_key
 from app.api.deps import get_graph
 from app.db import get_session
 from app.graph.review import ReviewNotAllowed, ReviewNotPending, resume_review
-from app.models import ReviewDecision, TicketRecord, TicketStatus
+from app.models import ReviewDecision, ReviewRequest, TicketRecord, TicketStatus
 from app.tickets.store import (
     get_ticket_by_reference,
     get_ticket_for_update,
@@ -26,11 +26,23 @@ NOT_WAITING = "Ticket is not waiting for a review"
     dependencies=[Depends(require_review_key)],
 )
 def review_ticket(
-    ticket_id: UUID, decision: ReviewDecision, graph=Depends(get_graph)
+    ticket_id: UUID, request: ReviewRequest, graph=Depends(get_graph)
 ) -> TicketRecord:
-    # FastAPI has already validated the body into a ReviewDecision (422 otherwise).
-    # Only that validated object is ever passed on: a raw invalid resume value would
-    # strand the paused ticket (see "Human review pause" in NOTES.md).
+    # FastAPI has already validated the body into a ReviewRequest (422 otherwise: a missing or
+    # malformed `reviewer` is refused like any other bad field).
+    #
+    # WHY THE REVIEWER IS TRUSTED: this endpoint is only reachable with the service review key
+    # (the route dependency above), and only the gateway holds that key. The gateway fills in
+    # `reviewer` from the caller it authenticated (a logged-in user's session, or an API client)
+    # and never takes it from the client's own body. So `reviewer` says who the gateway
+    # authenticated, not what a caller claims. Anyone who has the key can name any reviewer, which is
+    # why the key must stay on the server.
+    #
+    # Only the decision part is passed to the graph: a raw invalid resume value would strand the
+    # paused ticket (see "Human review pause" in NOTES.md), and the graph does not know reviewers.
+    decision = ReviewDecision(
+        action=request.action, edited_reply=request.edited_reply, note=request.note
+    )
     ticket_id = str(ticket_id)
 
     # One transaction. It commits when the block ends normally and rolls back on any
@@ -51,7 +63,9 @@ def review_ticket(
         except ReviewNotAllowed as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
-        updated = record_review(session, ticket_id, decision, final.get("final_reply"))
+        updated = record_review(
+            session, ticket_id, decision, final.get("final_reply"), request.reviewer
+        )
         if updated is None:
             raise HTTPException(status_code=409, detail=NOT_WAITING)
         return updated

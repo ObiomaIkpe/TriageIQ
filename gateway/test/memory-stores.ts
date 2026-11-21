@@ -73,7 +73,7 @@ export class MemorySessionStore implements SessionStore {
   }
 }
 
-/** Failure counters in memory, with fixed windows measured by the fake clock. */
+/** Attempt counters in memory, with fixed windows measured by the fake clock (the same rules as the Lua scripts). */
 export class MemoryCounterStore implements CounterStore {
   entries = new Map<string, { count: number; expiresAt: number }>();
   constructor(private readonly clock: FakeClock) {}
@@ -87,21 +87,26 @@ export class MemoryCounterStore implements CounterStore {
     return entry;
   }
 
-  async read(key: string) {
-    const entry = this.live(key);
-    return entry
-      ? { count: entry.count, ttlSeconds: Math.ceil((entry.expiresAt - this.clock.now) / 1000) }
-      : { count: 0, ttlSeconds: -2 };
-  }
-
-  async increment(key: string, windowSeconds: number) {
+  private hit(key: string, windowSeconds: number) {
     const entry = this.live(key) ?? { count: 0, expiresAt: this.clock.now + windowSeconds * 1000 };
-    entry.count += 1;
+    entry.count += 1; // the first hit of a window starts its expiry; later hits never move it
     this.entries.set(key, entry);
+    return { count: entry.count, ttlSeconds: Math.ceil((entry.expiresAt - this.clock.now) / 1000) };
   }
 
-  async remove(key: string) {
-    this.entries.delete(key);
+  async attempt(ipKey: string, emailKey: string, windowSeconds: number) {
+    return { ip: this.hit(ipKey, windowSeconds), email: this.hit(emailKey, windowSeconds) };
+  }
+
+  async success(ipKey: string, emailKey: string) {
+    this.entries.delete(emailKey);
+    const ip = this.live(ipKey);
+    if (ip && ip.count > 0) ip.count -= 1;
+  }
+
+  /** The current count of a key (0 if there is none). */
+  count(key: string) {
+    return this.live(key)?.count ?? 0;
   }
 }
 

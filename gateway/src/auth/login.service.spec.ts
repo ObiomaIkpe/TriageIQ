@@ -175,7 +175,7 @@ describe('LoginService: every failure looks the same and does the same work', ()
     users.add({ email: 'off@example.com', passwordHash: GOOD_HASH, disabled: true });
     await service.login(attempt({ email: 'nobody@example.com' }));
     await service.login(attempt({ email: 'off@example.com' }));
-    expect((await counters.read(`login_fail:ip:${IP}`)).count).toBe(2);
+    expect(counters.count(`login_fail:ip:${IP}`)).toBe(2);
   });
 });
 
@@ -201,12 +201,14 @@ describe('LoginService: limits come first and cost no Argon2 work', () => {
     expect(users.lookups.byEmail).toBe(0);
   });
 
-  it('limited requests are not counted again (a flood cannot extend its own lockout)', async () => {
-    const { service, counters } = setup({ LOGIN_MAX_FAILURES_PER_EMAIL: 2 });
+  it('refused attempts do not extend the window: a flood cannot prolong its own lockout', async () => {
+    const { service, counters, clock } = setup({ LOGIN_MAX_FAILURES_PER_EMAIL: 2 });
     for (let i = 0; i < 2; i += 1) await service.login(attempt({ password: `wrong password number ${i}` }));
-    const before = [...counters.entries.entries()].map(([k, v]) => [k, v.count]);
+    const expiries = () => [...counters.entries.entries()].map(([k, v]) => [k, v.expiresAt]);
+    const before = expiries();
+    clock.advanceSeconds(300);
     for (let i = 0; i < 10; i += 1) await service.login(attempt());
-    expect([...counters.entries.entries()].map(([k, v]) => [k, v.count])).toEqual(before);
+    expect(expiries()).toEqual(before);
   });
 
   it('after the window the right password works again', async () => {
