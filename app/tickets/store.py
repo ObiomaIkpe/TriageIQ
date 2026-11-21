@@ -53,6 +53,8 @@ def _to_row(ticket: TicketIn, result: TriageResult) -> TicketRow:
         subject=ticket.subject,
         body=ticket.body,
         customer_id=ticket.customer_id,
+        customer_name=ticket.customer_name,
+        customer_email=ticket.customer_email,
         category=result.category.value,
         urgency=result.urgency.value,
         confidence=result.confidence,
@@ -72,6 +74,8 @@ def _to_record(row: TicketRow) -> TicketRecord:
         subject=row.subject,
         body=row.body,
         customer_id=row.customer_id,
+        customer_name=row.customer_name,
+        customer_email=row.customer_email,
         category=row.category,
         urgency=row.urgency,
         confidence=row.confidence,
@@ -92,7 +96,7 @@ def _to_record(row: TicketRow) -> TicketRecord:
     )
 
 
-def _is_reference_collision(exc: IntegrityError) -> bool:
+def is_reference_collision(exc: IntegrityError) -> bool:
     # Only the reference constraint is retried. Any other integrity error (such as a
     # duplicate id) is a real problem and must propagate.
     diag = getattr(exc.orig, "diag", None)
@@ -142,12 +146,17 @@ def ticket_lock(ticket_id: str) -> Iterator[None]:
                 raise
 
 
-def save_ticket(ticket: TicketIn, result: TriageResult) -> str:
+def save_ticket(
+    ticket: TicketIn, result: TriageResult, regenerate_reference_on_collision: bool = True
+) -> str:
     """Insert one row, using result.ticket_id as the primary key.
 
     Returns the reference that was stored. If result.reference collides with an
     existing one, a new reference is generated and the insert retried (at most
     MAX_REFERENCE_RETRIES times), so the returned value can differ from the one passed in.
+
+    With regenerate_reference_on_collision=False (a reference somebody else chose, which must not
+    change) the collision is raised as the IntegrityError instead.
     """
     for attempt in range(MAX_REFERENCE_RETRIES + 1):
         try:
@@ -155,7 +164,11 @@ def save_ticket(ticket: TicketIn, result: TriageResult) -> str:
                 session.add(_to_row(ticket, result))
             return result.reference
         except IntegrityError as exc:
-            if not _is_reference_collision(exc) or attempt == MAX_REFERENCE_RETRIES:
+            if (
+                not is_reference_collision(exc)
+                or not regenerate_reference_on_collision
+                or attempt == MAX_REFERENCE_RETRIES
+            ):
                 raise
             result = result.model_copy(update={"reference": new_reference()})
     raise AssertionError("unreachable")  # the loop returns or raises

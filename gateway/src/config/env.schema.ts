@@ -29,6 +29,19 @@ export interface AppConfig {
   LOGIN_WINDOW_MINUTES: number;
   /** Trust X-Forwarded-For (Express "trust proxy") to find the client IP. Only behind a proxy you control. */
   TRUST_PROXY: boolean;
+  /** POST /public/tickets (no login, no key). Off by default: the route answers 404. */
+  PUBLIC_FORM_ENABLED: boolean;
+  /** Cloudflare Turnstile secret. Required when the form is enabled. Never logged. */
+  TURNSTILE_SECRET_KEY: string;
+  TURNSTILE_VERIFY_URL: string;
+  /** Hostnames Turnstile may report (the site the widget ran on). Empty: not checked. */
+  TURNSTILE_EXPECTED_HOSTNAMES: string[];
+  /** The widget action Turnstile must report (e.g. public_ticket). Empty: not checked. */
+  TURNSTILE_EXPECTED_ACTION: string;
+  /** Public form submissions allowed per client IP per hour (a spam submission counts too). */
+  PUBLIC_MAX_PER_IP_PER_HOUR: number;
+  /** Accepted public tickets per UTC day, across everyone: the cap on what the form can cost. */
+  PUBLIC_DAILY_CAP: number;
 }
 
 interface Setting {
@@ -77,6 +90,20 @@ function parseOrigins(value: string): OriginsResult {
     if (!origins.includes(url.origin)) origins.push(url.origin);
   });
   return problems.length > 0 ? { ok: false, problems } : { ok: true, origins };
+}
+
+const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/** TURNSTILE_EXPECTED_HOSTNAMES: comma-separated hostnames (no scheme, port or path), lower-cased. */
+function parseHostnames(value: string): { ok: true; hostnames: string[] } | { ok: false; problems: string[] } {
+  const problems: string[] = [];
+  const hostnames: string[] = [];
+  value.split(',').forEach((raw, index) => {
+    const entry = raw.trim().toLowerCase();
+    if (!HOSTNAME.test(entry)) problems.push(`entry ${index + 1} must be a hostname such as example.com (no scheme, port or path)`);
+    else if (!hostnames.includes(entry)) hostnames.push(entry);
+  });
+  return problems.length > 0 ? { ok: false, problems } : { ok: true, hostnames };
 }
 
 /** One entry per setting: how to check it, and a fixed hint shown when it is invalid. */
@@ -166,6 +193,44 @@ const SETTINGS: Record<keyof AppConfig, Setting> = {
     hint: 'must be true or false',
     default: false,
   },
+  PUBLIC_FORM_ENABLED: {
+    schema: booleanSetting,
+    hint: 'must be true or false',
+    default: false,
+  },
+  TURNSTILE_SECRET_KEY: {
+    schema: z.string().min(1).max(200),
+    hint: 'must be 1 to 200 characters',
+    default: '',
+  },
+  TURNSTILE_VERIFY_URL: {
+    schema: z.url({ protocol: /^https?$/, hostname: /^.+$/ }),
+    hint: 'must be an http:// or https:// URL',
+    default: 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+  },
+  TURNSTILE_EXPECTED_HOSTNAMES: {
+    parse: (value) => {
+      const result = parseHostnames(value);
+      return result.ok ? { ok: true, data: result.hostnames } : result;
+    },
+    hint: '',
+    default: [],
+  },
+  TURNSTILE_EXPECTED_ACTION: {
+    schema: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/),
+    hint: 'must be 1 to 32 characters of letters, digits, _ and -',
+    default: '',
+  },
+  PUBLIC_MAX_PER_IP_PER_HOUR: {
+    schema: z.coerce.number().int().min(1).max(10000),
+    hint: 'must be a whole number from 1 to 10000',
+    default: 5,
+  },
+  PUBLIC_DAILY_CAP: {
+    schema: z.coerce.number().int().min(1).max(1000000),
+    hint: 'must be a whole number from 1 to 1000000',
+    default: 200,
+  },
 };
 
 const NAMES = Object.keys(SETTINGS) as (keyof AppConfig)[];
@@ -227,6 +292,10 @@ export function validateEnv(raw: Record<string, unknown>): AppConfig {
     }
   }
 
+  // Fail fast: an open public form with no way to check the bot test would let anyone spend the budget.
+  if (values.PUBLIC_FORM_ENABLED === true && values.TURNSTILE_SECRET_KEY === '') {
+    problems.push('TURNSTILE_SECRET_KEY is missing (required when PUBLIC_FORM_ENABLED is true)');
+  }
   if (problems.length > 0) {
     throw new ConfigValidationError(problems);
   }

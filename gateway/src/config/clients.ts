@@ -1,5 +1,6 @@
 import { ROLES, type RegisteredClient } from '../auth/auth.types.js';
 import { HASH_PATTERN, NAME_PATTERN } from '../auth/client-key.js';
+import { PUBLIC_FORM_CLIENT } from '../public-tickets/public.constants.js';
 
 export type ParsedClients =
   | { ok: true; clients: RegisteredClient[] }
@@ -40,6 +41,12 @@ export function parseClients(raw: string): ParsedClients {
     let valid = true;
     if (typeof name !== 'string' || !NAME_PATTERN.test(name)) {
       problems.push(`${at}: name must be 1 to 40 characters of a-z, 0-9 and -`);
+      valid = false;
+    }
+    if (name === PUBLIC_FORM_CLIENT) {
+      // Reserved: public-form tickets are owned by this built-in client, so a real client with the
+      // same name would share its ownership, rate-limit and idempotency namespace.
+      problems.push(`${at}: the name "${PUBLIC_FORM_CLIENT}" is reserved for the public form`);
       valid = false;
     }
     if (typeof role !== 'string' || !(ROLES as readonly string[]).includes(role)) {

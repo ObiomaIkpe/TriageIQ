@@ -170,3 +170,43 @@ export class MemoryUsers {
     }
   }
 }
+
+/** The public form's counters in memory (the same rules as the Lua scripts), with windows measured by the fake clock. */
+export class MemoryPublicStore {
+  ips = new Map<string, { count: number; expiresAt: number }>();
+  caps = new Map<string, number>();
+  /** Make the next call of this kind fail, like Redis trouble. */
+  failing: 'none' | 'ip' | 'cap' | 'release' = 'none';
+  calls: string[] = [];
+  constructor(private readonly clock: FakeClock) {}
+
+  async hitIp(ip: string, windowSeconds: number) {
+    this.calls.push('hitIp');
+    if (this.failing === 'ip') throw new Error('redis down');
+    let entry = this.ips.get(ip);
+    if (!entry || entry.expiresAt <= this.clock.now) entry = { count: 0, expiresAt: this.clock.now + windowSeconds * 1000 };
+    entry.count += 1;
+    this.ips.set(ip, entry);
+    return { count: entry.count, ttlSeconds: Math.ceil((entry.expiresAt - this.clock.now) / 1000) };
+  }
+
+  async reserveCap(day: string, cap: number) {
+    this.calls.push('reserveCap');
+    if (this.failing === 'cap') throw new Error('redis down');
+    const count = (this.caps.get(day) ?? 0) + 1;
+    if (count > cap) return { reserved: false, count: count - 1 };
+    this.caps.set(day, count);
+    return { reserved: true, count };
+  }
+
+  async releaseCap(day: string) {
+    this.calls.push('releaseCap');
+    if (this.failing === 'release') throw new Error('redis down');
+    const count = this.caps.get(day) ?? 0;
+    if (count > 0) this.caps.set(day, count - 1);
+  }
+
+  capUsed(day: string) {
+    return this.caps.get(day) ?? 0;
+  }
+}

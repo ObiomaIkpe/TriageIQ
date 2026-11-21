@@ -51,6 +51,13 @@ describe('validateEnv', () => {
       LOGIN_MAX_FAILURES_PER_EMAIL: 5,
       LOGIN_WINDOW_MINUTES: 15,
       TRUST_PROXY: false,
+      PUBLIC_FORM_ENABLED: false,
+      TURNSTILE_SECRET_KEY: '',
+      TURNSTILE_VERIFY_URL: 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+      TURNSTILE_EXPECTED_HOSTNAMES: [],
+      TURNSTILE_EXPECTED_ACTION: '',
+      PUBLIC_MAX_PER_IP_PER_HOUR: 5,
+      PUBLIC_DAILY_CAP: 200,
     });
   });
 
@@ -156,6 +163,9 @@ describe('validateEnv', () => {
       'LOGIN_MAX_FAILURES_PER_IP',
       'LOGIN_WINDOW_MINUTES',
       'PORT',
+      'PUBLIC_DAILY_CAP',
+      'PUBLIC_FORM_ENABLED',
+      'PUBLIC_MAX_PER_IP_PER_HOUR',
       'RATE_LIMIT_PER_MINUTE',
       'REDIS_URL',
       'SESSION_ABSOLUTE_HOURS',
@@ -252,3 +262,60 @@ describe('startup with a bad environment', () => {
     ).resolves.toBeDefined();
   });
 });
+
+describe('validateEnv: the public form settings', () => {
+  const on = { ...VALID, PUBLIC_FORM_ENABLED: 'true', TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA' };
+
+  it('is off by default and needs no Turnstile secret then', () => {
+    const config = validateEnv(VALID);
+    expect(config.PUBLIC_FORM_ENABLED).toBe(false);
+    expect(config.TURNSTILE_SECRET_KEY).toBe('');
+  });
+
+  it('refuses to start when enabled without a secret (fail fast), naming the setting and never a value', () => {
+    for (const secret of [undefined, '', '   ']) {
+      const error = failure({ ...VALID, PUBLIC_FORM_ENABLED: 'true', TURNSTILE_SECRET_KEY: secret });
+      expect(error.problems).toEqual(['TURNSTILE_SECRET_KEY is missing (required when PUBLIC_FORM_ENABLED is true)']);
+    }
+  });
+
+  it('starts when enabled with a secret', () => {
+    expect(validateEnv(on).PUBLIC_FORM_ENABLED).toBe(true);
+  });
+
+  it('is strict about the flag: only true or false', () => {
+    expect(failure({ ...VALID, PUBLIC_FORM_ENABLED: 'yes' }).problems[0]).toContain('PUBLIC_FORM_ENABLED is invalid');
+    expect(validateEnv({ ...VALID, PUBLIC_FORM_ENABLED: 'FALSE' }).PUBLIC_FORM_ENABLED).toBe(false);
+  });
+
+  it.each([
+    ['PUBLIC_MAX_PER_IP_PER_HOUR', '0', false], ['PUBLIC_MAX_PER_IP_PER_HOUR', '1', true], ['PUBLIC_MAX_PER_IP_PER_HOUR', '10000', true],
+    ['PUBLIC_MAX_PER_IP_PER_HOUR', '10001', false], ['PUBLIC_MAX_PER_IP_PER_HOUR', '2.5', false], ['PUBLIC_MAX_PER_IP_PER_HOUR', 'abc', false],
+    ['PUBLIC_DAILY_CAP', '0', false], ['PUBLIC_DAILY_CAP', '1', true], ['PUBLIC_DAILY_CAP', '1000000', true], ['PUBLIC_DAILY_CAP', '1000001', false],
+    ['TURNSTILE_VERIFY_URL', 'https://example.com/siteverify', true], ['TURNSTILE_VERIFY_URL', 'http://localhost:9999/x', true],
+    ['TURNSTILE_VERIFY_URL', 'ftp://example.com', false], ['TURNSTILE_VERIFY_URL', 'nope', false],
+    ['TURNSTILE_EXPECTED_ACTION', 'public_ticket', true], ['TURNSTILE_EXPECTED_ACTION', 'has space', false], ['TURNSTILE_EXPECTED_ACTION', 'x'.repeat(33), false],
+    ['TURNSTILE_EXPECTED_HOSTNAMES', 'example.com', true], ['TURNSTILE_EXPECTED_HOSTNAMES', 'a.example.com, B.example.org', true],
+    ['TURNSTILE_EXPECTED_HOSTNAMES', 'https://example.com', false], ['TURNSTILE_EXPECTED_HOSTNAMES', 'example.com:3000', false],
+    ['TURNSTILE_EXPECTED_HOSTNAMES', 'a.com,,b.com', false],
+  ])('%s = %j -> valid %s', (name, value, valid) => {
+    const run = () => validateEnv({ ...VALID, [name]: value });
+    if (valid) expect(run).not.toThrow();
+    else expect(run).toThrow(ConfigValidationError);
+  });
+
+  it('the defaults are 5 per IP per hour and 200 per day', () => {
+    const config = validateEnv(VALID);
+    expect([config.PUBLIC_MAX_PER_IP_PER_HOUR, config.PUBLIC_DAILY_CAP]).toEqual([5, 200]);
+  });
+
+  it('hostnames are lower-cased and de-duplicated', () => {
+    expect(validateEnv({ ...VALID, TURNSTILE_EXPECTED_HOSTNAMES: 'A.com, a.com, b.com' }).TURNSTILE_EXPECTED_HOSTNAMES).toEqual(['a.com', 'b.com']);
+  });
+
+  it('the secret never appears in an error message', () => {
+    const error = failure({ ...VALID, PUBLIC_FORM_ENABLED: 'maybe', TURNSTILE_SECRET_KEY: SECRET, TURNSTILE_VERIFY_URL: `ftp://${SECRET}` });
+    expect(error.message).not.toContain(SECRET);
+  });
+});
+

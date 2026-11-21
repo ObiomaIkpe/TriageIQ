@@ -117,7 +117,7 @@ The gateway is the only way in. The compose file publishes just the gateway (on 
 7. **Retries.** If Python answers `503`/`429`/`502`/`504`, or cannot be reached, the worker retries with backoff (up to 8 attempts, about 15 minutes in all; a `Retry-After` is honoured). Other `4xx` and `500` fail the job at once, because a retry would repeat paid model calls for nothing.
 8. **Done.** The Python result becomes the job's result, and the client's next poll shows `done` with the `ticket_id`, `reference`, category, reply and review flag.
 9. **Dead letters.** A job that fails for good (attempts used up, or a ticket Python rejects) stays in Redis's failed set for 30 days. A reviewer lists them with `GET /dead-letters` and re-queues one with `POST /dead-letters/:id/retry`: same job id, a full set of attempts, and step 5 makes it safe even if Python had already saved the ticket.
-10. **Human review.** A flagged ticket is saved as `pending_review` with its graph paused. A reviewer finds it with `GET /tickets?status=pending_review` (or by id or `TKT-` reference) and decides with `POST /tickets/:id/review`. The gateway validates the decision, forwards it to Python with the review key, and Python resumes the graph and marks the ticket `approved`, `edited` or `rejected`. The gateway also tells Python **who is deciding**, taken from the authenticated caller (a logged-in reviewer as `user:<uuid>` with their display name, or an API client as `client:<name>`), never from the request body; Python stores it with the decision and every later read of the ticket shows `reviewed_by`. A second review of the same ticket is a `409` and keeps the first reviewer.
+10. **Human review.** A ticket from the public form travels the same way, owned by the built-in client `public-form`, with the customer's name and email stored for the reviewer but never shown to the model. A flagged ticket is saved as `pending_review` with its graph paused. A reviewer finds it with `GET /tickets?status=pending_review` (or by id or `TKT-` reference) and decides with `POST /tickets/:id/review`. The gateway validates the decision, forwards it to Python with the review key, and Python resumes the graph and marks the ticket `approved`, `edited` or `rejected`. The gateway also tells Python **who is deciding**, taken from the authenticated caller (a logged-in reviewer as `user:<uuid>` with their display name, or an API client as `client:<name>`), never from the request body; Python stores it with the decision and every later read of the ticket shows `reviewed_by`. A second review of the same ticket is a `409` and keeps the first reviewer.
 
 ## API
 
@@ -243,7 +243,7 @@ docker compose exec app python -m app.kb.ingest     # seeds 5 sample FAQ article
 
 On the Voyage free tier (3 requests per minute) seeding takes about a minute; the built-in rate limiter waits as needed.
 
-**Smoke test.** `scripts/e2e_smoke.py` checks the whole system through the gateway in nine steps (health, a refused request, submit and idempotent replay, the job finishing, ownership, reviewer reads, a flagged ticket reviewed once and then refused, and 403s for a submitter), plus an **optional tenth step** that logs a reviewer in with a session cookie, uses it and logs out (it needs the reviewer's email and password, and `E2E_ORIGIN` if your `ALLOWED_ORIGINS` is not `http://localhost:5173`). It uses only the standard library. **It creates real tickets and spends model calls**, so run it deliberately. Its test tickets have a subject starting `[e2e <run id>]` and `customer_id` `e2e-smoke`. Enter the keys without echoing them:
+**Smoke test.** `scripts/e2e_smoke.py` checks the whole system through the gateway in nine steps (health, a refused request, submit and idempotent replay, the job finishing, ownership, reviewer reads, a flagged ticket reviewed once and then refused, and 403s for a submitter), plus an **optional tenth step** that logs a reviewer in with a session cookie, uses it and logs out (it needs the reviewer's email and password, and `E2E_ORIGIN` if your `ALLOWED_ORIGINS` is not `http://localhost:5173`). plus an **optional eleventh step** for the public form (`E2E_PUBLIC_FORM=1`: it submits through `POST /public/tickets` with Cloudflare's dummy Turnstile token and an Origin header, then reads the ticket back as the reviewer and checks `customer_email`; it needs the gateway running with `PUBLIC_FORM_ENABLED=true` and the dummy secret, and it costs one more ticket's model calls). It uses only the standard library. **It creates real tickets and spends model calls**, so run it deliberately. Its test tickets have a subject starting `[e2e <run id>]` and `customer_id` `e2e-smoke`. Enter the keys without echoing them:
 
 ```bash
 read -rsp "submitter key: " E2E_SUBMITTER_KEY; echo
@@ -563,8 +563,10 @@ curl -i -X POST http://localhost:3000/tickets \
 HTTP/1.1 202 Accepted
 Location: /jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
 
-{"job_id":"3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34","status":"queued","status_url":"/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34"}
+{"job_id":"3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34","reference":"TKT-7K3M9Q","status":"queued","status_url":"/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34"}
 ```
+
+`reference` is the ticket's human-friendly reference. Since M4.2 the **gateway** makes it at accept time (the same format Python always used: `TKT-` and six characters with no `0 O 1 I L`) and sends it to Python with the ticket, so the answer can carry it at once. A repeat with the same `Idempotency-Key` returns the same reference. Python still makes one itself if a ticket arrives without it (older jobs, direct calls).
 
 ```bash
 curl -H "Authorization: Bearer $TIQ_KEY" http://localhost:3000/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
@@ -631,6 +633,51 @@ curl -i -X POST localhost:3000/tickets \
 **Idempotency keys are per client.** They are stored as `idem:<client name>:<key>`, so the same `Idempotency-Key` from two clients is two different keys and creates two jobs. (Keys stored under the old format, `idem:<key>`, simply expire within 24 hours.)
 
 **How the two hops fit together.** The key protects the client-to-gateway hop (no duplicate job). The `ticket_id` protects the gateway-to-Python hop (no duplicate ticket): the worker sends its job id, which is the same on every attempt and every dead-letter retry, and the Python service answers from the existing ticket instead of triaging again. Together a ticket is triaged and saved once even when the client retries, the worker is killed after Python saved the ticket, or a dead-lettered job is retried.
+
+### Public ticket form: `POST /public/tickets` (M4.2)
+
+The door customers use: **no account and no key**. Anyone on the internet can call it, and every accepted ticket costs a paid model call, so it is mostly abuse and spend control. It is **off** unless `PUBLIC_FORM_ENABLED=true` (otherwise it answers `404`, like a route that does not exist). There is no UI yet: the form page and the Turnstile widget come in M4.3c.
+
+```bash
+curl -i -X POST http://localhost:3000/public/tickets \
+  -H 'Origin: http://localhost:5173' -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: form-$(date +%s)" \
+  -d '{"name":"Ada","email":"ada@example.com","subject":"Invoice","message":"Where is my invoice?","turnstile_token":"XXXX.DUMMY.TOKEN.XXXX"}'
+# 202 {"reference":"TKT-7K3M9Q","message":"Thanks, we received your message."}
+```
+
+- **Body** (strict, unknown fields are `400`): `name` 1 to 100, `email` valid and at most 254 (stored trimmed and lower-cased), `subject` and `message` with the same limits as an API ticket (200 and 5000), `turnstile_token` 1 to 2048, and `website` (a hidden honeypot field, optional). The body limit on this route is **16 KB** (the rest of the gateway allows 100 KB).
+- **`Idempotency-Key` is required** (the form makes one per page load, so a double click makes one ticket). Same key and same message: the original `202` again. Same key, different message: `422`, as for `POST /tickets`.
+- **The answer is only a reference and a thank-you.** Never a job id, never anything about the AI or the processing. The ticket is owned by the built-in client `public-form` (that name is refused in `GATEWAY_CLIENTS`), with `customer_id` `public-form`; reviewers see the customer's `customer_name` and `customer_email` when they read the ticket. **The name and email are never sent to the model.**
+
+**The checks, in order, cheapest first and money last.** Each runs only if the earlier ones passed:
+
+| # | Check | Refused with |
+|---|-------|--------------|
+| 1 | `PUBLIC_FORM_ENABLED` | `404` |
+| 2 | **Origin** must be in `ALLOWED_ORIGINS` (a cheap filter, *not* security: a script can send any Origin) | `403` |
+| 3 | Schema, and the `Idempotency-Key` header | `400` with field errors |
+| 4 | **Replay**: this key already completed with the same message: the original `202`, with nothing below used (no limit slot, no Turnstile call, no cap slot). The Turnstile token and the honeypot are not part of "the same message", so a retry with a new or spent token still works | `202` / `422` |
+| 5 | **Honeypot**: `website` filled in: a normal-looking `202` with a random fake reference, nothing queued (it still counts toward the IP limit) | fake `202` |
+| 6 | **Per-IP limit**: `PUBLIC_MAX_PER_IP_PER_HOUR` (default 5) per client IP per hour, counted first and atomically, like the login limit | `429` + `Retry-After` |
+| 7 | **Turnstile** (Cloudflare) verifies the token server-side. If Cloudflare cannot be reached, times out (5 s) or answers 5xx, the form **fails closed** | `403` "Verification failed, please try again." / `503` "Please try again in a moment." |
+| 8 | **Daily cap**: `PUBLIC_DAILY_CAP` (default 200) accepted public tickets per UTC day, reserved atomically; the slot is given back if the ticket is not queued after all | `503` + `Retry-After` until UTC midnight, "We're receiving too many messages today. Please try again tomorrow." |
+| 9 | Claim the idempotency key and queue the ticket, exactly like `POST /tickets` | `202` |
+
+The cap is **after** Turnstile on purpose: a bot with no valid token can never use up the cap and lock real customers out. The cap is the hard ceiling on what the form can cost in a day, whatever else goes wrong.
+
+**Enable it locally with Turnstile's test keys** (in `gateway/.env`; the dummy secret is for testing only and never for production):
+
+```
+PUBLIC_FORM_ENABLED=true
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA   # always passes; accepts only the dummy token XXXX.DUMMY.TOKEN.XXXX
+# 2x0000000000000000000000000000000AA always fails; 3x0000000000000000000000000000000AA answers "token already spent"
+ALLOWED_ORIGINS=http://localhost:5173
+```
+
+The dummy keys always report the hostname `example.com` and no action, so leave `TURNSTILE_EXPECTED_HOSTNAMES` and `TURNSTILE_EXPECTED_ACTION` empty locally (or set the hostname to `example.com`). With real keys set them to your site's hostname and `public_ticket`. Settings: `PUBLIC_FORM_ENABLED`, `TURNSTILE_SECRET_KEY` (required when enabled, or the gateway will not start), `TURNSTILE_VERIFY_URL`, `TURNSTILE_EXPECTED_HOSTNAMES`, `TURNSTILE_EXPECTED_ACTION`, `PUBLIC_MAX_PER_IP_PER_HOUR`, `PUBLIC_DAILY_CAP`; see `gateway/.env.example`. Real Turnstile keys come with M6.
+
+**Logs** carry `public_ticket outcome=<accepted|replay|honeypot|rate_limited_ip|turnstile_failed|turnstile_unavailable|daily_cap|invalid> reference=... ip=... turnstile_errors=...`. **Never** the name, email, subject, message, token or secret.
 
 ### The worker and retries
 
@@ -743,7 +790,7 @@ docker stop gw-redis-test
 ## Known gaps
 
 - **`reviewed_by` is only as trustworthy as the review key.** Python records whoever the gateway says is reviewing; anyone holding `TRIAGE_REVIEW_API_KEY` could name any reviewer. Reviews made before M4.1c have no author (`reviewed_by` is `null`).
-- **No per-IP limit** (needed for a public submission form in M4). The limit is per client, so one leaked key can use that client's whole allowance, and an unauthenticated flood is only stopped by the cheap `401`, not throttled.
+- **API-key routes have no per-IP limit.** Their limit is per client, so one leaked key can use that client's whole allowance. The public form has its own per-IP limit, but it is per address (an IPv6 user can rotate within a /64, and many people behind one NAT share one limit) and the daily cap is the real ceiling. Behind a proxy set `TRUST_PROXY=true`, or every caller looks like the proxy.
 - **One shared review key** for every reviewer client. Rotating it means editing both `.env` files and recreating two services.
 - **Redis is a single instance** with appendonly persistence but no replica or backup. A lost Redis loses queued jobs, idempotency keys and the dead-letter list (tickets already saved in Postgres are safe).
 - **The rate limit is a fixed window**, so a client can make up to twice the limit across a window edge.
@@ -784,6 +831,7 @@ This is a working prototype, not a finished product.
 
 - Measured by a 20-ticket labelled eval set; see Evals: results below. The 0.6 confidence threshold and the 0.65 distance cutoff are provisional, and the grader prompt has not been measured, set from a handful of examples.
 - **The confidence score is the model's own.** It is not calibrated, so treat it as a rough signal.
+- **The public form exists but has no UI** (M4.2): `POST /public/tickets` with a Turnstile check, a per-IP limit and a daily spend cap, off by default. The form page and widget come in M4.3c; replies are not emailed yet (M4.4).
 - **Human review works through the API, with gaps.** Flagged tickets pause, and `POST /tickets/{id}/review` approves, edits or rejects them. There is no reviewer interface, there is one shared review key (the reviewer who decided is recorded as `reviewed_by`, taken from whoever the gateway authenticated), and edits are not captured as feedback. Python's own read endpoints need no key, but the Python port is closed; reviewers read and review through the gateway, which requires a reviewer key. If the app fails after the paused run has been resumed but before the decision is saved, the run has finished while the row still says `pending_review`, and a retry gets a `409`.
 - **A bad raw resume value strands a ticket.** Always resume through `resume_review()`, which takes a validated `ReviewDecision`. Resuming the graph by hand with an invalid value raises an error, and LangGraph then replays that same bad value on every later resume, so the ticket can no longer be reviewed.
 - **Migration `0002` is applied to a database the next time the app starts against it**, because migrations run at startup. It adds the ticket reference, the review columns and the `approved`, `edited` and `rejected` statuses.

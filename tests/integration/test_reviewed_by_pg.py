@@ -130,18 +130,18 @@ def test_the_startup_migration_can_run_twice(clean_database):
     run_migrations(clean_database)
     run_migrations(clean_database)
     with _engine(clean_database).connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["0003"]
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["0004"]
     assert COLUMNS <= _columns(clean_database)
 
 
 def test_the_alter_statements_are_safe_to_repeat_even_if_the_version_table_was_lost(at_0002):
-    """IF NOT EXISTS / IF EXISTS: re-applying 0003's SQL over a database that already has the columns is fine."""
+    """IF NOT EXISTS / IF EXISTS: re-applying 0003's and 0004's SQL over a database that already has the columns is fine."""
     command.upgrade(alembic_config(at_0002), "head")
     with _engine(at_0002).begin() as conn:
         conn.execute(text("UPDATE alembic_version SET version_num = '0002'"))
-    command.upgrade(alembic_config(at_0002), "head")  # runs 0003 again over the existing columns
+    command.upgrade(alembic_config(at_0002), "head")  # runs 0003 and 0004 again over the existing columns
     with _engine(at_0002).connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["0003"]
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["0004"]
 
 
 def test_downgrade_then_upgrade_again(at_0002):

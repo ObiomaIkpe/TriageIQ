@@ -1,7 +1,7 @@
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import get_graph
@@ -9,6 +9,7 @@ from app.models import GraphState, TicketIn, TriageResult
 from app.tickets.reference import new_reference
 from app.tickets.store import (
     get_ticket,
+    is_reference_collision,
     is_ticket_id_collision,
     save_ticket,
     ticket_lock,
@@ -46,20 +47,53 @@ def _build_result(final_state: dict, ticket_id: str, reference: str) -> TriageRe
     )
 
 
+# The code a caller can rely on when a reference it chose already belongs to another ticket.
+REFERENCE_CONFLICT = "reference_conflict"
+
+
+def _reference_for(ticket: TicketIn) -> str:
+    """The reference the gateway chose, else a new one made here (as before)."""
+    return ticket.reference or new_reference()
+
+
 def _save(ticket: TicketIn, result: TriageResult) -> TriageResult:
     """Save the row and return the result with the reference that was stored.
 
     save_ticket returns the reference it stored: after a collision it is a new one,
-    and the response must match the row.
+    and the response must match the row. A reference the caller chose is never changed:
+    a collision on it is a 409 with the code reference_conflict (the gateway's worker
+    treats that as unrecoverable, because retrying cannot fix it).
     """
-    stored_reference = save_ticket(ticket, result)
+    chosen = ticket.reference is not None
+    try:
+        if chosen:
+            stored_reference = save_ticket(ticket, result, regenerate_reference_on_collision=False)
+        else:
+            stored_reference = save_ticket(ticket, result)
+    except IntegrityError as exc:
+        if chosen and is_reference_collision(exc):
+            logger.error("reference_conflict: a supplied reference belongs to a different ticket")
+            raise HTTPException(
+                status_code=409,
+                detail={"code": REFERENCE_CONFLICT, "message": "reference already used by another ticket"},
+            ) from exc
+        raise
     return result.model_copy(update={"reference": stored_reference})
+
+
+def _graph_ticket(ticket: TicketIn) -> TicketIn:
+    """The ticket as the graph (and so the model and the checkpoint) may see it.
+
+    The customer's name and email are for the reviewer only: they are removed here so they can
+    never reach a prompt or be stored in the graph state. The reference is bookkeeping, not content.
+    """
+    return ticket.model_copy(update={"customer_name": None, "customer_email": None, "reference": None})
 
 
 def _run_graph(ticket: TicketIn, ticket_id: str, graph) -> dict:
     # The id exists before the graph runs, and is the run's thread id, so a
     # paused or resumed run can be found again by ticket id.
-    initial_state: GraphState = {"ticket": ticket}
+    initial_state: GraphState = {"ticket": _graph_ticket(ticket)}
     return graph.invoke(initial_state, config={"configurable": {"thread_id": ticket_id}})
 
 
@@ -107,13 +141,13 @@ def _triage_idempotent(ticket: TicketIn, ticket_id: str, graph) -> TriageResult:
     #    finished, or the save failed). Rebuild the answer from that state: no model calls.
     values = _saved_checkpoint(graph, ticket_id)
     if values is not None:
-        result = _build_result(values, ticket_id, new_reference())
+        result = _build_result(values, ticket_id, _reference_for(ticket))
     else:
         # c) A run that stopped halfway cannot be trusted or resumed from here: clear its
         #    checkpoints (LangGraph's own delete_thread) and run from the start.
         if _has_checkpoints(graph, ticket_id):
             graph.checkpointer.delete_thread(ticket_id)
-        result = _build_result(_run_graph(ticket, ticket_id, graph), ticket_id, new_reference())
+        result = _build_result(_run_graph(ticket, ticket_id, graph), ticket_id, _reference_for(ticket))
 
     try:
         return _save(ticket, result)
@@ -137,7 +171,7 @@ def triage_ticket(ticket: TicketIn, graph=Depends(get_graph)) -> TriageResult:
             return _triage_idempotent(ticket, ticket_id, graph)
 
     ticket_id = str(uuid4())
-    reference = new_reference()
+    reference = _reference_for(ticket)
     final_state = _run_graph(ticket, ticket_id, graph)
 
     # A ticket flagged for human review makes the run PAUSE at the human_review step;

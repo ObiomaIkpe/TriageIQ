@@ -6,6 +6,10 @@ PREFIX = "TKT-"
 LENGTH = 6
 
 
+# The format, for validating a reference somebody else made (the gateway makes them now).
+REFERENCE_PATTERN = rf"^{PREFIX}[{ALPHABET}]{{{LENGTH}}}$"
+
+
 def new_reference() -> str:
     """A short, human-friendly ticket reference such as TKT-7K3M9Q.
 

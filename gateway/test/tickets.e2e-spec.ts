@@ -32,6 +32,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
 
       expect(response.body).toEqual({
         job_id: expect.stringMatching(UUID),
+        reference: expect.stringMatching(/^TKT-[A-HJKMNP-Z2-9]{6}$/),
         status: 'queued',
         status_url: `/jobs/${response.body.job_id}`,
       });

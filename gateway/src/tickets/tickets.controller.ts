@@ -20,6 +20,7 @@ import { IdempotencyConflictError, IdempotencyService } from '../idempotency/ide
 import { TriageQueueService } from '../queue/triage-queue.service.js';
 import { QueueUnavailableError } from '../queue/with-timeout.js';
 import { JsonContentGuard } from './json-content.guard.js';
+import { newReference } from './reference.js';
 import { parseTicket } from './ticket.schema.js';
 
 export const INTAKE_UNAVAILABLE = 'Ticket intake is temporarily unavailable; please retry';
@@ -54,13 +55,18 @@ export class TicketsController {
       throw new BadRequestException({ detail: 'Invalid ticket', errors: parsed.problems });
     }
 
+    // The reference is made here, at accept time, for every ticket (one code path), and goes to Python with the job.
+    const reference = newReference();
     let jobId: string;
+    let answeredReference: string | undefined = reference;
     try {
       if (key.key === undefined) {
-        ({ jobId } = await this.queue.enqueue(parsed.data, principal.ownerId));
+        ({ jobId } = await this.queue.enqueue(parsed.data, principal.ownerId, undefined, { reference }));
       } else {
-        const submitted = await this.idempotency.submit(principal.id, key.key, parsed.data, principal.ownerId);
+        const submitted = await this.idempotency.submit(principal.id, key.key, parsed.data, principal.ownerId, { reference });
         jobId = submitted.jobId;
+        // A replay answers with the reference the first request got (undefined only for keys stored before this existed).
+        answeredReference = submitted.reference;
         if (submitted.replayed) response.setHeader('Idempotent-Replayed', 'true');
       }
     } catch (error) {
@@ -75,6 +81,11 @@ export class TicketsController {
 
     const statusUrl = `/jobs/${jobId}`;
     response.setHeader('Location', statusUrl);
-    return { job_id: jobId, status: 'queued', status_url: statusUrl };
+    return {
+      job_id: jobId,
+      ...(answeredReference === undefined ? {} : { reference: answeredReference }),
+      status: 'queued',
+      status_url: statusUrl,
+    };
   }
 }
