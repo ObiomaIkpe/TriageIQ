@@ -77,7 +77,7 @@ The gateway accepts tickets, queues them, and its worker sends each one to the F
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /triage` | Triage a ticket and save the result |
+| `POST /triage` | Triage a ticket and save the result. An optional `ticket_id` (a UUID) makes it safe to send the same ticket again: it is triaged and saved at most once (see below) |
 | `GET /tickets?status=&limit=` | List tickets, newest first. `status` is `triaged`, `pending_review`, `approved`, `edited` or `rejected`; `limit` is 1 to 200 (default 50) |
 | `GET /tickets/{ticket_id}` | One ticket, with the original subject and body, and the review fields (`final_reply`, `review_note`, `reviewed_at`, all null until a reviewer decides). 404 if missing, 422 for a malformed id |
 | `GET /tickets/reference/{reference}` | The same record, found by its short reference (such as `TKT-7K3M9Q`). 404 if unknown |
@@ -114,6 +114,18 @@ curl -X POST localhost:8000/triage \
   "review_reason": null
 }
 ```
+
+### Sending the same ticket twice: `ticket_id`
+
+`TicketIn` accepts an optional `ticket_id` (a UUID; anything else is a `422`). Without it nothing changes. With it, that id becomes the ticket's id and the run's thread id, and the same request can be repeated safely. The gateway worker always sends it (its job id), so a retry of a job never creates a second ticket.
+
+1. The request takes a Postgres **advisory lock** on the id, so two requests with the same id never run at the same time. The second waits (up to 150 seconds, then a `503` with `Retry-After`) and then finds the first one's row.
+2. If a **ticket row with that id exists**, it is returned in the normal response shape (the same `TriageResult`). The graph does not run, so no Claude or Voyage call is made. The response is the original triage, even if a reviewer has decided since.
+3. If there is **no row, but the checkpointer holds a run that finished or is paused at `human_review`** (the app stopped, or the save failed, after the graph finished), the answer is rebuilt from that saved state and the row is saved. No model calls. A flagged ticket is saved as `pending_review` and can still be reviewed.
+4. If the saved run **stopped halfway**, its checkpoints are cleared (`delete_thread`) and the ticket is triaged again from the start.
+5. If a save hits the primary key anyway (a race the lock should prevent), the existing row is returned, never a `500`.
+
+The text of a repeated request is not compared: the row (or the saved run) from the first request wins. The gateway only ever repeats the same ticket under the same id.
 
 ### Reviewing a flagged ticket
 
@@ -250,7 +262,7 @@ Known limits: phrase checks cannot tell a reply that refuses a request from one 
 
 ## Gateway (M3)
 
-`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. It is built in steps (M3.1 to M3.5). **So far it starts, checks its settings, reports health, accepts tickets onto a queue (M3.2), and runs a worker that sends each queued ticket to the Python service `POST /triage` and stores the result on the job (M3.3).** There is no authentication, rate limiting, dead-letter list or duplicate protection yet (M3.4 and M3.5), and one failure can still create a second ticket (see "Known gap" below).
+`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. It is built in steps (M3.1 to M3.5). **So far it starts, checks its settings, reports health, accepts tickets onto a queue (M3.2), and runs a worker that sends each queued ticket to the Python service `POST /triage` and stores the result on the job (M3.3).** There is no authentication or rate limiting yet (M3.5).
 
 Redis holds the queue (compose service `redis`, appendonly persistence on, published on host port **6380**, bound to localhost).
 
@@ -333,6 +345,7 @@ Rules and limits:
 |---|---|
 | `subject`: text, trimmed, 1 to 200 characters. `body`: text, trimmed, 1 to 5000. `customer_id`: optional text, at most 100. Any other field is rejected | otherwise `400 {"detail":"Invalid ticket","errors":[{"field":"subject","problem":"must not be empty"}]}`. The messages never repeat what you sent |
 | Content type must be `application/json` | otherwise `415` |
+| Optional header `Idempotency-Key`: 1 to 100 characters, letters, digits and `_ . : -` only | otherwise `400 {"detail":"Invalid Idempotency-Key","errors":[...]}`; the value is never echoed. See "Idempotency-Key" below |
 | JSON body at most 100 kb | otherwise `413`, before the body is parsed |
 | Malformed JSON | `400 {"detail":"Request body is not valid JSON"}` |
 | The job could not be stored within about 2 seconds (Redis down) | `503 {"detail":"Ticket intake is temporarily unavailable; please retry"}`. It never answers 202 for a ticket it did not store |
@@ -342,9 +355,34 @@ Rules and limits:
 
 The field names match the Python `TicketIn`, but the gateway is stricter: the Python service accepts an empty subject or body, no length limits, and `"customer_id": null`, while the gateway rejects all three. A ticket the gateway accepts is always valid for the Python service. Finished jobs stay in Redis for 1 day (failed ones for 30 days, see the dead-letter list below) and are then removed.
 
+#### Idempotency-Key: so a client retry never creates a second job
+
+Send `Idempotency-Key: <your key>` on `POST /tickets` whenever the client might repeat the request: a timeout, a dropped connection, a `503`, a user double-clicking. **Use one key per ticket and reuse the same key on every retry of that ticket.** A new key for a retry is a new ticket. A random UUID generated when the ticket is first created is a good key.
+
+```bash
+curl -i -X POST localhost:3000/tickets \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: 9d6c1c2e-7f43-4c58-b0a7-3f1f0f6a2b10' \
+  -d '{"subject": "Cannot log in", "body": "I forgot my password."}'
+```
+
+| Request | Answer |
+|---|---|
+| first use of the key | `202`, a new job, as usual |
+| same key, same ticket again (within 24 hours) | `202` with the **same** `job_id`, `status_url` and `Location`, plus the header `Idempotent-Replayed: true`. No new job |
+| same key, a different ticket | `422 {"detail":"Idempotency-Key was already used with a different ticket"}` |
+| the queue write failed or timed out | `503`, and the key is released, so the retry with the same key works |
+| Redis unreachable | `503`, within about 2 seconds |
+| no header | exactly as before: every request is a new job |
+
+"Same ticket" means the same `subject`, `body` and `customer_id` after trimming (a SHA-256 of those three fields in a fixed order), so extra whitespace does not matter and any real change does. A key is remembered for 24 hours (`SET idem:<key> NX EX 86400` in Redis). The `status` in a replayed `202` is always `queued`, as in the first answer: poll `status_url` for the real state. A key does **not** retry a failed job: it keeps pointing at the same job, so use `POST /dead-letters/:id/retry` for that.
+
+**Keys are not scoped per client until M3.5 adds authentication.** Two clients that pick the same key share it, and a client that guesses another's key gets that job id back. Use random keys.
+
+**How the two hops fit together.** The key protects the client-to-gateway hop (no duplicate job). The `ticket_id` protects the gateway-to-Python hop (no duplicate ticket): the worker sends its job id, which is the same on every attempt and every dead-letter retry, and the Python service answers from the existing ticket instead of triaging again. Together a ticket is triaged and saved once even when the client retries, the worker is killed after Python saved the ticket, or a dead-lettered job is retried.
+
 ### The worker and retries
 
-The worker runs inside the gateway process. For each job it sends `{subject, body, customer_id}` to `POST {TRIAGE_SERVICE_URL}/triage` and waits up to `TRIAGE_TIMEOUT_MS`. A job gets at most **8 attempts**. After a failed attempt that is worth repeating, it waits `max(Retry-After, 10 s x 2^(n-1))` after attempt n, never more than 5 minutes: 10, 20, 40, 80, 160, 300 and 300 seconds, about **15 minutes** of retrying in total (long enough for a Python restart or a short Claude outage).
+The worker runs inside the gateway process. For each job it sends `{subject, body, customer_id, ticket_id}` (the job id as `ticket_id`, the same on every attempt) to `POST {TRIAGE_SERVICE_URL}/triage` and waits up to `TRIAGE_TIMEOUT_MS`. A job gets at most **8 attempts**. After a failed attempt that is worth repeating, it waits `max(Retry-After, 10 s x 2^(n-1))` after attempt n, never more than 5 minutes: 10, 20, 40, 80, 160, 300 and 300 seconds, about **15 minutes** of retrying in total (long enough for a Python restart or a short Claude outage).
 
 | Answer from the Python service | What happens | Why |
 |---|---|---|
@@ -408,7 +446,7 @@ curl -s -X POST localhost:3000/dead-letters/2261b984-fe29-4c2b-9b82-4f26d2460d72
 
 Retrying twice in a row gives `409` the second time, never a second copy: BullMQ checks and moves the job in one atomic step. **These two endpoints have no login until M3.5 and expose ticket text, which is why the compose file binds the gateway port to localhost only.** Do not publish port 3000 beyond localhost before M3.5.
 
-**Known gap (fixed in M3.4b).** If the worker stops after the Python service has saved the ticket but before the job is marked `done` (a crash, a killed container, a timeout that fires just after Python finished), the retry sends the ticket again and Python saves a second one. Until M3.4b adds idempotency, treat a retry after a timeout as possibly creating a duplicate ticket.
+**Remaining gaps.** A request whose `Idempotency-Key` is lost from Redis before the job is persisted (a flush or a crash before the append-only file was written) can let one duplicate job through. The Python hop does not depend on it: even then the worker's job id keeps one ticket per job. Keys are not scoped per client until M3.5.
 
 Tests (Vitest; lint is oxlint): `npm test`, `npm run test:e2e` and `npm run lint` inside `gateway/`. Tests that need a real Redis (including the worker retry tests, which take about 30 seconds because they use the real backoff) are skipped unless `REDIS_TEST_URL` is set, for example:
 
@@ -447,7 +485,7 @@ This is a working prototype, not a finished product.
 - **No authentication except on the review endpoint, and no request limits.** The other endpoints are open, and each ticket costs up to three Claude calls and one embedding call.
 - **Prompt injection is only partly covered.** Ticket text goes into the prompts. The KB grader also reports `injection_suspected`, and a suspected ticket is flagged for a human. But that check only runs on tickets that reach the grader, meaning tickets with at least one candidate article; a ticket with no candidate article, or one the grader call failed on, is not checked. A check on every ticket at intake is future work. The grader is itself an LLM reading the ticket, and its detection has not been measured.
 - **Long replies are cut off, and flagged.** Every Claude call is capped at `LLM_MAX_TOKENS` (700, about 500 words). A draft that runs longer stops mid-sentence. The app detects this (Claude's stop reason is `max_tokens`) and flags the ticket for review with the reason "Draft reply was cut off at the token limit.", but the cut-off text is still returned as `suggested_reply`. If the classifier or critic is cut off, the request fails with a `500`. How often cut-offs happen has not been measured yet, so the cap itself is untuned.
-- **A failed save loses the response.** If the database goes down after the work is done, the client gets a 503 and the triage has to be paid for again on retry. For a flagged ticket it is worse: the graph has already paused, so a paused thread exists with no ticket row, and nothing can find it.
+- **A failed save loses the response, unless the request carried a `ticket_id`.** If the database goes down after the work is done, the client gets a 503. Without a `ticket_id` the triage has to be paid for again on retry, and for a flagged ticket the graph has already paused, so a paused thread exists with no ticket row and nothing can find it. With a `ticket_id` (the gateway always sends one) the retry rebuilds the answer from the saved run and saves the row, with no new model calls.
 - **A small sample KB.** Only 5 FAQ articles are included, and there are no tools for managing articles beyond the ingest script.
 - **Run one instance.** Migrations are not locked against concurrent starts.
 - **Checkpoint rows pile up.** Every run writes checkpoint rows to Postgres, and there is no retention policy yet, so they are never deleted.

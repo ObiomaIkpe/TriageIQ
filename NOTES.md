@@ -270,3 +270,33 @@ What happens to a running job when the container stops (measured with a 20 s fak
 - **30-day retention** for failed jobs. Jobs already in Redis keep the options they were added with (7 days, 5 attempts).
 - **No authentication yet.** `GET /dead-letters` and `POST /dead-letters/:id/retry` have no login until M3.5 and the list returns ticket subject, body and customer id. That is why the compose file publishes the gateway port on localhost only. Do not expose it before M3.5.
 - **Limits:** `offset` pagination over a set that changes (a job failing or being retried between two pages can shift items, so a page may skip or repeat one). The retry is not rate limited, and nothing stops someone retrying a job whose cause is not fixed (it just fails again, after another 15 minutes of attempts and paid calls). A retry does not duplicate the ticket in Python if the first attempt had been saved there: that is M3.4b.
+
+## Idempotency end to end (M3.4b)
+
+What was found first (LangGraph 1.2.16, measured with the real graph and faked model calls):
+
+- **`invoke()` with new input on an existing thread always starts a new run from the first node**, whatever the thread holds: after a finished run, after a run paused at `human_review`, and after a run that stopped halfway (the failed node's pending task is not resumed). Every node ran again, so every Claude and Voyage call was repeated. Only `Command(resume=...)` continues a paused run. This is why a repeated `POST /triage` could not simply call `invoke()` again.
+- A finished run has `get_state().next == ()` and all its result keys. A paused one has `next == ('human_review',)`. A run that stopped halfway has the failed node in `next`.
+- `delete_thread(thread_id)` exists on `PostgresSaver` (and `MemorySaver`) in langgraph-checkpoint-postgres 3.2.0 / langgraph-checkpoint 4.3.0 and removes the thread's checkpoints, blobs and writes. No other way to clear a thread was needed.
+- **A primary key collision on save was a 500** (`save_ticket` only retries the `reference` constraint; a test pins that a duplicate id raises `IntegrityError`). That behaviour of `save_ticket` is unchanged; the endpoint now catches it for requests that carry an id.
+
+Decisions:
+
+- **Python decides, not the gateway.** The gateway cannot know whether Python saved a ticket, so the worker sends its job id as `ticket_id` and Python makes the hop idempotent. The job id is the same on every attempt and on a dead-letter retry. A job id that is not a UUID is not sent (all gateway ids are UUIDs).
+- **Advisory lock, not a transaction.** `pg_advisory_lock(hashtextextended('triageiq:ticket:' || id, 0))` on its own AUTOCOMMIT connection, held for the whole request (a graph run can take minutes, and an open transaction for that long is worse). Postgres releases it if the connection dies. `lock_timeout` is 150 s (above the gateway's 120 s triage timeout) so a stuck holder produces a retryable 503 instead of hanging the waiting request forever, and the setting is reset before the connection goes back to the pool. Cost: a waiting request holds one of the app's worker threads. Many duplicates of one slow ticket could use up the thread pool.
+- **Rebuild from the checkpoint instead of re-running.** If the row is missing but the run finished or paused, the answer is built from the saved state with the same code as a fresh run. It saves model calls and, for a paused ticket, keeps the one thread a reviewer needs. A run that stopped halfway is cleared and run again, because resuming it from outside is not something this app supports.
+- **The row wins.** A repeated request returns the stored triage and never compares the text. The gateway always repeats the same ticket under the same id; a different client reusing an id would get the first ticket's answer.
+- **Gateway keys in Redis, 24 h TTL.** `SET idem:<key> {job_id, fingerprint} NX EX 86400` is the atomic claim; the ticket is then queued under that job id. Redis already holds the queue, so there is no new dependency, and 24 hours is as long as completed jobs are kept. On a failed or timed-out enqueue the key is deleted only if it still holds this job id (a small Lua `GET`/`cjson.decode`/`DEL`, one step inside Redis), so a key another request has since claimed is never deleted. Mutation-tested against real Redis: with a plain `DEL`, or `SET` without `NX`, the tests fail.
+- **A dedicated ioredis connection for the keys**, not the BullMQ queue's. BullMQ 6 has no public `queue.client` (the first version of this code used it and failed against a real Redis: every keyed request was a 503; the fakes had hidden it). The connection has `enableOfflineQueue: false`, so a command sent while Redis is down fails at once and can never be written late, after the client was told 503.
+- **Fingerprint** = SHA-256 of `JSON.stringify([subject, body, customer_id ?? null])` after the schema's trimming.
+
+Honest gaps:
+
+- **Keys are not scoped per client** until auth exists (M3.5). Two clients with the same key share it.
+- **A key lost from Redis before the job is persisted** (a flush, or a crash within the append-only fsync window) allows a second job for a retry. The Python hop still keeps one ticket per job.
+- **A replay that overlaps a failed first attempt** (five concurrent requests, and the enqueue of the one that claimed the key fails) can be told a job id that was never stored. Polling it gives 404; the retry with the same key then works because the key was released. If releasing the key fails too (Redis went down between the claim and the enqueue), the key stays until its 24 h TTL and replays return that missing id.
+- **A slow, not down, Redis** can still finish an enqueue after the client was told 503 (as in M3.2); the key is then released and a retry makes a second job.
+- **A replayed `202` always says `queued`**, even if the job is done by then. The state is read from `status_url`.
+- **The Python lock does not protect the review endpoint** (it has its own row lock), and checkpoints still pile up with no retention policy.
+- Concurrency was tested with threads in one process against a real Postgres; two separate app instances would use the same advisory lock but that was not tested.
+

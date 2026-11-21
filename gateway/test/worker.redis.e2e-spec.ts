@@ -23,6 +23,7 @@ interface Hit {
   subject: string;
   at: number;
   keys: string[];
+  ticketId?: string;
 }
 
 const SLOW = 40_000;
@@ -69,7 +70,12 @@ describe.skipIf(!REDIS_TEST_URL)('triage worker against a real Redis and a fake 
       req.on('data', (chunk) => (raw += String(chunk)));
       req.on('end', () => {
         const ticket = JSON.parse(raw) as { subject: string };
-        hits.push({ subject: ticket.subject, at: Date.now(), keys: Object.keys(ticket) });
+        hits.push({
+          subject: ticket.subject,
+          at: Date.now(),
+          keys: Object.keys(ticket),
+          ticketId: (ticket as { ticket_id?: string }).ticket_id,
+        });
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
         res.on('close', () => {
@@ -140,8 +146,9 @@ describe.skipIf(!REDIS_TEST_URL)('triage worker against a real Redis and a fake 
       result: RESULT,
     });
     expect(callsFor('S-OK')).toHaveLength(1);
-    // The Python service gets exactly the TicketIn fields.
-    expect(callsFor('S-OK')[0].keys.sort()).toEqual(['body', 'customer_id', 'subject']);
+    // The Python service gets exactly the TicketIn fields, and the job id as ticket_id.
+    expect(callsFor('S-OK')[0].keys.sort()).toEqual(['body', 'customer_id', 'subject', 'ticket_id']);
+    expect(callsFor('S-OK')[0].ticketId).toBe(id);
   });
 
   it(
@@ -153,6 +160,9 @@ describe.skipIf(!REDIS_TEST_URL)('triage worker against a real Redis and a fake 
       expect(body.result).toEqual(RESULT);
       const [first, second] = callsFor('S-503');
       expect(callsFor('S-503')).toHaveLength(2);
+      // The same ticket_id, equal to the job id, on the first attempt and on the retry.
+      expect(first.ticketId).toBe(id);
+      expect(second.ticketId).toBe(id);
       expect(second.at - first.at).toBeGreaterThanOrEqual(1000); // at least the Retry-After
       expect(second.at - first.at).toBeGreaterThanOrEqual(9000); // in fact the 10 s base backoff
       expect((await inspector.getJob(id))?.attemptsMade).toBe(2); // the failed try and the good one

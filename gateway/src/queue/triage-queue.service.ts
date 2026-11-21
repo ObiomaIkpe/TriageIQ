@@ -73,8 +73,10 @@ export class TriageQueueService {
   }
 
   /** Stores the ticket as a job. Throws QueueUnavailableError unless it was really stored. */
-  async enqueue(ticket: TicketInput): Promise<{ jobId: string; receivedAt: string }> {
-    const jobId = randomUUID();
+  async enqueue(
+    ticket: TicketInput,
+    jobId: string = randomUUID(),
+  ): Promise<{ jobId: string; receivedAt: string }> {
     const receivedAt = new Date().toISOString();
     const data: TicketJobData = {
       subject: ticket.subject,
@@ -157,11 +159,11 @@ export class TriageQueueService {
   }
 
   /**
-   * Runs a queue call with a deadline. Any failure or timeout becomes QueueUnavailableError.
+   * Runs a call with the queue's deadline (also used for the idempotency keys). Any failure or timeout becomes QueueUnavailableError.
    * The call receives `expired()`, true once the deadline has passed, so it can stop before
    * doing anything that cannot be undone.
    */
-  private async guarded<T>(call: (expired: () => boolean) => Promise<T>): Promise<T> {
+  async guarded<T>(call: (expired: () => boolean) => Promise<T>): Promise<T> {
     let expired = false;
     try {
       return await withTimeout(

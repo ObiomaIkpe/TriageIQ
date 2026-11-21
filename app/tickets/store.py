@@ -1,10 +1,13 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import db
 from app.db import get_session
 from app.models import (
     KbMatch,
@@ -19,6 +22,12 @@ from app.tickets.reference import new_reference
 
 # The unique constraint on tickets.reference (see migration 0002).
 REFERENCE_CONSTRAINT = "tickets_reference_key"
+# The primary key of tickets (the default name Postgres gives it).
+TICKET_ID_CONSTRAINT = "tickets_pkey"
+# How long a request waits for another request with the same ticket id before giving up
+# with a retryable 503. Longer than the gateway's triage timeout (2 minutes), so by then
+# the gateway has stopped waiting anyway.
+TICKET_LOCK_TIMEOUT = "150s"
 # After the first attempt fails on a reference collision, try this many more times.
 MAX_REFERENCE_RETRIES = 3
 
@@ -81,6 +90,49 @@ def _is_reference_collision(exc: IntegrityError) -> bool:
     # duplicate id) is a real problem and must propagate.
     diag = getattr(exc.orig, "diag", None)
     return getattr(diag, "constraint_name", None) == REFERENCE_CONSTRAINT
+
+
+def is_ticket_id_collision(exc: IntegrityError) -> bool:
+    """True when an insert failed because a row with that ticket id already exists."""
+    diag = getattr(exc.orig, "diag", None)
+    return getattr(diag, "constraint_name", None) == TICKET_ID_CONSTRAINT
+
+
+_LOCK_SQL = text("SELECT pg_advisory_lock(hashtextextended('triageiq:ticket:' || :id, 0))")
+_UNLOCK_SQL = text("SELECT pg_advisory_unlock(hashtextextended('triageiq:ticket:' || :id, 0))")
+
+
+@contextmanager
+def ticket_lock(ticket_id: str) -> Iterator[None]:
+    """Hold a Postgres advisory lock for one ticket id until the block ends.
+
+    Two requests with the same ticket id never run their block at the same time: the
+    second one waits here (up to TICKET_LOCK_TIMEOUT, then a retryable database error).
+    It is a session-level lock on its own connection, so it can span the whole graph
+    run without keeping a transaction open, and Postgres releases it by itself if the
+    connection dies. The key is a hash of the id, in a namespace of its own.
+    """
+    with db.SessionLocal() as session:
+        conn = session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+        try:
+            conn.execute(text(f"SET lock_timeout = '{TICKET_LOCK_TIMEOUT}'"))
+            conn.execute(_LOCK_SQL, {"id": ticket_id})
+        except BaseException:
+            # Not locked (timeout or a broken connection). Do not return a connection with
+            # a changed setting to the pool.
+            conn.invalidate()
+            raise
+        try:
+            yield
+        finally:
+            try:
+                conn.execute(_UNLOCK_SQL, {"id": ticket_id})
+                conn.execute(text("RESET lock_timeout"))
+            except BaseException:
+                # The lock could not be released cleanly: drop the connection instead of
+                # returning it to the pool, which ends the session and so the lock.
+                conn.invalidate()
+                raise
 
 
 def save_ticket(ticket: TicketIn, result: TriageResult) -> str:
