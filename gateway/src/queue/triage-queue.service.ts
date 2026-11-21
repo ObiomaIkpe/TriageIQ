@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
+import { shortReason } from '../jobs/job-status.js';
 import type { TicketInput } from '../tickets/ticket.schema.js';
 import { QUEUE_TIMEOUT_MS, TRIAGE_JOB_NAME, TRIAGE_QUEUE } from './queue.constants.js';
 import { QueueUnavailableError, withTimeout } from './with-timeout.js';
@@ -15,7 +16,11 @@ export interface TicketJobData {
 
 /** The parts of a BullMQ Job this service reads. */
 export interface JobLike {
+  id?: string;
   data: TicketJobData;
+  attemptsMade?: number;
+  finishedOn?: number;
+  retry(state: 'failed', options: { resetAttemptsMade: boolean; resetAttemptsStarted: boolean }): Promise<void>;
   returnvalue?: unknown;
   failedReason?: string;
   getState(): Promise<string>;
@@ -25,6 +30,8 @@ export interface JobLike {
 export interface QueueLike {
   add(name: string, data: TicketJobData, options: { jobId: string }): Promise<unknown>;
   getJob(id: string): Promise<JobLike | undefined>;
+  getFailed(start: number, end: number): Promise<JobLike[]>;
+  getFailedCount(): Promise<number>;
   on(event: 'error', listener: (error: Error) => void): unknown;
   waitUntilReady(): Promise<unknown>;
 }
@@ -35,6 +42,20 @@ export interface JobSnapshot {
   returnvalue: unknown;
   failedReason: string | undefined;
 }
+
+/** One entry of the dead-letter list: a job that failed for good. */
+export interface DeadLetter {
+  job_id: string;
+  failed_at: string | null;
+  received_at: string | null;
+  attempts_made: number;
+  reason: string;
+  subject: string;
+  body: string;
+  customer_id: string | null;
+}
+
+export type RetryResult = 'queued' | 'not-found' | 'not-failed';
 
 const logger = new Logger('TriageQueue');
 
@@ -93,6 +114,48 @@ export class TriageQueueService {
     });
   }
 
+  /** Failed jobs, newest failure first, plus how many there are in all. */
+  async listDeadLetters(limit: number, offset: number): Promise<{ items: DeadLetter[]; total: number }> {
+    return this.guarded(async () => {
+      // BullMQ keeps failed jobs in a set ordered by when they finished; getFailed() reads it
+      // newest first.
+      const [jobs, total] = await Promise.all([
+        this.queue.getFailed(offset, offset + limit - 1),
+        this.queue.getFailedCount(),
+      ]);
+      return { items: jobs.map(toDeadLetter), total };
+    });
+  }
+
+  /**
+   * Puts a failed job back on the queue under the SAME id with a full set of attempts.
+   * The state check and the move happen in one Redis script inside BullMQ, so two calls at
+   * once cannot both succeed: the second finds the job no longer failed.
+   */
+  async retryDeadLetter(id: string): Promise<RetryResult> {
+    return this.guarded(async (expired) => {
+      await this.queue.waitUntilReady();
+      const job = await this.queue.getJob(id);
+      if (!job) return 'not-found';
+      const state = await job.getState();
+      if (state === 'unknown') return 'not-found';
+      if (state !== 'failed') return 'not-failed';
+      if (expired()) throw new Error('deadline passed before the retry was sent');
+      try {
+        // BullMQ's retry() does NOT reset the attempt counter by default, so ask for it.
+        // Without it a job that used all its attempts would fail again after one try.
+        await job.retry('failed', { resetAttemptsMade: true, resetAttemptsStarted: true });
+      } catch (error) {
+        // Most likely someone else retried it first. Look again before deciding.
+        const again = await this.queue.getJob(id);
+        if (!again) return 'not-found';
+        if ((await again.getState()) !== 'failed') return 'not-failed';
+        throw error;
+      }
+      return 'queued';
+    });
+  }
+
   /**
    * Runs a queue call with a deadline. Any failure or timeout becomes QueueUnavailableError.
    * The call receives `expired()`, true once the deadline has passed, so it can stop before
@@ -114,4 +177,17 @@ export class TriageQueueService {
       throw new QueueUnavailableError();
     }
   }
+}
+
+function toDeadLetter(job: JobLike): DeadLetter {
+  return {
+    job_id: String(job.id),
+    failed_at: typeof job.finishedOn === 'number' ? new Date(job.finishedOn).toISOString() : null,
+    received_at: job.data?.received_at ?? null,
+    attempts_made: job.attemptsMade ?? 0,
+    reason: shortReason(job.failedReason),
+    subject: job.data?.subject,
+    body: job.data?.body,
+    customer_id: job.data?.customer_id ?? null,
+  };
 }

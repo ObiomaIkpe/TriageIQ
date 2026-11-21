@@ -2,7 +2,6 @@ import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppConfig } from '../config/env.schema.js';
-import { MAX_ATTEMPTS } from '../worker/backoff.js';
 import {
   DEFAULT_QUEUE_TIMEOUT_MS,
   KEEP_COMPLETED_SECONDS,
@@ -10,6 +9,7 @@ import {
   QUEUE_TIMEOUT_MS,
   TRIAGE_QUEUE,
 } from './queue.constants.js';
+import { RetryPolicyModule, TRIAGE_RETRY_POLICY, type RetryPolicy } from './retry-policy.js';
 import { TriageQueueService } from './triage-queue.service.js';
 
 @Module({
@@ -24,16 +24,21 @@ import { TriageQueueService } from './triage-queue.service.js';
         },
       }),
     }),
-    BullModule.registerQueue({
+    BullModule.registerQueueAsync({
       name: TRIAGE_QUEUE,
-      defaultJobOptions: {
-        // Retry up to 5 times in total. The waiting time comes from the worker's custom
-        // backoffStrategy. Jobs added before this existed keep the options they were added with.
-        attempts: MAX_ATTEMPTS,
-        backoff: { type: 'custom' },
-        removeOnComplete: { age: KEEP_COMPLETED_SECONDS },
-        removeOnFail: { age: KEEP_FAILED_SECONDS },
-      },
+      imports: [RetryPolicyModule],
+      inject: [TRIAGE_RETRY_POLICY],
+      useFactory: (policy: RetryPolicy) => ({
+        defaultJobOptions: {
+          // Total tries per job (8). The waiting time comes from the worker's custom
+          // backoffStrategy; backoff.delay is only the first step. Jobs already in Redis keep
+          // the options they were added with.
+          attempts: policy.attempts,
+          backoff: { type: 'custom', delay: policy.backoffBaseMs },
+          removeOnComplete: { age: KEEP_COMPLETED_SECONDS },
+          removeOnFail: { age: KEEP_FAILED_SECONDS },
+        },
+      }),
     }),
   ],
   providers: [

@@ -10,4 +10,5 @@ export const DEFAULT_QUEUE_TIMEOUT_MS = 2000;
 
 /** How long finished jobs stay in Redis, in seconds. */
 export const KEEP_COMPLETED_SECONDS = 24 * 60 * 60; // 1 day
-export const KEEP_FAILED_SECONDS = 7 * 24 * 60 * 60; // 7 days
+/** Failed jobs are the dead-letter list, so they are kept for a month. */
+export const KEEP_FAILED_SECONDS = 30 * 24 * 60 * 60; // 30 days

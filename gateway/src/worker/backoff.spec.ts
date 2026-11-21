@@ -9,7 +9,7 @@ import { RetryableTriageError } from './triage.errors.js';
 
 describe('computeBackoffMs', () => {
   it('constants are the agreed ones', () => {
-    expect(MAX_ATTEMPTS).toBe(5);
+    expect(MAX_ATTEMPTS).toBe(8);
     expect(BACKOFF_BASE_MS).toBe(10_000);
     expect(BACKOFF_CAP_MS).toBe(300_000);
   });
@@ -22,9 +22,22 @@ describe('computeBackoffMs', () => {
     [5, 160_000],
     [6, 300_000], // 320 s would be next, capped at 5 minutes
     [7, 300_000],
+    [8, 300_000],
     [50, 300_000],
   ])('attempt %i with no Retry-After -> %i ms', (attempt, expected) => {
     expect(computeBackoffMs(attempt)).toBe(expected);
+  });
+
+  it('eight attempts wait about 15 minutes in total (7 waits)', () => {
+    const waits = [1, 2, 3, 4, 5, 6, 7].map((attempt) => computeBackoffMs(attempt));
+    expect(waits).toEqual([10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]);
+    expect(waits.reduce((a, b) => a + b, 0)).toBe(910_000);
+  });
+
+  it('a different base (tests only) scales the steps and keeps the cap', () => {
+    expect(computeBackoffMs(1, undefined, 50)).toBe(50);
+    expect(computeBackoffMs(3, undefined, 50)).toBe(200);
+    expect(computeBackoffMs(20, undefined, 50_000)).toBe(300_000);
   });
 
   it('uses Retry-After when it is longer than the exponential delay', () => {
@@ -69,5 +82,13 @@ describe('triageBackoffStrategy (the BullMQ custom backoff)', () => {
     expect(triageBackoffStrategy(2, 'custom', new Error('x'))).toBe(20_000);
     expect(triageBackoffStrategy(2, 'custom', undefined)).toBe(20_000);
     expect(triageBackoffStrategy(2, 'custom', new RetryableTriageError('timeout'))).toBe(20_000);
+  });
+
+  it("reads the first step from the job's backoff.delay, and falls back when it is missing", () => {
+    const job = (backoff: unknown) => ({ opts: { backoff } }) as never;
+    expect(triageBackoffStrategy(3, 'custom', undefined, job({ type: 'custom', delay: 50 }))).toBe(200);
+    expect(triageBackoffStrategy(3, 'custom', undefined, job({ type: 'custom' }))).toBe(40_000);
+    expect(triageBackoffStrategy(3, 'custom', undefined, job(undefined))).toBe(40_000);
+    expect(triageBackoffStrategy(3, 'custom', undefined, job({ type: 'custom', delay: -5 }))).toBe(40_000);
   });
 });

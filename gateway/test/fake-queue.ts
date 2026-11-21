@@ -3,12 +3,25 @@ import type { JobLike, QueueLike, TicketJobData } from '../src/queue/triage-queu
 export class FakeJob implements JobLike {
   returnvalue: unknown = null;
   failedReason: string | undefined;
+  id: string | undefined;
+  attemptsMade = 0;
+  finishedOn: number | undefined;
+  /** What the last retry() was asked to do. */
+  retryCalls: { resetAttemptsMade: boolean; resetAttemptsStarted: boolean }[] = [];
+  /** Set to make retry() fail, like BullMQ does when the job is no longer failed. */
+  retryError: Error | undefined;
   constructor(
     readonly data: TicketJobData,
     public state = 'waiting',
   ) {}
   getState() {
     return Promise.resolve(this.state);
+  }
+  retry(_state: 'failed', options: { resetAttemptsMade: boolean; resetAttemptsStarted: boolean }) {
+    if (this.retryError) return Promise.reject(this.retryError);
+    this.retryCalls.push(options);
+    this.state = 'waiting';
+    return Promise.resolve();
   }
 }
 
@@ -55,6 +68,23 @@ export class FakeQueue implements QueueLike {
     if (this.mode === 'fail') return Promise.reject(new Error('Connection is closed.'));
     if (this.mode === 'hang') return new Promise<never>(() => undefined);
     return Promise.resolve(this.jobs.get(id));
+  }
+
+  /** Failed jobs, newest first, like BullMQ's getFailed(). */
+  getFailed(start: number, end: number) {
+    if (this.mode === 'fail') return Promise.reject(new Error('Connection is closed.'));
+    if (this.mode === 'hang') return new Promise<never>(() => undefined);
+    const failed = [...this.jobs.entries()]
+      .filter(([, job]) => job.state === 'failed')
+      .sort(([, a], [, b]) => (b.finishedOn ?? 0) - (a.finishedOn ?? 0))
+      .map(([id, job]) => Object.assign(job, { id }));
+    return Promise.resolve(failed.slice(start, end + 1));
+  }
+
+  getFailedCount() {
+    if (this.mode === 'fail') return Promise.reject(new Error('Connection is closed.'));
+    if (this.mode === 'hang') return new Promise<never>(() => undefined);
+    return Promise.resolve([...this.jobs.values()].filter((job) => job.state === 'failed').length);
   }
 
   on() {
