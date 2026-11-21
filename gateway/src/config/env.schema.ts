@@ -14,6 +14,8 @@ export interface AppConfig {
   RATE_LIMIT_PER_MINUTE: number;
   /** Sent to the Python service as X-API-Key on review calls. The same value as its REVIEW_API_KEY. */
   TRIAGE_REVIEW_API_KEY: string;
+  /** The gateway's own Postgres database (reviewer accounts). Contains a password: never logged. */
+  GATEWAY_DATABASE_URL: string;
 }
 
 interface Setting {
@@ -66,6 +68,10 @@ const SETTINGS: Record<keyof AppConfig, Setting> = {
   TRIAGE_REVIEW_API_KEY: {
     schema: z.string().min(1),
     hint: 'must not be empty',
+  },
+  GATEWAY_DATABASE_URL: {
+    schema: z.url({ protocol: /^postgres(ql)?$/, hostname: /^.+$/ }),
+    hint: 'must be a postgresql:// URL',
   },
 };
 

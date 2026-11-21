@@ -75,7 +75,7 @@ flowchart LR
         end
         redis[("Redis<br/>job queue, idempotency keys,<br/>rate counters, dead letters")]
         app["Python app: FastAPI + LangGraph<br/>port NOT published"]
-        pg[("Postgres + pgvector<br/>tickets, graph checkpoints, KB")]
+        pg[("Postgres + pgvector<br/>Python DB: tickets, checkpoints, KB<br/>gateway DB: reviewer accounts")]
     end
 
     claude["Anthropic Claude<br/>classify, grade, draft, critique"]
@@ -91,6 +91,7 @@ flowchart LR
     passthrough -->|"read tickets, review (gateway's own review key)"| app
     passthrough -.->|"dead letters"| redis
     app --> pg
+    worker -.->|"reviewer accounts"| pg
     app --> claude
     app --> voyage
 ```
@@ -102,7 +103,7 @@ The gateway is the only way in. The compose file publishes just the gateway (on 
 | Gateway (`gateway/`, NestJS 12, Node 24) | API keys and roles, per-client rate limit, job ownership, security headers; intake with idempotency keys; the triage worker; dead-letter list and retry; reviewer routes that forward to Python | compose service `gateway` |
 | Redis | BullMQ queue (jobs, failed set), idempotency keys (`idem:<client>:<key>`, 24 h), rate counters (`rl:<client>`) | compose service `redis` |
 | Python app (`app/`, FastAPI + LangGraph) | the triage graph, ticket storage, human review, Alembic migrations at startup | compose service `app` |
-| Postgres + pgvector | `tickets`, `kb_documents` and the LangGraph checkpoint tables | compose service `db` |
+| Postgres + pgvector | one server, two databases with separate roles: Python's (`tickets`, `kb_documents`, the LangGraph checkpoint tables) and the gateway's own `gateway` database (reviewer accounts, `users`). The gateway also gets `gateway-migrate`, a one-shot service that applies its migrations before it starts | compose services `db` and `gateway-migrate` |
 | Anthropic, Voyage AI | the language model and the embeddings | external APIs, called only by the Python app |
 
 ### Life of a ticket
@@ -207,19 +208,19 @@ Errors: a temporary Claude outage returns `503` with `Retry-After`; so does an u
 
 ## Run the whole system
 
-You need Docker (the native engine on Linux is recommended, see Troubleshooting), API keys for Anthropic and Voyage AI, and Node 24 or Docker for the key tool. The stack reads **two env files**, one per service, so secrets stay apart:
+You need Docker (the native engine on Linux is recommended, see Troubleshooting), API keys for Anthropic and Voyage AI, and Node 24 or Docker for the key tool. The stack reads **two env files**, so secrets stay apart (the root `.env` also feeds the database service one value):
 
 | File | Read by | What goes in it |
 |---|---|---|
-| `.env` (root; copy `.env.example`) | the Python app (`env_file: .env`) | `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, and `REVIEW_API_KEY` (uncomment it and give it a long random value: **empty disables review**). Compose overrides `DATABASE_URL` |
-| `gateway/.env` (copy `gateway/.env.example`) | the gateway (`env_file: gateway/.env`) | `GATEWAY_CLIENTS` (the hashed client keys), `TRIAGE_REVIEW_API_KEY` (**the same value as `REVIEW_API_KEY`**), optionally `RATE_LIMIT_PER_MINUTE` |
+| `.env` (root; copy `.env.example`) | the Python app (`env_file: .env`), and compose itself for the database service | `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, and `REVIEW_API_KEY` (uncomment it and give it a long random value: **empty disables review**). Compose overrides `DATABASE_URL`. **Also add `GATEWAY_DB_PASSWORD=<a long random password>`** (the password of the gateway's database role; compose will not start without it; it is not in `.env.example` because that file lists only the Python app's own settings) |
+| `gateway/.env` (copy `gateway/.env.example`) | the gateway (`env_file: gateway/.env`) | `GATEWAY_CLIENTS` (the hashed client keys), `TRIAGE_REVIEW_API_KEY` (**the same value as `REVIEW_API_KEY`**), `GATEWAY_DATABASE_URL` (**the same password as `GATEWAY_DB_PASSWORD`**, URL-encoded), optionally `RATE_LIMIT_PER_MINUTE` |
 
 Both files are git-ignored, and the root `.dockerignore` and `gateway/.dockerignore` keep them out of the images.
 
 ```bash
 # 1. The two env files
-cp .env.example .env                  # fill in ANTHROPIC_API_KEY, VOYAGE_API_KEY, REVIEW_API_KEY
-cp gateway/.env.example gateway/.env  # fill in TRIAGE_REVIEW_API_KEY (same value as REVIEW_API_KEY)
+cp .env.example .env                  # fill in ANTHROPIC_API_KEY, VOYAGE_API_KEY, REVIEW_API_KEY, and add GATEWAY_DB_PASSWORD=...
+cp gateway/.env.example gateway/.env  # fill in TRIAGE_REVIEW_API_KEY (= REVIEW_API_KEY) and GATEWAY_DATABASE_URL (password = GATEWAY_DB_PASSWORD)
 
 # 2. Client keys: one submitter, one reviewer (and a second submitter if you want the ownership check).
 #    Each run prints the KEY once (store it) and a registry entry containing only its hash.
@@ -232,7 +233,9 @@ cd ..
 # Put the entries in gateway/.env as one line of JSON in single quotes:
 #   GATEWAY_CLIENTS='[{"name":"alice","role":"submitter","key_sha256":"..."},{"name":"ops","role":"reviewer","key_sha256":"..."}]'
 
-# 3. Start everything and load the knowledge base
+# 3. Start everything and load the knowledge base. On a NEW database volume the db container creates the
+#    gateway role and database by itself; then `gateway-migrate` creates the tables, then the gateway starts.
+#    On an EXISTING volume run scripts/create_gateway_db.sh once first (see "Reviewer accounts").
 docker compose up --build -d
 docker compose exec app python -m app.kb.ingest     # seeds 5 sample FAQ articles
 ```
@@ -367,7 +370,7 @@ npm install
 npm run start:dev
 ```
 
-**Settings.** `REDIS_URL`, `TRIAGE_SERVICE_URL`, `PORT` (compose sets the first two and `PORT` inline), `GATEWAY_CLIENTS` and `TRIAGE_REVIEW_API_KEY` are required; the others have defaults. The gateway refuses to start if one is missing or invalid, and names each bad setting without printing its value. This table is the complete list:
+**Settings.** `REDIS_URL`, `TRIAGE_SERVICE_URL`, `PORT` (compose sets these three inline), `GATEWAY_CLIENTS`, `TRIAGE_REVIEW_API_KEY` and `GATEWAY_DATABASE_URL` are required; the others have defaults. The gateway refuses to start if one is missing or invalid, and names each bad setting without printing its value. This table is the complete list:
 
 | Variable | Default | Where it is set in Docker | Purpose |
 |---|---|---|---|
@@ -378,20 +381,49 @@ npm run start:dev
 | `TRIAGE_TIMEOUT_MS` | `120000` | `docker-compose.yml` | How long the worker waits for one answer from the Python service (1000 to 600000). A triage run makes several LLM calls, so this is generous. Keep `stop_grace_period` in compose longer than this |
 | `RATE_LIMIT_PER_MINUTE` | `60` | `gateway/.env` | Requests each API client may make per minute (1 to 10000) |
 | `GATEWAY_CLIENTS` | none (required) | `gateway/.env` | JSON array of `{name, role, key_sha256}`: the API clients (see "API keys, roles and rate limits") |
+| `GATEWAY_DATABASE_URL` | none (required) | `gateway/.env` | The gateway's own database (reviewer accounts): `postgresql://gateway:<password>@db:5432/gateway`. Compose's host is `db:5432`; outside compose use `localhost:5433`. The password is `GATEWAY_DB_PASSWORD` from the root `.env`. Never logged; a bad value is reported by setting name only |
 | `TRIAGE_REVIEW_API_KEY` | none (required) | `gateway/.env` | The same value as the Python app's `REVIEW_API_KEY` (root `.env`). Sent as `X-API-Key` when the gateway forwards a review decision. An empty value counts as missing |
 
 Endpoints:
 
 - `GET /health` is liveness and checks nothing else: `200 {"status":"ok"}`.
-- `GET /ready` pings Redis and calls `GET {TRIAGE_SERVICE_URL}/ready`, in parallel, each with a 1.5 second timeout. A non-2xx answer from the Python service counts as down.
+- `GET /ready` pings Redis, runs `SELECT 1` on the gateway database and calls `GET {TRIAGE_SERVICE_URL}/ready`, in parallel, each with a 1.5 second timeout. A non-2xx answer from the Python service counts as down. (`/health` never touches Postgres.)
 
 ```json
-200 {"status":"ready","checks":{"redis":"ok","triage":"ok"}}
+200 {"status":"ready","checks":{"redis":"ok","triage":"ok","postgres":"ok"}}
 
-503 {"status":"not_ready","checks":{"redis":"ok","triage":"down"},"reasons":{"triage":"status 503"}}
+503 {"status":"not_ready","checks":{"redis":"ok","triage":"down","postgres":"ok"},"reasons":{"triage":"status 503"}}
 ```
 
-Reasons are short fixed phrases (`timeout`, `connection refused`, `host not found`, `unreachable`, `status 503`). They never include URLs or stack traces. Redis being down at startup does not stop the gateway; it keeps retrying and `/ready` answers 503 until Redis is back.
+Reasons are short fixed phrases (`timeout`, `connection refused`, `host not found`, `authentication failed`, `database not found`, `unreachable`, `status 503`). They never include URLs or stack traces. Redis being down at startup does not stop the gateway; it keeps retrying and `/ready` answers 503 until Redis is back.
+
+### Reviewer accounts: the gateway database and the reviewer CLI (M4.1a)
+
+Human reviewers will log in to the gateway (M4.1b onward). This step builds the foundation only: **no login endpoint, no sessions and no UI yet.** Machine clients still use API keys exactly as before.
+
+**A separate database.** The existing Postgres server now holds a second database, `gateway`, owned by its own role, `gateway`. The role has no other powers (not a superuser, cannot create databases or roles) and can connect to no other database; no one but the superuser can connect to `gateway`. The Python app's role is the server's superuser (it is the image's bootstrap user), so it *can* technically reach `gateway`; the isolation is that the gateway's role cannot reach Python's data, and Python never has `GATEWAY_DATABASE_URL`.
+
+- **Fresh volume:** `db/init/10-gateway-db.sh` runs once, when Postgres first starts, and creates the role and database from `db/gateway-db.sql` using `GATEWAY_DB_PASSWORD`.
+- **Existing volume** (init scripts do not run again): set `GATEWAY_DB_PASSWORD` in the root `.env`, recreate the db container so it sees it (`docker compose up -d db`), then run `scripts/create_gateway_db.sh`. The SQL is idempotent: running it twice is safe, and it also resets the role's password to the current `GATEWAY_DB_PASSWORD`, so it doubles as password rotation. An unset or empty password is refused.
+
+**Migrations.** Plain numbered SQL files in `gateway/migrations/` (`001_create_users.sql` creates `users`). The one-shot compose service `gateway-migrate` (same image as the gateway, `node dist/database/migrate.js`) runs when the stack starts, after the database is healthy, and the gateway starts only after it has finished successfully. The gateway itself never migrates. The runner records each applied file with its SHA-256 in `schema_migrations`, runs each file in its own transaction, holds a Postgres advisory lock so two runners cannot race, and **refuses to run** if an already-applied file was edited, has gone missing, or a new file is numbered below an applied one. To change the schema, add a new numbered file; never edit an applied one. Locally: `npm run migrate` in `gateway/` (needs `GATEWAY_DATABASE_URL`).
+
+**Accounts.** `users` has `email` (stored trimmed and lower case, unique, and the database refuses anything else), `display_name` (1 to 100 characters), `password_hash` (an Argon2id PHC string), `role` (only `reviewer` for now), `disabled_at`, `password_changed_at` and timestamps. Passwords are hashed with **Argon2id** (19456 KiB of memory, 2 passes, 1 lane, the OWASP minimum; about 40 to 50 ms per hash on the development machine).
+
+**Password rules** (length and a blocklist, no composition rules): 12 to 128 characters after Unicode NFC normalization; not the email address or the part before the `@` (any capitalisation); not one of about twenty very common passwords.
+
+**The reviewer CLI** manages accounts from inside the gateway container (it is compiled into the image):
+
+```bash
+docker compose exec -it gateway node dist/scripts/reviewers.js create --email ada@example.com --name "Ada Lovelace"
+docker compose exec -it gateway node dist/scripts/reviewers.js set-password --email ada@example.com
+docker compose exec gateway node dist/scripts/reviewers.js disable --email ada@example.com
+docker compose exec gateway node dist/scripts/reviewers.js enable --email ada@example.com
+docker compose exec gateway node dist/scripts/reviewers.js list
+# locally, inside gateway/ with GATEWAY_DATABASE_URL set:  npm run reviewers -- list
+```
+
+Passwords are **never** command-line arguments (they would land in shell history; `--password` is refused). `create` and `set-password` ask for the password with no echo, twice to confirm; when input is not a terminal (a pipe, a script) they read one line from it instead: `echo "$PASSWORD" | docker compose exec -T gateway node dist/scripts/reviewers.js create ...`. A duplicate or unknown email is a clear error with exit code 1; `disable` and `enable` are idempotent; `list` shows email, name, role, disabled yes/no and creation time, never a hash. `set-password` stamps `password_changed_at`, and `disable` sets `disabled_at`; M4.1b will use both to end old sessions.
 
 ### API keys, roles and rate limits
 
@@ -640,6 +672,7 @@ docker stop gw-redis-test
 | The review key | `REVIEW_API_KEY` is Python's; the gateway holds the same value as `TRIAGE_REVIEW_API_KEY` and adds it itself, so no client ever sees or needs it. A wrong gateway key shows up as a `502`, not as a leak |
 | Network exposure | Every published port (gateway 3000, Postgres 5433, Redis 6380) is bound to `127.0.0.1`. Put a TLS-terminating proxy in front before exposing the gateway |
 | Secrets | Split per service: the root `.env` (Anthropic, Voyage, the review key) is read only by the Python app; `gateway/.env` (the client hashes, the gateway's review key) only by the gateway. Both are git-ignored and excluded from the images. Error messages name a setting, never its value |
+| Reviewer passwords | Hashed with Argon2id (parameters stored inside each hash, so they can be raised later and old hashes still verify); never stored or logged in clear; never a command-line argument; the CLI never prints a hash. The accounts live in the gateway's own database, whose role cannot reach Python's data |
 | Ticket text | Not written to logs: the worker, passthrough and dead-letter log lines carry only ids, counts, statuses and short fixed phrases |
 
 ## Troubleshooting
@@ -649,6 +682,8 @@ docker stop gw-redis-test
 - **The gateway will not start.** Run `docker compose logs gateway`. If compose says `env file .../gateway/.env not found`, create it: `cp gateway/.env.example gateway/.env` and fill it in. If the gateway exits with `Invalid gateway configuration: ...`, the message names the setting, such as `GATEWAY_CLIENTS is invalid (entry 1: role must be "submitter" or "reviewer")` or `TRIAGE_REVIEW_API_KEY is missing`. It never prints the value.
 - **Every request is a 401.** The key you send is empty, or its hash is not in `GATEWAY_CLIENTS`. Check that the shell variable is set (`echo ${#KEY}` should print 47), that you pasted the entry made for that key, and that you recreated the gateway after editing `gateway/.env` (`docker compose up -d --force-recreate gateway`).
 - **Reviews answer `502 Triage service rejected the gateway`.** `TRIAGE_REVIEW_API_KEY` in `gateway/.env` differs from `REVIEW_API_KEY` in the root `.env`, or the latter is empty. Make them equal and recreate both services.
+- **`gateway-migrate` fails, so the gateway never starts.** Run `docker compose logs gateway-migrate`. `password authentication failed` or `role "gateway" does not exist` means the gateway role is missing or its password differs from `GATEWAY_DATABASE_URL`: on an existing database volume run `scripts/create_gateway_db.sh` (it also resets the password to `GATEWAY_DB_PASSWORD`), and make sure both values are the same. `migration ... was changed after it was applied` means someone edited an applied file: restore it and add a new numbered migration instead. Compose itself refusing to start with `Set GATEWAY_DB_PASSWORD in .env` means that line is missing from the root `.env`.
+- **`/ready` says `postgres: down`.** The gateway cannot reach its database (the reason names the cause: `connection refused`, `authentication failed`, `database not found`). `/health` stays up, so the container is not restarted for this.
 - **The Voyage free tier is slow.** It allows 3 embedding requests per minute, and the Python service waits for its own limiter (`VOYAGE_RPM`), so ingesting the KB takes about a minute and a triage can take far longer than a normal call. If jobs time out and retry under load, lower `WORKER_CONCURRENCY`, raise `TRIAGE_TIMEOUT_MS`, or use a paid Voyage account and raise `VOYAGE_RPM`. The smoke test takes minutes on the free tier.
 
 ## Known gaps
@@ -660,6 +695,10 @@ docker stop gw-redis-test
 - **The rate limit is a fixed window**, so a client can make up to twice the limit across a window edge.
 - **Registry changes need a restart,** and there is no key-rotation tooling beyond replacing an entry.
 - **Anything on the compose network can call Python without a key** (only reviews need one).
+- **Reviewer accounts exist but nobody can log in yet** (M4.1b adds login and sessions, M4.1c the Python side). Until then reviews are still made with the machine clients' keys.
+- **Python's database role is the server's superuser,** so it can technically read the gateway database. Only the reverse is blocked. A least-privilege role for Python would need a change on the Python side.
+- **The gateway database shares the Postgres server** (and its volume and backups) with Python's. A server outage takes both down.
+- **Migrations only go forward.** There are no down migrations.
 
 ## Project layout
 
@@ -673,8 +712,11 @@ app/
   db.py, migrations.py engine and sessions; running Alembic from the app
   models.py            Pydantic models and the graph state
 alembic/               migrations (the only place that creates tables)
-gateway/               NestJS gateway: config, auth/roles/rate limit, intake, worker, dead letters, idempotency, reviewer routes
+gateway/               NestJS gateway: config, auth/roles/rate limit, intake, worker, dead letters, idempotency, reviewer routes,
+                       reviewer accounts (src/users, src/database, migrations/, src/scripts/reviewers.ts)
 scripts/e2e_smoke.py   end-to-end smoke test through the gateway (stdlib only; spends model calls)
+scripts/create_gateway_db.sh  creates the gateway's database and role in an existing Postgres volume
+db/                    gateway-db.sql (idempotent role and database setup) and init/ (runs it on a new volume)
 docker-compose.yml     the stack; docker-compose.debug.yml publishes the Python app on 127.0.0.1:8000
 evals/                 labelled tickets, deterministic scoring, and the eval runner
 tests/                 unit tests; tests/integration/ needs a real Postgres

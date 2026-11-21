@@ -13,6 +13,7 @@ const VALID = {
   TRIAGE_SERVICE_URL: 'http://localhost:8000',
   GATEWAY_CLIENTS: JSON.stringify(CLIENTS),
   TRIAGE_REVIEW_API_KEY: 'a-review-key',
+  GATEWAY_DATABASE_URL: 'postgresql://gateway:secret@db:5432/gateway',
 };
 
 /** A marker that must never show up in an error message. */
@@ -40,6 +41,7 @@ describe('validateEnv', () => {
       GATEWAY_CLIENTS: CLIENTS,
       RATE_LIMIT_PER_MINUTE: 60,
       TRIAGE_REVIEW_API_KEY: 'a-review-key',
+      GATEWAY_DATABASE_URL: 'postgresql://gateway:secret@db:5432/gateway',
     });
   });
 
@@ -52,7 +54,7 @@ describe('validateEnv', () => {
     expect(config.REDIS_URL).toContain('rediss://');
   });
 
-  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY'])('%s missing -> error names it', (name) => {
+  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY', 'GATEWAY_DATABASE_URL'])('%s missing -> error names it', (name) => {
     const env: Record<string, unknown> = { ...VALID };
     delete env[name];
     const error = failure(env);
@@ -60,7 +62,7 @@ describe('validateEnv', () => {
     expect(error.problems).toHaveLength(1);
   });
 
-  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY'])('%s empty or blank -> counts as missing', (name) => {
+  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY', 'GATEWAY_DATABASE_URL'])('%s empty or blank -> counts as missing', (name) => {
     expect(failure({ ...VALID, [name]: '   ' }).message).toContain(`${name} is missing`);
     expect(failure({ ...VALID, [name]: '' }).message).toContain(`${name} is missing`);
   });
@@ -84,10 +86,10 @@ describe('validateEnv', () => {
 
   it('names every bad setting at once', () => {
     const error = failure({});
-    for (const name of ['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY']) {
+    for (const name of ['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY', 'GATEWAY_DATABASE_URL']) {
       expect(error.message).toContain(name);
     }
-    expect(error.problems).toHaveLength(5);
+    expect(error.problems).toHaveLength(6);
   });
 
   it('a missing or blank TRIAGE_REVIEW_API_KEY stops startup, naming the setting and never a value', () => {
@@ -95,6 +97,23 @@ describe('validateEnv', () => {
     expect(failure(without).message).toContain('TRIAGE_REVIEW_API_KEY is missing');
     expect(failure({ ...without, TRIAGE_REVIEW_API_KEY: '   ' }).message).toContain('TRIAGE_REVIEW_API_KEY is missing');
     expect(validateEnv(VALID).TRIAGE_REVIEW_API_KEY).toBe('a-review-key');
+  });
+
+  it.each([
+    ['not a url', 'GATEWAY_DATABASE_URL'],
+    ['http://db:5432/gateway', 'GATEWAY_DATABASE_URL'],
+    ['mysql://u:p@db/gateway', 'GATEWAY_DATABASE_URL'],
+    ['db:5432/gateway', 'GATEWAY_DATABASE_URL'],
+  ])('GATEWAY_DATABASE_URL=%s is refused, naming the setting and never the value', (value, name) => {
+    const error = failure({ ...VALID, [name]: value });
+    expect(error.message).toContain('GATEWAY_DATABASE_URL is invalid (must be a postgresql:// URL)');
+    expect(error.message).not.toContain(value);
+  });
+
+  it('accepts postgresql:// and postgres:// URLs, and a password never shows in an error', () => {
+    expect(validateEnv({ ...VALID, GATEWAY_DATABASE_URL: 'postgres://gateway:pw@db:5432/gateway' }).GATEWAY_DATABASE_URL).toContain('postgres://');
+    const error = failure({ ...VALID, GATEWAY_DATABASE_URL: 'http://gateway:SECRETPASSWORD@db/gateway' });
+    expect(error.message).not.toContain('SECRETPASSWORD');
   });
 
   it('never puts a setting value in the error', () => {
@@ -121,6 +140,7 @@ describe('validateEnv', () => {
     }
     expect(Object.keys(env).sort()).toEqual([
       'GATEWAY_CLIENTS',
+      'GATEWAY_DATABASE_URL',
       'PORT',
       'RATE_LIMIT_PER_MINUTE',
       'REDIS_URL',
@@ -208,6 +228,7 @@ describe('startup with a bad environment', () => {
     vi.stubEnv('TRIAGE_SERVICE_URL', 'http://localhost:8000');
     vi.stubEnv('GATEWAY_CLIENTS', JSON.stringify(CLIENTS));
     vi.stubEnv('TRIAGE_REVIEW_API_KEY', 'a-review-key');
+    vi.stubEnv('GATEWAY_DATABASE_URL', 'postgresql://gateway:secret@db:5432/gateway');
 
     await expect(
       ConfigModule.forRoot({ ...configModuleOptions, ignoreEnvFile: true }),

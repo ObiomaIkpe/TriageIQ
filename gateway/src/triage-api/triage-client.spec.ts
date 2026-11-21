@@ -147,6 +147,34 @@ describe('TriageClient: what Python answers', () => {
   });
 });
 
+describe('TriageClient: the exact log line', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('fields are separated by single spaces: client=ops route="GET /tickets" python_status=200 duration_ms=7', async () => {
+    const lines: string[] = [];
+    vi.spyOn(Logger.prototype, 'log').mockImplementation((m: unknown) => void lines.push(String(m)));
+    vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(1_007);
+    await make(json(200, [])).call(READ);
+    expect(lines).toEqual(['client=ops route="GET /tickets" python_status=200 duration_ms=7']);
+    expect(lines[0]).not.toMatch(/client=\w+route=/);
+  });
+
+  it('is the same through Nest\'s real logger (what appears in the container log)', async () => {
+    const written: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    });
+    await make(json(200, [])).call(READ);
+    write.mockRestore();
+    // Strip the colour codes Nest adds, then check the message part.
+    const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+    const plain = written.join('').replace(ansi, '');
+    expect(plain).toMatch(/\[TriagePassthrough\] client=ops route="GET \/tickets" python_status=200 duration_ms=\d+/);
+    expect(plain).not.toMatch(/client=ops\S*route=/);
+  });
+});
+
 describe('TriageClient: logging', () => {
   afterEach(() => vi.restoreAllMocks());
 
