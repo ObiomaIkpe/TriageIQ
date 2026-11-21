@@ -7,9 +7,3 @@ export interface RegisteredClient {
   role: Role;
   key_sha256: string;
 }
-
-/** Who a request belongs to, once its key has been checked. */
-export interface AuthenticatedClient {
-  name: string;
-  role: Role;
-}

@@ -16,6 +16,19 @@ export interface AppConfig {
   TRIAGE_REVIEW_API_KEY: string;
   /** The gateway's own Postgres database (reviewer accounts). Contains a password: never logged. */
   GATEWAY_DATABASE_URL: string;
+  /** A session ends after this many minutes without use. */
+  SESSION_IDLE_MINUTES: number;
+  /** A session ends this many hours after login, however busy it is. */
+  SESSION_ABSOLUTE_HOURS: number;
+  /** Whether the session cookie carries the Secure attribute. True unless set otherwise (fail safe). */
+  COOKIE_SECURE: boolean;
+  /** Origins allowed to send cookie-authenticated writes (exact match). Empty: none. */
+  ALLOWED_ORIGINS: string[];
+  LOGIN_MAX_FAILURES_PER_IP: number;
+  LOGIN_MAX_FAILURES_PER_EMAIL: number;
+  LOGIN_WINDOW_MINUTES: number;
+  /** Trust X-Forwarded-For (Express "trust proxy") to find the client IP. Only behind a proxy you control. */
+  TRUST_PROXY: boolean;
 }
 
 interface Setting {
@@ -27,6 +40,43 @@ interface Setting {
   hint: string;
   /** Present only on optional settings: used when the setting is missing or blank. */
   default?: unknown;
+}
+
+/** "true" or "false" in any capitalisation. Anything else is refused, so a typo never turns a safety setting off. */
+const booleanSetting = z
+  .string()
+  .transform((value) => value.toLowerCase())
+  .pipe(z.enum(['true', 'false']))
+  .transform((value) => value === 'true');
+
+type OriginsResult = { ok: true; origins: string[] } | { ok: false; problems: string[] };
+
+/** ALLOWED_ORIGINS: comma-separated origins such as http://localhost:5173 (no path), normalized and de-duplicated. */
+function parseOrigins(value: string): OriginsResult {
+  const problems: string[] = [];
+  const origins: string[] = [];
+  value.split(',').forEach((raw, index) => {
+    const entry = raw.trim();
+    const at = `entry ${index + 1}`;
+    if (entry === '') {
+      problems.push(`${at} is empty`);
+      return;
+    }
+    let url: URL;
+    try {
+      url = new URL(entry);
+    } catch {
+      problems.push(`${at} is not a URL`);
+      return;
+    }
+    const plain = url.pathname === '/' && url.search === '' && url.hash === '' && url.username === '' && url.password === '';
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !plain) {
+      problems.push(`${at} must be an origin such as https://reviews.example.com (http or https, no path)`);
+      return;
+    }
+    if (!origins.includes(url.origin)) origins.push(url.origin);
+  });
+  return problems.length > 0 ? { ok: false, problems } : { ok: true, origins };
 }
 
 /** One entry per setting: how to check it, and a fixed hint shown when it is invalid. */
@@ -72,6 +122,49 @@ const SETTINGS: Record<keyof AppConfig, Setting> = {
   GATEWAY_DATABASE_URL: {
     schema: z.url({ protocol: /^postgres(ql)?$/, hostname: /^.+$/ }),
     hint: 'must be a postgresql:// URL',
+  },
+  SESSION_IDLE_MINUTES: {
+    schema: z.coerce.number().int().min(1).max(1440),
+    hint: 'must be a whole number of minutes from 1 to 1440',
+    default: 60,
+  },
+  SESSION_ABSOLUTE_HOURS: {
+    schema: z.coerce.number().int().min(1).max(168),
+    hint: 'must be a whole number of hours from 1 to 168',
+    default: 8,
+  },
+  COOKIE_SECURE: {
+    schema: booleanSetting,
+    hint: 'must be true or false',
+    default: true,
+  },
+  ALLOWED_ORIGINS: {
+    parse: (value) => {
+      const result = parseOrigins(value);
+      return result.ok ? { ok: true, data: result.origins } : result;
+    },
+    hint: '',
+    default: [],
+  },
+  LOGIN_MAX_FAILURES_PER_IP: {
+    schema: z.coerce.number().int().min(1).max(100000),
+    hint: 'must be a whole number from 1 to 100000',
+    default: 20,
+  },
+  LOGIN_MAX_FAILURES_PER_EMAIL: {
+    schema: z.coerce.number().int().min(1).max(1000),
+    hint: 'must be a whole number from 1 to 1000',
+    default: 5,
+  },
+  LOGIN_WINDOW_MINUTES: {
+    schema: z.coerce.number().int().min(1).max(1440),
+    hint: 'must be a whole number of minutes from 1 to 1440',
+    default: 15,
+  },
+  TRUST_PROXY: {
+    schema: booleanSetting,
+    hint: 'must be true or false',
+    default: false,
   },
 };
 

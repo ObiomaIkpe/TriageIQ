@@ -11,8 +11,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { CurrentClient, Roles } from '../auth/auth.decorators.js';
-import type { AuthenticatedClient } from '../auth/auth.types.js';
+import { CurrentPrincipal, Roles } from '../auth/auth.decorators.js';
+import type { Principal } from '../auth/principal.js';
 import { JsonContentGuard } from '../tickets/json-content.guard.js';
 import {
   isReference,
@@ -37,7 +37,7 @@ export class ReviewerTicketsController {
   async list(
     @Query() query: Record<string, unknown>,
     @Res() response: Response,
-    @CurrentClient() client: AuthenticatedClient,
+    @CurrentPrincipal() principal: Principal,
   ) {
     const parsed = parseListQuery(query);
     if (!parsed.ok) {
@@ -51,7 +51,7 @@ export class ReviewerTicketsController {
         query: parsed.params,
         kind: 'read',
         route: 'GET /tickets',
-        client: client.name,
+        client: principal.label,
       }),
     );
   }
@@ -60,7 +60,7 @@ export class ReviewerTicketsController {
   async byReference(
     @Param('reference') reference: string,
     @Res() response: Response,
-    @CurrentClient() client: AuthenticatedClient,
+    @CurrentPrincipal() principal: Principal,
   ) {
     if (!isReference(reference)) {
       throw new BadRequestException({ detail: 'Malformed ticket reference' });
@@ -72,7 +72,7 @@ export class ReviewerTicketsController {
         path: `/tickets/reference/${reference}`,
         kind: 'read',
         route: 'GET /tickets/reference/:reference',
-        client: client.name,
+        client: principal.label,
       }),
     );
   }
@@ -81,7 +81,7 @@ export class ReviewerTicketsController {
   async byId(
     @Param('id') id: string,
     @Res() response: Response,
-    @CurrentClient() client: AuthenticatedClient,
+    @CurrentPrincipal() principal: Principal,
   ) {
     if (!isUuid(id)) throw new BadRequestException({ detail: 'Malformed ticket id' });
     this.send(
@@ -91,7 +91,7 @@ export class ReviewerTicketsController {
         path: `/tickets/${id}`,
         kind: 'read',
         route: 'GET /tickets/:id',
-        client: client.name,
+        client: principal.label,
       }),
     );
   }
@@ -102,7 +102,7 @@ export class ReviewerTicketsController {
     @Param('id') id: string,
     @Body() body: unknown,
     @Res() response: Response,
-    @CurrentClient() client: AuthenticatedClient,
+    @CurrentPrincipal() principal: Principal,
   ) {
     // Nothing is sent to Python until the id and the decision are both valid.
     if (!isUuid(id)) throw new BadRequestException({ detail: 'Malformed ticket id' });
@@ -118,7 +118,7 @@ export class ReviewerTicketsController {
         body: decision.data,
         kind: 'review',
         route: 'POST /tickets/:id/review',
-        client: client.name,
+        client: principal.label,
       }),
     );
   }

@@ -119,7 +119,7 @@ describe('POST /tickets with an Idempotency-Key header (fake queue)', () => {
     queue.addError = new Error('connect ECONNREFUSED 10.9.9.9:6379');
     const failed = await http.post('/tickets').set('Idempotency-Key', 'k').send(TICKET).expect(503);
     expect(failed.body).toEqual({ detail: 'Ticket intake is temporarily unavailable; please retry' });
-    expect(queue.kv.entries.has('idem:ops:k')).toBe(false);
+    expect(queue.kv.entries.has('idem:client:ops:k')).toBe(false);
 
     queue.addError = undefined;
     const retry = await http.post('/tickets').set('Idempotency-Key', 'k').send(TICKET).expect(202);

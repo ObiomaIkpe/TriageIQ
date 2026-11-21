@@ -14,6 +14,9 @@ export const TEST_KEYS = {
   ops: 'tiq_test-key-ops-000000000000000000000000000',
 } as const;
 
+/** The browser origin the tests allow (ALLOWED_ORIGINS). */
+export const TEST_ORIGIN = 'http://localhost:5173';
+
 export type TestClient = keyof typeof TEST_KEYS;
 
 /** Two submitters and one reviewer. */
@@ -29,6 +32,7 @@ export const TEST_REVIEW_KEY = 'test-review-key-not-real-0000';
 
 export function stubAuthEnv(rateLimitPerMinute = '10000') {
   vi.stubEnv('TRIAGE_REVIEW_API_KEY', TEST_REVIEW_KEY);
+  vi.stubEnv('ALLOWED_ORIGINS', TEST_ORIGIN);
   vi.stubEnv('GATEWAY_CLIENTS', JSON.stringify(TEST_REGISTRY));
   vi.stubEnv('RATE_LIMIT_PER_MINUTE', rateLimitPerMinute);
 }

@@ -30,7 +30,7 @@ describe.skipIf(!REDIS_TEST_URL)('Idempotency-Key against a real Redis', () => {
 
   const newKey = (name: string) => {
     const key = `${RUN}-${name}`;
-    keys.push(`idem:ops:${key}`);
+    keys.push(`idem:client:ops:${key}`);
     return key;
   };
   const ticket = (name: string) => {
@@ -89,10 +89,10 @@ describe.skipIf(!REDIS_TEST_URL)('Idempotency-Key against a real Redis', () => {
     expect(await jobsFor(t.subject)).toHaveLength(1);
 
     // What is stored: the job id and the fingerprint, expiring in about 24 hours.
-    const stored = JSON.parse((await redis.get(`idem:ops:${key}`)) ?? 'null') as Record<string, string>;
+    const stored = JSON.parse((await redis.get(`idem:client:ops:${key}`)) ?? 'null') as Record<string, string>;
     expect(stored.job_id).toBe(first.body.job_id);
     expect(stored.fingerprint).toMatch(/^[0-9a-f]{64}$/);
-    const ttl = await redis.ttl(`idem:ops:${key}`);
+    const ttl = await redis.ttl(`idem:client:ops:${key}`);
     expect(ttl).toBeGreaterThan(86_400 - 30);
     expect(ttl).toBeLessThanOrEqual(86_400);
   });
@@ -124,7 +124,7 @@ describe.skipIf(!REDIS_TEST_URL)('Idempotency-Key against a real Redis', () => {
     vi.spyOn(appQueue, 'add').mockRejectedValueOnce(new Error('connect ECONNREFUSED 10.9.9.9:6379'));
 
     await post(key, t).expect(503);
-    expect(await redis.get(`idem:ops:${key}`)).toBeNull(); // released
+    expect(await redis.get(`idem:client:ops:${key}`)).toBeNull(); // released
     expect(await jobsFor(t.subject)).toHaveLength(0);
 
     const retry = await post(key, t).expect(202);
@@ -137,11 +137,11 @@ describe.skipIf(!REDIS_TEST_URL)('Idempotency-Key against a real Redis', () => {
     const t = ticket('cad');
     vi.spyOn(appQueue, 'add').mockImplementationOnce(async () => {
       // Another request claims the key while this one is failing.
-        await redis.set(`idem:ops:${key}`, JSON.stringify({ job_id: 'someone-elses-job', fingerprint: 'f' }), 'EX', 60);
+        await redis.set(`idem:client:ops:${key}`, JSON.stringify({ job_id: 'someone-elses-job', fingerprint: 'f' }), 'EX', 60);
       throw new Error('boom');
     });
     await post(key, t).expect(503);
-    expect(JSON.parse((await redis.get(`idem:ops:${key}`)) ?? 'null').job_id).toBe('someone-elses-job');
+    expect(JSON.parse((await redis.get(`idem:client:ops:${key}`)) ?? 'null').job_id).toBe('someone-elses-job');
   });
 
   it('no key: two POSTs make two jobs, and nothing is stored under idem:', async () => {

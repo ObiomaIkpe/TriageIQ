@@ -65,8 +65,8 @@ export class RateLimitGuard implements CanActivate {
       return true;
     }
     const http = context.switchToHttp();
-    const client = http.getRequest<AuthedRequest>().apiClient;
-    if (!client) return true; // the auth guard has already refused anything without a client
+    const principal = http.getRequest<AuthedRequest>().principal;
+    if (!principal) return true; // the auth guard has already refused anything without a principal
 
     let hit: { count: number; secondsLeft: number };
     try {
@@ -76,7 +76,7 @@ export class RateLimitGuard implements CanActivate {
         const reply = (await this.redis.eval(
           RATE_LIMIT_SCRIPT,
           1,
-          RATE_LIMIT_KEY_PREFIX + client.name,
+          RATE_LIMIT_KEY_PREFIX + principal.id, // "client:<name>" or "user:<uuid>": never shared
           String(this.windowSeconds),
         )) as [number, number];
         return { count: Number(reply[0]), secondsLeft: Number(reply[1]) };

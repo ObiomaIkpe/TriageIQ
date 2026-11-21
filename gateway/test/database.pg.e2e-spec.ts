@@ -338,6 +338,7 @@ describe.skipIf(!URL_)('gateway database (real Postgres)', () => {
       deps = {
         users: new UsersRepository(pool),
         hasher,
+        sessions: { revokeAll: async () => 0 },
         stdout: (t) => out.push(t),
         stderr: (t) => err.push(t),
         askPassword: async () => passwords.shift() ?? GOOD,
@@ -366,7 +367,7 @@ describe.skipIf(!URL_)('gateway database (real Postgres)', () => {
 
       expect(await cli('disable', '--email', 'ada@example.com')).toBe(0);
       expect(await cli('disable', '--email', 'ada@example.com')).toBe(0);
-      expect(out.at(-1)).toBe('ada@example.com is already disabled. Nothing changed.');
+      expect(out).toContain('ada@example.com is already disabled. Nothing changed.');
       out.length = 0;
       await cli('list');
       expect(out.join('\n')).toMatch(/Ada Lovelace\s+reviewer\s+yes/);

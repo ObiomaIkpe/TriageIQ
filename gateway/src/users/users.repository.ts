@@ -55,6 +55,25 @@ export class UsersRepository {
     return rows[0] ? { ...toUser(rows[0]), passwordHash: rows[0].password_hash } : undefined;
   }
 
+  /** The account with this id (no hash), or undefined. One primary-key query: the session check runs it on every request. */
+  async findById(id: string): Promise<User | undefined> {
+    const { rows } = await this.pool.query<UserRow>(`SELECT ${PUBLIC_COLUMNS} FROM users WHERE id = $1`, [id]);
+    return rows[0] ? toUser(rows[0]) : undefined;
+  }
+
+  /**
+   * Replaces the hash with an upgraded one for the SAME password (new Argon2 parameters). It does NOT
+   * touch password_changed_at, which would end the user's sessions, and it only applies if the hash is
+   * still the one that was read, so it can never overwrite a password changed in the meantime.
+   */
+  async rehashPassword(id: string, oldHash: string, newHash: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      'UPDATE users SET password_hash = $3, updated_at = now() WHERE id = $1 AND password_hash = $2',
+      [id, oldHash, newHash],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
   /** Creates a reviewer. Throws DuplicateEmailError if the email is taken. */
   async create(user: NewUser): Promise<User> {
     try {

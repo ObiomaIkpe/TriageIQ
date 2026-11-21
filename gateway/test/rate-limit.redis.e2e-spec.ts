@@ -36,11 +36,11 @@ describe.skipIf(!REDIS_TEST_URL)('rate limit against a real Redis', () => {
     configureApp(app);
     await app.init();
     redis = new Redis(REDIS_TEST_URL as string);
-    await redis.del('rl:alice', 'rl:bob');
+    await redis.del('rl:client:alice', 'rl:client:bob');
   });
 
   afterAll(async () => {
-    await redis?.del('rl:alice', 'rl:bob');
+    await redis?.del('rl:client:alice', 'rl:client:bob');
     redis?.disconnect();
     await app?.close();
     vi.unstubAllEnvs();
@@ -62,8 +62,8 @@ describe.skipIf(!REDIS_TEST_URL)('rate limit against a real Redis', () => {
     expect(over.headers['ratelimit-remaining']).toBe('0');
 
     // The counter is a real Redis key with an expiry: it can never be counted forever.
-    expect(await redis.ttl('rl:alice')).toBeGreaterThan(0);
-    expect(await redis.ttl('rl:alice')).toBeLessThanOrEqual(WINDOW_SECONDS);
+    expect(await redis.ttl('rl:client:alice')).toBeGreaterThan(0);
+    expect(await redis.ttl('rl:client:alice')).toBeLessThanOrEqual(WINDOW_SECONDS);
 
     await new Promise((resolve) => setTimeout(resolve, (WINDOW_SECONDS + 0.3) * 1000));
     const again = await api(app, 'alice').get(`/jobs/${MISSING}`).expect(404);
@@ -77,7 +77,7 @@ describe.skipIf(!REDIS_TEST_URL)('rate limit against a real Redis', () => {
   });
 
   it('concurrent requests are counted exactly: 10 at once against a limit of 3 -> 3 allowed, 7 limited', async () => {
-    await redis.del('rl:bob');
+    await redis.del('rl:client:bob');
     const answers = await Promise.all(Array.from({ length: 10 }, () => api(app, 'bob').get(`/jobs/${MISSING}`)));
     const statuses = answers.map((a) => a.status);
     expect(statuses.filter((s) => s === 404)).toHaveLength(LIMIT);

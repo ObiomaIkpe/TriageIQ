@@ -16,11 +16,12 @@ const user = (over: Partial<User> = {}): User => ({
 
 const GOOD_PASSWORD = 'a long and unusual passphrase';
 
-function setup(options: { existing?: User; interactive?: boolean; passwords?: string[]; dupOnCreate?: boolean } = {}) {
+function setup(options: { existing?: User; interactive?: boolean; passwords?: string[]; dupOnCreate?: boolean; revoke?: (userId: string) => Promise<number> } = {}) {
   const out: string[] = [];
   const err: string[] = [];
   const asked: string[] = [];
   const stored: Record<string, unknown>[] = [];
+  const revoked: string[] = [];
   const passwords = [...(options.passwords ?? [GOOD_PASSWORD, GOOD_PASSWORD])];
   let current = options.existing;
   const deps: CliDeps = {
@@ -46,6 +47,12 @@ function setup(options: { existing?: User; interactive?: boolean; passwords?: st
       list: async () => (current ? [current] : []),
     },
     hasher: { hash: async (password: string) => `HASH(${password.length})` },
+    sessions: {
+      revokeAll: async (userId: string) => {
+        revoked.push(userId);
+        return options.revoke ? options.revoke(userId) : 2;
+      },
+    },
     stdout: (text) => out.push(text),
     stderr: (text) => err.push(text),
     askPassword: async (prompt) => {
@@ -56,7 +63,7 @@ function setup(options: { existing?: User; interactive?: boolean; passwords?: st
     },
     interactive: options.interactive ?? false,
   };
-  return { deps, out, err, asked, stored };
+  return { deps, out, err, asked, stored, revoked };
 }
 
 const run = (argv: string[], options?: Parameters<typeof setup>[0]) => {
@@ -142,7 +149,7 @@ describe('reviewers set-password', () => {
   it('changes the password of an existing reviewer', async () => {
     const { code, out, stored } = await run(['set-password', '--email', 'ada@example.com'], { existing: user() });
     expect(code).toBe(EXIT_OK);
-    expect(out.join('')).toBe('Password changed for ada@example.com.');
+    expect(out).toEqual(['Password changed for ada@example.com.', 'Ended 2 sessions for ada@example.com.']);
     expect(stored).toEqual([{ op: 'setPassword', email: 'ada@example.com', hash: `HASH(${GOOD_PASSWORD.length})` }]);
   });
 
@@ -165,18 +172,19 @@ describe('reviewers disable and enable', () => {
     const world = setup({ existing: user() });
     expect(await runReviewers(['disable', '--email', 'ada@example.com'], world.deps)).toBe(EXIT_OK);
     expect(await runReviewers(['enable', '--email', 'ada@example.com'], world.deps)).toBe(EXIT_OK);
-    expect(world.out).toEqual(['Disabled ada@example.com.', 'Enabled ada@example.com.']);
+    expect(world.out).toEqual(['Disabled ada@example.com.', 'Ended 2 sessions for ada@example.com.', 'Enabled ada@example.com.']);
   });
 
   it('is idempotent: disabling twice, enabling an enabled account', async () => {
     const world = setup({ existing: user() });
     await runReviewers(['disable', '--email', 'ada@example.com'], world.deps);
     expect(await runReviewers(['disable', '--email', 'ada@example.com'], world.deps)).toBe(EXIT_OK);
-    expect(world.out.at(-1)).toBe('ada@example.com is already disabled. Nothing changed.');
+    expect(world.out).toContain('ada@example.com is already disabled. Nothing changed.');
 
     const fresh = setup({ existing: user() });
     expect(await runReviewers(['enable', '--email', 'ada@example.com'], fresh.deps)).toBe(EXIT_OK);
     expect(fresh.out).toEqual(['ada@example.com is already enabled. Nothing changed.']);
+    expect(fresh.revoked).toEqual([]); // enabling ends nothing
   });
 
   it.each(['disable', 'enable'])('%s on an unknown email -> clear error, exit 1', async (command) => {
@@ -250,3 +258,66 @@ describe('no secret ever reaches the output', () => {
     expect(everything).not.toMatch(/HASH\(|argon2/);
   });
 });
+
+describe('session revocation', () => {
+  it('set-password ends all of the user\'s sessions and says how many', async () => {
+    const { code, out, revoked } = await run(['set-password', '--email', 'ada@example.com'], { existing: user(), revoke: async () => 3 });
+    expect(code).toBe(EXIT_OK);
+    expect(revoked).toEqual(['id-1']);
+    expect(out).toEqual(['Password changed for ada@example.com.', 'Ended 3 sessions for ada@example.com.']);
+  });
+
+  it('disable ends them too (one session is "1 session")', async () => {
+    const { code, out, revoked } = await run(['disable', '--email', 'ada@example.com'], { existing: user(), revoke: async () => 1 });
+    expect(code).toBe(EXIT_OK);
+    expect(revoked).toEqual(['id-1']);
+    expect(out).toEqual(['Disabled ada@example.com.', 'Ended 1 session for ada@example.com.']);
+  });
+
+  it('zero sessions is reported as 0', async () => {
+    const { out } = await run(['disable', '--email', 'ada@example.com'], { existing: user(), revoke: async () => 0 });
+    expect(out.at(-1)).toBe('Ended 0 sessions for ada@example.com.');
+  });
+
+  it('create, enable and list never touch sessions', async () => {
+    const created = await run(['create', '--email', 'a@b.co', '--name', 'A']);
+    const enabled = await run(['enable', '--email', 'ada@example.com'], { existing: user() });
+    const listed = await run(['list'], { existing: user() });
+    expect([created.revoked, enabled.revoked, listed.revoked]).toEqual([[], [], []]);
+  });
+
+  it.each([
+    ['set-password', ['set-password', '--email', 'ada@example.com']],
+    ['disable', ['disable', '--email', 'ada@example.com']],
+  ])('%s: if Redis is unreachable the change STANDS, a clear warning is printed, and the exit code is 0', async (_name, argv) => {
+    const failing = async () => {
+      throw Object.assign(new Error('connect ECONNREFUSED 10.9.9.9:6379'), { code: 'ECONNREFUSED' });
+    };
+    const { code, out, err, stored } = await run(argv, { existing: user(), revoke: failing });
+    expect(code).toBe(EXIT_OK);
+    expect(stored.length).toBe(1); // the database change was made
+    expect(out.join('\n')).not.toMatch(/Ended/);
+    expect(err.join('\n')).toBe(
+      'Warning: could not end the sessions in Redis (ECONNREFUSED). The change in the database is done; existing sessions are refused on their next request anyway.',
+    );
+    expect(err.join('')).not.toMatch(/10\.9\.9\.9|6379/);
+  });
+
+  it('a missing REDIS_URL is the same warning, with its reason', async () => {
+    const { code, err } = await run(['disable', '--email', 'ada@example.com'], {
+      existing: user(),
+      revoke: async () => {
+        throw new Error('REDIS_URL is not set');
+      },
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(err.join('')).toContain('(REDIS_URL is not set)');
+  });
+
+  it('a failed password change (weak password) revokes nothing', async () => {
+    const { code, revoked } = await run(['set-password', '--email', 'ada@example.com'], { existing: user(), passwords: ['short'] });
+    expect(code).toBe(EXIT_ERROR);
+    expect(revoked).toEqual([]);
+  });
+});
+

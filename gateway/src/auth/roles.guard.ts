@@ -22,8 +22,8 @@ export class RolesGuard implements CanActivate {
     if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, targets)) return true;
     const roles = this.reflector.getAllAndOverride<Role[] | undefined>(ROLES_KEY, targets);
     if (!roles || roles.length === 0) return true;
-    const client = context.switchToHttp().getRequest<AuthedRequest>().apiClient;
-    if (!client || !roles.includes(client.role)) {
+    const principal = context.switchToHttp().getRequest<AuthedRequest>().principal;
+    if (!principal || !roles.includes(principal.role)) {
       throw new ForbiddenException({ detail: 'Not allowed' });
     }
     return true;

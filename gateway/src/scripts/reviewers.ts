@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import { Redis } from 'ioredis';
 import { pathToFileURL } from 'node:url';
 import { createPool } from '../database/pool.js';
 import { parseDisplayName, parseEmail } from '../users/normalize.js';
@@ -6,14 +7,15 @@ import { PasswordHasher } from '../users/password-hasher.js';
 import { validatePassword } from '../users/password-policy.js';
 import { DuplicateEmailError, type User } from '../users/user.types.js';
 import { UsersRepository } from '../users/users.repository.js';
+import { revokeUserSessions } from '../sessions/session.store.js';
 import { readPassword } from './read-password.js';
 
 export const USAGE = `Usage: reviewers <command> [options]
 
 Commands:
   create --email <email> --name <display name>   create a reviewer (asks for a password)
-  set-password --email <email>                   change a reviewer's password (asks for it)
-  disable --email <email>                        stop a reviewer from logging in
+  set-password --email <email>                   change a reviewer's password (asks for it; ends their sessions)
+  disable --email <email>                        stop a reviewer from logging in (ends their sessions)
   enable --email <email>                         allow a disabled reviewer to log in again
   list                                           show all reviewers (never their password hashes)
 
@@ -24,6 +26,8 @@ When input is not a terminal, one line is read from it instead (for scripts).`;
 export interface CliDeps {
   users: Pick<UsersRepository, 'findByEmail' | 'create' | 'setPassword' | 'setDisabled' | 'list'>;
   hasher: Pick<PasswordHasher, 'hash'>;
+  /** Ends every session of a user. It may fail (Redis down): the database change stands either way. */
+  sessions: { revokeAll(userId: string): Promise<number> };
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   /** Asks for a password. `confirm` is true when the person should type it twice. */
@@ -43,6 +47,24 @@ function table(rows: string[][]): string {
 }
 
 const describe = (user: User) => user.email;
+
+/**
+ * Ends a user's sessions after a password change or a disable. The database change has already been
+ * made, so a Redis problem is only a warning: every request checks the user row (disabled, password
+ * changed since login), so the old sessions stop working on their next request anyway.
+ */
+async function revoke(deps: CliDeps, user: User): Promise<void> {
+  try {
+    const count = await deps.sessions.revokeAll(user.id);
+    deps.stdout(`Ended ${count} session${count === 1 ? '' : 's'} for ${describe(user)}.`);
+  } catch (error) {
+    const reason = (error as { code?: string }).code ?? (error as Error).message ?? (error as Error).name;
+    deps.stderr(
+      `Warning: could not end the sessions in Redis (${reason}). The change in the database is done; ` +
+        `existing sessions are refused on their next request anyway.`,
+    );
+  }
+}
 
 /** Runs one command. Returns the exit code; it never throws for an expected problem. */
 export async function runReviewers(argv: string[], deps: CliDeps): Promise<number> {
@@ -106,6 +128,7 @@ export async function runReviewers(argv: string[], deps: CliDeps): Promise<numbe
         ? `${disabling ? 'Disabled' : 'Enabled'} ${describe(result.user)}.`
         : `${describe(result.user)} is already ${disabling ? 'disabled' : 'enabled'}. Nothing changed.`,
     );
+    if (disabling) await revoke(deps, result.user); // also when it was already disabled: harmless clean-up
     return EXIT_OK;
   }
 
@@ -168,6 +191,7 @@ export async function runReviewers(argv: string[], deps: CliDeps): Promise<numbe
     return EXIT_ERROR;
   }
   stdout(`Password changed for ${describe(updated)}.`);
+  await revoke(deps, updated);
   return EXIT_OK;
 }
 
@@ -180,11 +204,13 @@ async function main(): Promise<number> {
   }
   const pool = createPool(url, { max: 2 });
   pool.on('error', () => undefined);
+  const redis = createRedis(process.env.REDIS_URL?.trim());
   const interactive = Boolean(process.stdin.isTTY);
   try {
     return await runReviewers(process.argv.slice(2), {
       users: new UsersRepository(pool),
       hasher: new PasswordHasher(),
+      sessions: { revokeAll: (userId) => revokeSessions(redis, userId) },
       stdout: (text) => console.log(text),
       stderr: (text) => console.error(text),
       // Prompts go to stderr so stdout stays clean for scripts.
@@ -198,6 +224,39 @@ async function main(): Promise<number> {
     return EXIT_ERROR;
   } finally {
     await pool.end().catch(() => undefined);
+    redis?.disconnect();
+  }
+}
+
+/** A Redis connection for revoking sessions: no retries, no queueing, a short timeout. Absent without REDIS_URL. */
+function createRedis(url: string | undefined): Redis | undefined {
+  if (!url) return undefined;
+  const redis = new Redis(url, {
+    lazyConnect: true,
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 2000,
+    retryStrategy: () => null,
+  });
+  redis.on('error', () => undefined);
+  return redis;
+}
+
+async function revokeSessions(redis: Redis | undefined, userId: string): Promise<number> {
+  if (!redis) throw new Error('REDIS_URL is not set');
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      (async () => {
+        if (redis.status === 'wait') await redis.connect();
+        return revokeUserSessions(redis, userId);
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

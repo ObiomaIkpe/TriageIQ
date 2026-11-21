@@ -168,7 +168,7 @@ describe('API keys, roles and ownership (fake queue)', () => {
       expect(a.body.job_id).not.toBe(b.body.job_id);
       expect(b.headers['idempotent-replayed']).toBeUndefined();
       expect(queue.added).toHaveLength(2);
-      expect([...queue.kv.entries.keys()].sort()).toEqual(['idem:alice:order-1', 'idem:bob:order-1']);
+      expect([...queue.kv.entries.keys()].sort()).toEqual(['idem:client:alice:order-1', 'idem:client:bob:order-1']);
     });
 
     it('the same key from the same client is one job', async () => {

@@ -1,3 +1,4 @@
+import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { ErrorRequestHandler } from 'express';
 import helmet from 'helmet';
@@ -34,6 +35,10 @@ export const bodyErrorHandler: ErrorRequestHandler = (error, _request, response,
  * size limit, followed by the handler for its errors (order matters).
  */
 export function configureApp(app: NestExpressApplication): void {
+  // Behind a proxy you control (TRUST_PROXY=true) the client IP comes from X-Forwarded-For; otherwise it is
+  // the socket address. Login failure limits use it, so trusting a header nobody controls would let a caller
+  // pick its own IP: this is off unless asked for.
+  if (app.get(ConfigService).get<boolean>('TRUST_PROXY') === true) app.set('trust proxy', true);
   // First, so every response (errors and 401s included) carries the security headers.
   // helmet's defaults also remove X-Powered-By.
   app.use(helmet());
