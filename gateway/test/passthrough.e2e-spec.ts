@@ -104,7 +104,13 @@ describe('reviewer routes forwarded to Python (fake Python server)', () => {
       expect(seen[0].method).toBe('POST');
       expect(seen[0].url).toBe(`/tickets/${ID}/review`);
       expect(seen[0].headers['content-type']).toBe('application/json');
-      expect(JSON.parse(seen[0].body)).toEqual({ action: 'edit', edited_reply: 'A human wrote this.', note: 'checked' });
+      // the client's validated decision, plus WHO is reviewing, taken from the authenticated key (client "ops")
+      expect(JSON.parse(seen[0].body)).toEqual({
+        action: 'edit',
+        edited_reply: 'A human wrote this.',
+        note: 'checked',
+        reviewer: { id: 'client:ops', name: 'ops' },
+      });
     });
 
     it('POST /tickets is still the intake route: it queues a ticket (202) and never reaches Python', async () => {

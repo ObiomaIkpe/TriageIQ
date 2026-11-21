@@ -56,3 +56,22 @@ export function userPrincipal(
     expiresAt: session.expiresAt,
   };
 }
+
+/** Who a review is recorded as, in the body the gateway sends to Python. */
+export interface ReviewerIdentity {
+  /** "user:<uuid>" or "client:<name>": the principal's namespaced id. */
+  id: string;
+  /** A user's display name (a snapshot, as Python stores it), or a client's name. */
+  name: string;
+}
+
+/**
+ * The reviewer for a request, taken ONLY from the authenticated principal, never from anything the
+ * caller sent. A logged-in user is recorded under their id and the display name loaded with their
+ * session; a machine client under its namespaced name.
+ */
+export function reviewerFor(principal: Principal): ReviewerIdentity {
+  return principal.kind === 'user'
+    ? { id: principal.id, name: principal.displayName }
+    : { id: principal.id, name: principal.name };
+}

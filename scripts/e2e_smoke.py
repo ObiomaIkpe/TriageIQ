@@ -11,6 +11,8 @@ Settings (environment variables):
   E2E_SUBMITTER_KEY          API key of a client with the "submitter" role (required)
   E2E_REVIEWER_KEY           API key of a client with the "reviewer" role (required)
   E2E_OTHER_SUBMITTER_KEY    key of a second submitter; enables the ownership step (optional)
+  E2E_REVIEWER_CLIENT        the NAME of the API client that E2E_REVIEWER_KEY belongs to (default "ops"); step 8
+                             checks the review is recorded as "client:<name>"
   E2E_REVIEWER_EMAIL         a reviewer account's email, together with ...
   E2E_REVIEWER_PASSWORD      ... its password: enables the session-cookie login step (optional)
   E2E_ORIGIN                 the Origin to send with login and logout (default http://localhost:5173;
@@ -230,9 +232,18 @@ class Smoke:
         expect_status(first, 200, "POST review")
         if (first.body or {}).get("status") != "edited":
             raise Failed(f"the reviewed ticket's status is {(first.body or {}).get('status')!r}, not 'edited'")
+        # Who decided is recorded by the system from the key that was used: "client:<name>" of the API client.
+        wanted = f"client:{self.keys['reviewer_client']}"
+        reviewed_by = (first.body or {}).get("reviewed_by")
+        if not isinstance(reviewed_by, dict) or reviewed_by.get("id") != wanted:
+            raise Failed(f"the review answer's reviewed_by.id is not {wanted}")
+        stored = self.gateway.request("GET", f"/tickets/{self.state['flagged_ticket_id']}", self.keys["reviewer"])
+        expect_status(stored, 200, "GET /tickets/<id> after the review")
+        if ((stored.body or {}).get("reviewed_by") or {}).get("id") != wanted:
+            raise Failed(f"the stored ticket's reviewed_by.id is not {wanted}")
         again = self.gateway.request("POST", path, self.keys["reviewer"], decision)
         expect_status(again, 409, "POST the same review again")
-        return "review accepted (200, status edited); the same review again gives 409"
+        return f"review accepted (200, status edited, reviewed_by {wanted}, also on the stored ticket); the same review again gives 409"
 
     def step_submitter_is_forbidden(self) -> str:
         tickets = self.gateway.request("GET", "/tickets", self.keys["submitter"])
@@ -349,6 +360,7 @@ def main(argv=None, env=None, out: Callable[[str], None] = print) -> int:
             "submitter": submitter,
             "reviewer": reviewer,
             "other": other,
+            "reviewer_client": (env.get("E2E_REVIEWER_CLIENT") or "ops").strip(),
             "reviewer_email": reviewer_email,
             "reviewer_password": reviewer_password,
             "origin": origin,

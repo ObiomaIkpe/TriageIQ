@@ -33,6 +33,15 @@ export const TEST_REVIEW_KEY = 'test-review-key-not-real-0000';
 export function stubAuthEnv(rateLimitPerMinute = '10000') {
   vi.stubEnv('TRIAGE_REVIEW_API_KEY', TEST_REVIEW_KEY);
   vi.stubEnv('ALLOWED_ORIGINS', TEST_ORIGIN);
+  // Every login and session setting, stated explicitly. The config loader also reads a local gateway/.env
+  // (a developer's real settings, such as COOKIE_SECURE=false for http), and a test must never depend on it.
+  vi.stubEnv('SESSION_IDLE_MINUTES', '60');
+  vi.stubEnv('SESSION_ABSOLUTE_HOURS', '8');
+  vi.stubEnv('COOKIE_SECURE', 'true');
+  vi.stubEnv('LOGIN_MAX_FAILURES_PER_IP', '20');
+  vi.stubEnv('LOGIN_MAX_FAILURES_PER_EMAIL', '5');
+  vi.stubEnv('LOGIN_WINDOW_MINUTES', '15');
+  vi.stubEnv('TRUST_PROXY', 'false');
   vi.stubEnv('GATEWAY_CLIENTS', JSON.stringify(TEST_REGISTRY));
   vi.stubEnv('RATE_LIMIT_PER_MINUTE', rateLimitPerMinute);
 }

@@ -129,7 +129,7 @@ def test_a_paused_run_with_no_row_is_rebuilt_saved_pending_and_resumable(world):
 
     reviewed = client.post(
         f"/tickets/{TID}/review",
-        json={"action": "edit", "edited_reply": "A human wrote this."},
+        json={"action": "edit", "edited_reply": "A human wrote this.", "reviewer": {"id": "client:ops", "name": "ops"}},
         headers={"X-API-Key": KEY},
     )
     assert reviewed.status_code == 200

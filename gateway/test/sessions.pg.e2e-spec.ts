@@ -359,6 +359,45 @@ describe.skipIf(!REDIS_URL || !PG_URL)('reviewer login against real Redis and Po
       expect(await redis.exists(`login_fail:email:${sha256(EMAIL)}`)).toBe(0);
     });
 
+    it('50 concurrent wrong-password logins for one email with a maximum of 5: at most 5 password checks, the rest get 429', async () => {
+      const verify = vi.spyOn(app.get(PasswordHasher, { strict: false }), 'verify');
+      const answers = await Promise.all(
+        Array.from({ length: 50 }, () => login({ email: EMAIL, password: 'wrong wrong wrong' })),
+      );
+      const statuses = answers.map((a) => a.status);
+
+      expect(statuses.filter((s) => s === 401)).toHaveLength(5); // exactly the allowed attempts got as far as a check
+      expect(statuses.filter((s) => s === 429)).toHaveLength(45);
+      expect(verify).toHaveBeenCalledTimes(5); // limited attempts did no Argon2 work
+      for (const refused of answers.filter((a) => a.status === 429)) {
+        expect(Number(refused.headers['retry-after'])).toBeGreaterThan(0);
+        expect(Number(refused.headers['retry-after'])).toBeLessThanOrEqual(900);
+        expect(refused.headers['set-cookie']).toBeUndefined();
+      }
+      // The window was started once (by the first attempt) and never extended by the refused ones.
+      expect(await redis.ttl(`login_fail:email:${sha256(EMAIL)}`)).toBeLessThanOrEqual(900);
+      expect(await redis.ttl(`login_fail:email:${sha256(EMAIL)}`)).toBeGreaterThan(880);
+    });
+
+    it('a success deletes the email counter and gives its attempt back to the IP counter (counters at rest mean failures)', async () => {
+      for (let i = 0; i < 3; i += 1) await login({ email: EMAIL, password: `wrong password number ${i}` }).expect(401);
+      expect(await redis.get(`login_fail:email:${sha256(EMAIL)}`)).toBe('3');
+      const ipKey = (await redis.keys('login_fail:ip:*'))[0];
+      expect(await redis.get(ipKey)).toBe('3');
+
+      await login().expect(200); // the 4th attempt, and a success
+
+      expect(await redis.exists(`login_fail:email:${sha256(EMAIL)}`)).toBe(0);
+      expect(await redis.get(ipKey)).toBe('3'); // 4 attempts counted, the successful one handed back: the 3 failures remain
+    });
+
+    it('the IP counter never goes below 0 on repeated successes', async () => {
+      for (let i = 0; i < 4; i += 1) await login().expect(200);
+      const keys = await redis.keys('login_fail:ip:*');
+      expect(keys.length).toBeLessThanOrEqual(1);
+      for (const key of keys) expect(Number(await redis.get(key))).toBe(0);
+    });
+
     it('concurrent failures are counted exactly (atomic INCR in Lua)', async () => {
       await Promise.all(Array.from({ length: 4 }, () => login({ email: EMAIL, password: 'wrong wrong wrong' })));
       expect(await redis.get(`login_fail:email:${sha256(EMAIL)}`)).toBe('4');

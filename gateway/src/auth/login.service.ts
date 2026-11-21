@@ -44,8 +44,9 @@ export class LoginService {
     const email = normalizeEmail(attempt.email);
     const emailHash = sha256(email); // the email itself is never stored or logged
 
-    // 1. Limits first: a limited caller costs no password hashing.
-    const decision = await this.limiter.check(attempt.ip, emailHash);
+    // 1. Count the attempt and check the limits in ONE atomic step, before any password work: a limited
+    //    caller costs no hashing, and a burst of concurrent attempts cannot slip past the limit.
+    const decision = await this.limiter.attempt(attempt.ip, emailHash);
     if (decision.limited) {
       logger.warn(`login outcome=failure reason=${decision.reason} ip=${attempt.ip}`);
       return { kind: 'limited', retryAfterSeconds: decision.retryAfterSeconds };
@@ -64,7 +65,7 @@ export class LoginService {
           ? 'disabled'
           : undefined;
     if (reason !== undefined || !user) {
-      await this.limiter.recordFailure(attempt.ip, emailHash);
+      // (already counted by attempt() above)
       logger.warn(
         `login outcome=failure reason=${reason ?? 'unknown_email'}${user ? ` user=${user.id}` : ''} ip=${attempt.ip}`,
       );
@@ -79,7 +80,7 @@ export class LoginService {
         logger.warn(`login rehash failed user=${user.id}`); // the login itself still succeeds
       }
     }
-    await this.limiter.clearEmail(emailHash);
+    await this.limiter.succeeded(attempt.ip, emailHash);
 
     // 5. A NEW session, and the old one (if the request carried one) is dead: no session fixation.
     if (attempt.oldToken) await this.sessions.destroy(attempt.oldToken);

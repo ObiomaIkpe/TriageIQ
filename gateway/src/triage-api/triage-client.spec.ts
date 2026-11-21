@@ -175,6 +175,25 @@ describe('TriageClient: the exact log line', () => {
   });
 });
 
+describe('TriageClient: the reviewer in the log line', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('adds reviewer=<namespaced id> after the route, and nothing else about the reviewer', async () => {
+    const lines: string[] = [];
+    vi.spyOn(Logger.prototype, 'log').mockImplementation((m: unknown) => void lines.push(String(m)));
+    vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(1_004);
+    await make(json(200, {})).call({ ...REVIEW, reviewer: 'user:3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34' });
+    expect(lines).toEqual(['client=ops route="POST /tickets/:id/review" reviewer=user:3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34 python_status=200 duration_ms=4']);
+  });
+
+  it('without a reviewer the line is exactly as before', async () => {
+    const lines: string[] = [];
+    vi.spyOn(Logger.prototype, 'log').mockImplementation((m: unknown) => void lines.push(String(m)));
+    await make(json(200, [])).call(READ);
+    expect(lines[0]).not.toContain('reviewer=');
+  });
+});
+
 describe('TriageClient: logging', () => {
   afterEach(() => vi.restoreAllMocks());
 

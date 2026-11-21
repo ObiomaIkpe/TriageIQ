@@ -32,6 +32,8 @@ export interface TriageCall {
   route: string;
   /** For the log line only: the API client's name. */
   client: string;
+  /** For the log line only: the namespaced id of the reviewer a review is recorded as. Never a name or email. */
+  reviewer?: string;
 }
 
 /** A Python answer that is passed on to the caller as it is. */
@@ -122,7 +124,8 @@ export class TriageClient {
 
   /** One line per call: who, which route, what Python answered, how long. Never ticket text or keys. */
   private log(call: TriageCall, result: number | 'unreachable', started: number): void {
-    const line = `client=${call.client} route="${call.route}" python_status=${result} duration_ms=${Date.now() - started}`;
+    const reviewer = call.reviewer === undefined ? '' : ` reviewer=${call.reviewer}`;
+    const line = `client=${call.client} route="${call.route}"${reviewer} python_status=${result} duration_ms=${Date.now() - started}`;
     if (result === 'unreachable' || result >= 500) logger.warn(line);
     else logger.log(line);
   }

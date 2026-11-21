@@ -12,6 +12,8 @@ from app.db import get_session
 from app.models import (
     KbMatch,
     ReviewDecision,
+    ReviewedBy,
+    Reviewer,
     TicketIn,
     TicketRecord,
     TicketStatus,
@@ -82,6 +84,11 @@ def _to_record(row: TicketRow) -> TicketRecord:
         final_reply=row.final_reply,
         review_note=row.review_note,
         reviewed_at=row.reviewed_at,
+        reviewed_by=(
+            ReviewedBy(id=row.reviewed_by_id, name=row.reviewed_by_name)
+            if row.reviewed_by_id is not None and row.reviewed_by_name is not None
+            else None
+        ),
     )
 
 
@@ -185,6 +192,7 @@ def record_review(
     ticket_id: str,
     decision: ReviewDecision,
     final_reply: Optional[str],
+    reviewer: Reviewer,
 ) -> Optional[TicketRecord]:
     """Store a reviewer's decision on a ticket that is still pending_review.
 
@@ -192,6 +200,10 @@ def record_review(
     reviewers deciding at the same moment only one matches a row. Returns the updated
     record, or None if no row matched (unknown id, or the ticket is not pending). The
     caller owns the transaction.
+
+    The reviewer's id and name are written by the SAME statement as the decision, so a review
+    can never be saved without its author. The name is a snapshot: renaming the reviewer later
+    does not change old reviews. A second review matches no row, so it cannot overwrite them.
     """
     statement = (
         update(TicketRow)
@@ -204,6 +216,8 @@ def record_review(
             final_reply=final_reply,
             review_note=decision.note,
             reviewed_at=func.now(),
+            reviewed_by_id=reviewer.id,
+            reviewed_by_name=reviewer.name,
             updated_at=func.now(),
         )
         .returning(TicketRow)
