@@ -12,6 +12,8 @@ export interface TicketJobData {
   body: string;
   customer_id?: string;
   received_at: string;
+  /** The API client that submitted the ticket. Missing on jobs created before M3.5a. */
+  client?: string;
 }
 
 /** The parts of a BullMQ Job this service reads. */
@@ -53,6 +55,8 @@ export interface DeadLetter {
   subject: string;
   body: string;
   customer_id: string | null;
+  /** The client that submitted it; null for jobs created before M3.5a. */
+  client: string | null;
 }
 
 export type RetryResult = 'queued' | 'not-found' | 'not-failed';
@@ -75,6 +79,7 @@ export class TriageQueueService {
   /** Stores the ticket as a job. Throws QueueUnavailableError unless it was really stored. */
   async enqueue(
     ticket: TicketInput,
+    client: string,
     jobId: string = randomUUID(),
   ): Promise<{ jobId: string; receivedAt: string }> {
     const receivedAt = new Date().toISOString();
@@ -83,6 +88,7 @@ export class TriageQueueService {
       body: ticket.body,
       customer_id: ticket.customer_id,
       received_at: receivedAt,
+      client,
     };
     await this.guarded(async (expired) => {
       // Wait for a live connection BEFORE sending the write. Otherwise, with Redis down, the
@@ -191,5 +197,6 @@ function toDeadLetter(job: JobLike): DeadLetter {
     subject: job.data?.subject,
     body: job.data?.body,
     customer_id: job.data?.customer_id ?? null,
+    client: job.data?.client ?? null,
   };
 }

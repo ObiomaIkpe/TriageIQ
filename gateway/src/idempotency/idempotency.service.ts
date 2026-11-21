@@ -5,6 +5,7 @@ import { QueueUnavailableError } from '../queue/with-timeout.js';
 import type { TicketInput } from '../tickets/ticket.schema.js';
 import { fingerprintTicket } from './idempotency-key.js';
 import { IDEMPOTENCY_REDIS, type KeyValueClient } from './idempotency.constants.js';
+import { waitUntilReady } from './redis-ready.js';
 
 /** How long a key is remembered. */
 export const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
@@ -45,7 +46,6 @@ interface StoredKey {
 
 /** Claim, replay or reject: the whole rule for a request that carries an Idempotency-Key. */
 const MAX_CLAIM_ROUNDS = 3;
-const READY_POLL_MS = 20;
 const logger = new Logger('Idempotency');
 
 @Injectable()
@@ -56,13 +56,14 @@ export class IdempotencyService {
   ) {}
 
   /**
-   * Queues the ticket once per key. The first request claims `idem:<key>` (SET NX EX, atomic)
+   * Queues the ticket once per key. The first request claims `idem:<client>:<key>` (SET NX EX, atomic)
    * with its job id and the ticket's fingerprint, then queues the job under that id. A later
    * request with the same key gets the same job id back, or a conflict if its ticket differs.
    * Every Redis call has the usual deadline; trouble becomes QueueUnavailableError (503).
    */
-  async submit(key: string, ticket: TicketInput): Promise<SubmitResult> {
-    const redisKey = IDEMPOTENCY_KEY_PREFIX + key;
+  async submit(client: string, key: string, ticket: TicketInput): Promise<SubmitResult> {
+    // One namespace per client: the same Idempotency-Key from two clients is two different keys.
+    const redisKey = `${IDEMPOTENCY_KEY_PREFIX}${client}:${key}`;
     const fingerprint = fingerprintTicket(ticket);
 
     for (let round = 0; round < MAX_CLAIM_ROUNDS; round += 1) {
@@ -70,7 +71,7 @@ export class IdempotencyService {
       const value = JSON.stringify({ job_id: jobId, fingerprint } satisfies StoredKey);
 
       const claimed = await this.queue.guarded(async (expired) => {
-        await this.ready(expired);
+        await waitUntilReady(this.redis, expired);
         if (expired()) return false; // too late: the caller has already been told 503
         return (
           (await this.redis.set(redisKey, value, 'EX', IDEMPOTENCY_TTL_SECONDS, 'NX')) === 'OK'
@@ -79,7 +80,7 @@ export class IdempotencyService {
 
       if (claimed) {
         try {
-          await this.queue.enqueue(ticket, jobId);
+          await this.queue.enqueue(ticket, client, jobId);
           return { jobId, replayed: false };
         } catch (error) {
           // Nothing was queued, so the key must not keep pointing at a job that does not
@@ -90,7 +91,7 @@ export class IdempotencyService {
       }
 
       const stored = await this.queue.guarded(async (expired) => {
-        await this.ready(expired);
+        await waitUntilReady(this.redis, expired);
         return this.redis.get(redisKey);
       });
       if (stored === null) continue; // expired or released since the claim failed: claim again
@@ -102,23 +103,11 @@ export class IdempotencyService {
     throw new QueueUnavailableError();
   }
 
-  /**
-   * Waits for the connection to be up, but only within the call's deadline. Polling (not a
-   * listener) so a request that gives up leaves nothing behind. With the connection down this
-   * ends in the usual 503 after the deadline.
-   */
-  private async ready(expired: () => boolean): Promise<void> {
-    while (this.redis.status !== 'ready') {
-      if (expired()) throw new Error('idempotency Redis connection is not ready');
-      await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
-    }
-  }
-
   /** Best effort. If Redis is gone too, the key expires on its own after the TTL. */
   private async release(redisKey: string, jobId: string): Promise<void> {
     try {
       await this.queue.guarded(async (expired) => {
-        await this.ready(expired);
+        await waitUntilReady(this.redis, expired);
         return this.redis.eval(COMPARE_AND_DELETE_SCRIPT, 1, redisKey, jobId);
       });
     } catch {

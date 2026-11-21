@@ -223,12 +223,12 @@ The full, exhaustive roadmap lives in `ROADMAP.md` (sections A-L, with a suggest
 
 - **Same repo.** The gateway lives in `gateway/` next to the Python service, not in its own repository. One `docker compose` file runs both, and one commit can change both sides of a contract.
 - **ioredis.** BullMQ (the planned queue in M3.2) is built on ioredis, so the gateway uses the same client library from the start instead of adding a second Redis client later. One client is provided through Nest DI. It connects in the background and retries, so the app boots with Redis down; its error handler logs only an error code, never the URL.
-- **Python stays reachable.** Port 8000 is still published and clients can still call the Python service directly. That only changes at M3.5, once the gateway has auth and rate limits. Until then the gateway adds no protection.
+- **Python stays reachable.** Port 8000 is still published, now bound to `127.0.0.1` only, so only local users (not other machines) can call the Python service directly, without a key. That only changes at M3.5, once the gateway has auth and rate limits. Until then the gateway adds no protection.
 - **Config.** `@nestjs/config` with a zod schema. The error message is built from the setting NAME and a fixed hint, never the value, so a password in `REDIS_URL` cannot reach a log. A first version used `new URL()` inside a zod refine and leaked the input in a raw TypeError; a test caught it, and the parse is now wrapped so no raw error can escape.
 - **Tooling is the Nest 12 scaffold's:** Vitest, oxlint, ESM, TypeScript 6 (TypeScript 7 exists, but the scaffold pins 6, and ts-jest, the usual Jest TypeScript transformer, only supports versions below 7; I did not test Vitest or oxlint on 7). The scaffold's `@nestjs/observe`, `@nestjs/mau`, `nest deploy` script and generated agent docs were removed on purpose.
 - **Node 24.** The Dockerfile uses `node:24-slim`, and the tests were run inside a `node:24` container so the tested Node matches the runtime Node.
 - **/ready shape.** A failing check is `"down"` in `checks`, and a sibling `reasons` object holds the short reason. The top-level status is `not_ready` (the Python service uses the same word). Only the status code of the Python `/ready` is used.
-- **Redis is published on 6380 with no password**, the same way Postgres is published on 5433. Docker binds published ports on all interfaces, so on a shared network use `127.0.0.1:6380:6379`.
+- **Redis is published on 6380 with no password**, the same way Postgres is published on 5433. Every published port in the compose file is now bound to `127.0.0.1` (Postgres 5433, Redis 6380, the Python app 8000, the gateway 3000), so none is reachable from other machines.
 
 ## Ticket intake on the gateway (M3.2)
 
@@ -268,7 +268,7 @@ What happens to a running job when the container stops (measured with a 20 s fak
 - **BullMQ's retry does NOT reset `attemptsMade` by default.** Without options a job that used all its attempts would fail again after one more try. The gateway passes `resetAttemptsMade: true` and `resetAttemptsStarted: true`. Mutation-tested: with both `false`, the retry integration tests fail (a retried job got 1 more try instead of a full set). A retried job gets the attempts it was created with (`opts.attempts`): 8 for jobs created from M3.4a on, 5 for older ones, 1 for jobs created before attempts existed.
 - **8 attempts** wait 10, 20, 40, 80, 160, 300, 300 s: 910 s, about 15 minutes. The formula and cap are unchanged. The first backoff step travels with the job (`backoff: { type: 'custom', delay: 10000 }`; the strategy reads `job.opts.backoff.delay`, falling back to 10 s for older jobs). Tests replace the retry policy through the `TRIAGE_RETRY_POLICY` injection token (3 attempts, 50 ms); it is deliberately not an environment setting.
 - **30-day retention** for failed jobs. Jobs already in Redis keep the options they were added with (7 days, 5 attempts).
-- **No authentication yet.** `GET /dead-letters` and `POST /dead-letters/:id/retry` have no login until M3.5 and the list returns ticket subject, body and customer id. That is why the compose file publishes the gateway port on localhost only. Do not expose it before M3.5.
+- **No authentication yet.** `GET /dead-letters` and `POST /dead-letters/:id/retry` have no login until M3.5 and the list returns ticket subject, body and customer id. (M3.5a has since added keys and roles, see below.) The gateway port is published on `127.0.0.1` only (`127.0.0.1:3000:3000`), as is the Python app's (`127.0.0.1:8000:8000`).
 - **Limits:** `offset` pagination over a set that changes (a job failing or being retried between two pages can shift items, so a page may skip or repeat one). The retry is not rate limited, and nothing stops someone retrying a job whose cause is not fixed (it just fails again, after another 15 minutes of attempts and paid calls). A retry does not duplicate the ticket in Python if the first attempt had been saved there: that is M3.4b.
 
 ## Idempotency end to end (M3.4b)
@@ -299,4 +299,34 @@ Honest gaps:
 - **A replayed `202` always says `queued`**, even if the job is done by then. The state is read from `status_url`.
 - **The Python lock does not protect the review endpoint** (it has its own row lock), and checkpoints still pile up with no retention policy.
 - Concurrency was tested with threads in one process against a real Postgres; two separate app instances would use the same advisory lock but that was not tested.
+
+## Client API keys, roles and rate limits (M3.5a)
+
+Decisions:
+
+- **A registry in an env file, hashes only.** `GATEWAY_CLIENTS` is a JSON array of `{name, role, key_sha256}`. The gateway never stores or logs a key; a leaked `gateway/.env` or process listing exposes hashes of 256-bit random keys, which cannot be reversed. Keys are `tiq_` plus 32 random bytes, so a fast hash (SHA-256) is enough: there is no password to guess, which is where a slow hash such as bcrypt earns its cost. Validation messages carry the setting name and, at most, an entry position, never a name or a hash.
+- **`gateway/.env` for the secrets (owner's decision).** The root `.env.example` is pinned by Python tests (every name must be a Python setting), and the root `.env` goes into the Python container wholesale. A separate `gateway/.env`, loaded by compose `env_file`, keeps the hashes out of the Python app's environment. Compose's own message for a missing file cannot be customised, so the pointer to `gateway/.env.example` is a comment in the compose file and the README. `gateway/.dockerignore` already excludes `.env`, so the file is not baked into the image.
+- **Constant-time lookup.** The presented key is hashed and compared with every registered hash using `crypto.timingSafeEqual`, without stopping at the first match, so response time does not show whether or how much a hash matched. A unit test checks that every entry is read even after an early match.
+- **Three global guards, in this order: authenticate (401), rate limit (429), roles (403).** Public routes (`@Public()`) skip all three. A 401 is never counted. A 403 is counted and carries the rate-limit headers, so a client cannot probe forbidden routes for free. A route with no `@Roles` is open to every authenticated client: a new route is protected by default, but not role-restricted.
+- **404, not 403, for another client's job.** A 403 would confirm the id exists. A submitter gets the identical 404 for a foreign job, a missing job, and a job with no `client` (created before M3.5a). The check runs before the job's state is looked at, so even an odd state cannot make the answers differ. Reviewers read any job.
+- **`req.apiClient`, not `req.client`:** Node's `IncomingMessage.client` is the socket (deprecated alias), so that name was taken.
+- **Per-client idempotency:** the Redis key is `idem:<client>:<key>`. Client names cannot contain `:`, so no two (client, key) pairs share a key. Old `idem:<key>` entries are never read again and expire within 24 hours.
+- **Fixed-window limit counted in Redis.** One Lua script (`INCR`, and `EXPIRE` on the first request of a window) so the count and its expiry are atomic and a counter can never be left without an expiry. `Retry-After` is the counter's remaining TTL, so it needs no clock agreement between the gateway and Redis. The window is a test-only injection token (`RATE_LIMIT_WINDOW_SECONDS`, default 60), not a setting. Fixed windows allow a burst of up to twice the limit across a window boundary; a sliding window would not, at the cost of more state and a bigger script.
+- **The limiter shares the idempotency Redis connection** (offline queue off, so a command is never sent late). If it cannot answer within the usual deadline the request gets a 503, so with Redis down even `POST /tickets` answers with the limiter's 503 text, not the intake one.
+- **No per-IP limit, on purpose.** Behind a proxy or compose network every request would appear to come from one address (or the client could spoof `X-Forwarded-For`), so a per-IP limit would either punish everyone together or protect nothing. Every route except the two health routes needs a key, so an unauthenticated flood only costs the guard's SHA-256 and a 401, and cannot reach Redis or the queue. Limiting that flood belongs to a reverse proxy or firewall in front.
+- **helmet 8.3.0 with its defaults.** It also removes `X-Powered-By` (it is applied first, so 401s, 413s and parser errors carry the headers too). Several defaults (CSP, `X-Frame-Options`) matter little for a JSON API but do no harm. `Cache-Control: no-store` was not added.
+- **The key tool is a TypeScript file run by Node's own type stripping** (`node scripts/make-client-key.ts`, Node 24), importing `src/auth/client-key.ts` which uses only Node modules and erasable syntax. No new dependency and no build step. It is excluded from the main tsconfig because it imports a `.ts` path.
+
+Remaining gaps:
+
+- **No per-IP limit** (above), and the limit is per client, so one leaked key can use that client's whole allowance.
+- **No key rotation tooling** beyond replacing the entry (and recreating the gateway); there is no overlap period where two keys work for one client unless you register two clients.
+- **Registry changes need a restart** (read once at startup).
+- **Reviewer identity is not passed to Python.** The Python review endpoint still takes one shared `X-API-Key`, and the gateway does not call it yet, so reviews are not attributed to a person. M3.5b.
+- **Python is still directly reachable** on port 8000 and unauthenticated for triage and reads, but only from the machine running compose (the port is bound to `127.0.0.1`, as is the gateway's 3000). M3.5b.
+- **Fixed-window burst** of up to twice the limit at a window edge.
+- **Key hashes appear in the output of `docker compose config`** and in the container's environment (`docker inspect`), since the registry is an environment variable. They are hashes, not keys.
+- **A leaked key is valid until its entry is removed;** there is no expiry.
+- **Reviewers see all ticket text** through `GET /dead-letters` and `GET /jobs/:id`.
+- **Roles are checked per route by a decorator.** A new route without `@Roles` is open to every authenticated client, including submitters.
 

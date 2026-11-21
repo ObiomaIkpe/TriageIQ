@@ -1,9 +1,10 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
-import request from 'supertest';
 import { afterAll, beforeAll, vi } from 'vitest';
+import { RATE_LIMIT_UNAVAILABLE } from '../src/auth/rate-limit.guard.js';
 import { configureApp } from '../src/app.setup.js';
 import { stubEnv } from './app-helpers.js';
+import { api } from './auth-helpers.js';
 
 /**
  * The real BullMQ queue pointed at a port nothing listens on (needs no Redis).
@@ -28,21 +29,21 @@ describe('ticket intake when Redis is unreachable', () => {
 
   it('POST /tickets -> 503 within the timeout, with the retry message', async () => {
     const started = Date.now();
-    const response = await request(app.getHttpServer())
+    const response = await api(app)
       .post('/tickets')
       .send({ subject: 'a', body: 'b' })
       .expect(503);
 
     expect(Date.now() - started).toBeLessThan(3500);
     expect(response.body).toEqual({
-      detail: 'Ticket intake is temporarily unavailable; please retry',
+      detail: RATE_LIMIT_UNAVAILABLE, // the limiter needs Redis first, so it answers first
     });
     expect(response.headers.location).toBeUndefined();
   });
 
   it('GET /jobs/:id -> 503 within the timeout', async () => {
     const started = Date.now();
-    await request(app.getHttpServer())
+    await api(app)
       .get('/jobs/9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d')
       .expect(503);
     expect(Date.now() - started).toBeLessThan(3500);

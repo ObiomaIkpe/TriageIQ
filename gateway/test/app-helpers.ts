@@ -8,6 +8,7 @@ import { IDEMPOTENCY_REDIS } from '../src/idempotency/idempotency.constants.js';
 import { QUEUE_TIMEOUT_MS, TRIAGE_QUEUE } from '../src/queue/queue.constants.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { WorkerModule } from '../src/worker/worker.module.js';
+import { stubAuthEnv } from './auth-helpers.js';
 import type { FakeQueue } from './fake-queue.js';
 
 /** Valid settings for the app. Call before loading the app module. */
@@ -15,6 +16,7 @@ export function stubEnv(redisUrl = 'redis://localhost:6379') {
   vi.stubEnv('PORT', '3000');
   vi.stubEnv('REDIS_URL', redisUrl);
   vi.stubEnv('TRIAGE_SERVICE_URL', 'http://localhost:8000');
+  stubAuthEnv();
 }
 
 /** Stands in for WorkerModule, so a test that only checks intake never runs a worker. */

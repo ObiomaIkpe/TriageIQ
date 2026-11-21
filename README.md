@@ -71,7 +71,7 @@ flowchart LR
     alembic --> pg
 ```
 
-The gateway accepts tickets, queues them, and its worker sends each one to the FastAPI app and keeps the result (see [Gateway (M3)](#gateway-m3)). The gateway does not yet add authentication, rate limits or duplicate protection, so the app stays reachable on port 8000 and clients can still call `POST /triage` directly.
+The gateway accepts tickets, queues them, and its worker sends each one to the FastAPI app and keeps the result (see [Gateway (M3)](#gateway-m3)). The gateway does not yet add authentication, rate limits or duplicate protection, so the app stays reachable on port 8000 of the machine running compose (and only there: the port is bound to `127.0.0.1`), and anyone on that machine can still call `POST /triage` directly.
 
 ## API
 
@@ -168,7 +168,7 @@ docker compose exec app python -m app.kb.ingest   # seeds 5 sample FAQ articles
 
 On the Voyage free tier (3 requests per minute) seeding takes about a minute; the built-in rate limiter waits as needed. Then send the `curl` request above, or open http://localhost:8000/docs.
 
-The app container applies the database migrations at startup. Postgres is also published on host port **5433**.
+The app container applies the database migrations at startup. Postgres is also published on host port **5433** (bound to `127.0.0.1`).
 
 ## Configuration
 
@@ -262,11 +262,11 @@ Known limits: phrase checks cannot tell a reply that refuses a request from one 
 
 ## Gateway (M3)
 
-`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. It is built in steps (M3.1 to M3.5). **So far it starts, checks its settings, reports health, accepts tickets onto a queue (M3.2), and runs a worker that sends each queued ticket to the Python service `POST /triage` and stores the result on the job (M3.3).** There is no authentication or rate limiting yet (M3.5).
+`gateway/` is a NestJS service that will sit in front of the Python app. The plan: take a ticket instantly, queue the slow AI work, make sure no ticket is lost if something restarts, and add authentication and rate limits at the front door. It is built in steps (M3.1 to M3.5). **So far it starts, checks its settings, reports health, accepts tickets onto a queue (M3.2), and runs a worker that sends each queued ticket to the Python service `POST /triage` and stores the result on the job (M3.3).** Every route except `/health` and `/ready` needs an API key, with roles, per-client rate limits and security headers (M3.5a, see "API keys, roles and rate limits"). The Python service on port 8000 is still reachable directly and unauthenticated until M3.5b.
 
 Redis holds the queue (compose service `redis`, appendonly persistence on, published on host port **6380**, bound to localhost).
 
-Run it with the rest of the stack (`docker compose up --build -d`); the gateway is published on port **3000**. To run it by itself you need Node 24:
+Run it with the rest of the stack (`docker compose up --build -d`); the gateway is published on port **3000**, bound to `127.0.0.1` like every other published port (the Python app on 8000, Postgres on 5433, Redis on 6380), so nothing is reachable from other machines unless you change that or put a proxy in front. To run it by itself you need Node 24:
 
 ```bash
 cd gateway
@@ -298,12 +298,54 @@ Endpoints:
 
 Reasons are short fixed phrases (`timeout`, `connection refused`, `host not found`, `unreachable`, `status 503`). They never include URLs or stack traces. Redis being down at startup does not stop the gateway; it keeps retrying and `/ready` answers 503 until Redis is back.
 
+### API keys, roles and rate limits
+
+Every gateway route needs `Authorization: Bearer <key>`, except **`GET /health` and `GET /ready`, which stay public** (orchestrators and uptime checks have no key, and they are not rate limited).
+
+**Create a client key** (inside `gateway/`; nothing is written to disk):
+
+```bash
+npm run make-client-key -- alice submitter     # or: npm run make-client-key -- ops-team reviewer
+```
+
+It prints the key **once** (`tiq_` and 43 random characters; store it in a password manager, it cannot be recovered) and the registry entry for it, which holds only the SHA-256 of the key. Put the entries in `GATEWAY_CLIENTS` in `gateway/.env` as one line of JSON in single quotes:
+
+```bash
+cp gateway/.env.example gateway/.env     # first time only; gateway/.env is git-ignored
+# GATEWAY_CLIENTS='[{"name":"alice","role":"submitter","key_sha256":"<64 hex>"},{"name":"ops-team","role":"reviewer","key_sha256":"<64 hex>"}]'
+# RATE_LIMIT_PER_MINUTE=60
+docker compose up -d --force-recreate gateway
+```
+
+`name` is 1 to 40 characters of `a-z`, `0-9` and `-`, unique. `role` is `submitter` or `reviewer`. At least one client is required: the gateway refuses to start, naming the problem and never printing a value, if the registry is missing or invalid. If `gateway/.env` is missing, compose stops with `env file .../gateway/.env not found`: copy `gateway/.env.example` as above. To rotate a key, make a new one and replace that entry; to remove a client, delete its entry.
+
+| Role | Can do |
+|---|---|
+| `submitter` | `POST /tickets`, and `GET /jobs/:id` for **its own jobs** |
+| `reviewer` | everything a submitter can, plus `GET /dead-letters`, `POST /dead-letters/:id/retry`, and `GET /jobs/:id` for **any** job |
+
+| Problem | Answer |
+|---|---|
+| no key, malformed header, unknown key | `401 {"detail":"Missing or invalid API key"}` with `WWW-Authenticate: Bearer`. The key is never logged or echoed |
+| right key, wrong role | `403 {"detail":"Not allowed"}` |
+| a submitter asks for a job that belongs to another client, or that has no client (created before M3.5a) | `404 {"detail":"Job not found"}`, the same as a job that does not exist, so job ids cannot be probed. A reviewer can read them |
+
+**Rate limit.** Each client may make `RATE_LIMIT_PER_MINUTE` requests (default 60, 1 to 10000) in a fixed one-minute window that starts at its first request. Every response to an authenticated request carries `RateLimit-Limit` and `RateLimit-Remaining`. The request after the limit gets `429 {"detail":"Rate limit exceeded"}` with `Retry-After` (seconds until the window resets). Requests rejected with 401 are not counted, and neither are `/health` and `/ready`. Every other request counts, including ones that end in 403 or 404. If Redis is unreachable the limiter answers `503`. There is no per-IP limit.
+
+```bash
+curl -i -H "Authorization: Bearer $TIQ_KEY" localhost:3000/jobs/00000000-0000-4000-8000-000000000000
+# HTTP/1.1 404 ... RateLimit-Limit: 60  RateLimit-Remaining: 59
+```
+
+Responses also carry the security headers from `helmet` (such as `X-Content-Type-Options: nosniff`, `Strict-Transport-Security`, `Content-Security-Policy`), and `X-Powered-By` is removed. Plain HTTP only: put a TLS-terminating proxy in front before exposing the port.
+
 ### Ticket intake and job status
 
 `POST /tickets` checks a ticket, stores it on the BullMQ queue named `triage`, and answers at once with a job id. `GET /jobs/:id` reports where that job is. This is not the same as the Python `POST /triage`: it does not wait for the AI work, and it returns no category or reply.
 
 ```bash
 curl -i -X POST http://localhost:3000/tickets \
+  -H "Authorization: Bearer $TIQ_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"subject": "Cannot log in", "body": "I forgot my password.", "customer_id": "cust-42"}'
 ```
@@ -316,7 +358,7 @@ Location: /jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
 ```
 
 ```bash
-curl http://localhost:3000/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
+curl -H "Authorization: Bearer $TIQ_KEY" http://localhost:3000/jobs/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34
 ```
 
 ```json
@@ -361,6 +403,7 @@ Send `Idempotency-Key: <your key>` on `POST /tickets` whenever the client might 
 
 ```bash
 curl -i -X POST localhost:3000/tickets \
+  -H "Authorization: Bearer $TIQ_KEY" \
   -H 'Content-Type: application/json' -H 'Idempotency-Key: 9d6c1c2e-7f43-4c58-b0a7-3f1f0f6a2b10' \
   -d '{"subject": "Cannot log in", "body": "I forgot my password."}'
 ```
@@ -376,7 +419,7 @@ curl -i -X POST localhost:3000/tickets \
 
 "Same ticket" means the same `subject`, `body` and `customer_id` after trimming (a SHA-256 of those three fields in a fixed order), so extra whitespace does not matter and any real change does. A key is remembered for 24 hours (`SET idem:<key> NX EX 86400` in Redis). The `status` in a replayed `202` is always `queued`, as in the first answer: poll `status_url` for the real state. A key does **not** retry a failed job: it keeps pointing at the same job, so use `POST /dead-letters/:id/retry` for that.
 
-**Keys are not scoped per client until M3.5 adds authentication.** Two clients that pick the same key share it, and a client that guesses another's key gets that job id back. Use random keys.
+**Idempotency keys are per client.** They are stored as `idem:<client name>:<key>`, so the same `Idempotency-Key` from two clients is two different keys and creates two jobs. (Keys stored under the old format, `idem:<key>`, simply expire within 24 hours.)
 
 **How the two hops fit together.** The key protects the client-to-gateway hop (no duplicate job). The `ticket_id` protects the gateway-to-Python hop (no duplicate ticket): the worker sends its job id, which is the same on every attempt and every dead-letter retry, and the Python service answers from the existing ticket instead of triaging again. Together a ticket is triaged and saved once even when the client retries, the worker is killed after Python saved the ticket, or a dead-lettered job is retried.
 
@@ -406,7 +449,7 @@ When a job reaches `failed` the worker logs one WARN line: `dead-letter job=<id>
 **`GET /dead-letters?limit=20&offset=0`** lists failed jobs, newest failure first. `limit` is 1 to 100 (default 20), `offset` is 0 or more; anything else is `400`.
 
 ```bash
-curl -s "localhost:3000/dead-letters?limit=2"
+curl -s -H "Authorization: Bearer $TIQ_REVIEWER_KEY" "localhost:3000/dead-letters?limit=2"
 ```
 
 ```json
@@ -434,7 +477,7 @@ curl -s "localhost:3000/dead-letters?limit=2"
 **`POST /dead-letters/:id/retry`** puts a failed job back on the queue under the **same job id**, with all its attempts again, and answers `202 {"job_id", "status": "queued", "status_url": "/jobs/<id>"}`. Keep polling the same `status_url`.
 
 ```bash
-curl -s -X POST localhost:3000/dead-letters/2261b984-fe29-4c2b-9b82-4f26d2460d72/retry
+curl -s -X POST -H "Authorization: Bearer $TIQ_REVIEWER_KEY" localhost:3000/dead-letters/2261b984-fe29-4c2b-9b82-4f26d2460d72/retry
 ```
 
 | Case | Answer |
@@ -444,9 +487,9 @@ curl -s -X POST localhost:3000/dead-letters/2261b984-fe29-4c2b-9b82-4f26d2460d72
 | the job exists but is not failed (queued, running, done, or already retried) | `409 {"detail":"Job is not in the dead-letter list"}` |
 | Redis unreachable | `503` |
 
-Retrying twice in a row gives `409` the second time, never a second copy: BullMQ checks and moves the job in one atomic step. **These two endpoints have no login until M3.5 and expose ticket text, which is why the compose file binds the gateway port to localhost only.** Do not publish port 3000 beyond localhost before M3.5.
+Retrying twice in a row gives `409` the second time, never a second copy: BullMQ checks and moves the job in one atomic step. **These two endpoints are for the `reviewer` role only** (see below) because the list shows ticket text. Each item also shows the `client` that submitted the job (`null` for jobs from before API clients existed).
 
-**Remaining gaps.** A request whose `Idempotency-Key` is lost from Redis before the job is persisted (a flush or a crash before the append-only file was written) can let one duplicate job through. The Python hop does not depend on it: even then the worker's job id keeps one ticket per job. Keys are not scoped per client until M3.5.
+**Remaining gaps.** A request whose `Idempotency-Key` is lost from Redis before the job is persisted (a flush or a crash before the append-only file was written) can let one duplicate job through. The Python hop does not depend on it: even then the worker's job id keeps one ticket per job. 
 
 Tests (Vitest; lint is oxlint): `npm test`, `npm run test:e2e` and `npm run lint` inside `gateway/`. Tests that need a real Redis (including the worker retry tests, which take about 30 seconds because they use the real backoff) are skipped unless `REDIS_TEST_URL` is set, for example:
 
@@ -482,7 +525,7 @@ This is a working prototype, not a finished product.
 - **Human review works through the API, with gaps.** Flagged tickets pause, and `POST /tickets/{id}/review` approves, edits or rejects them. There is no reviewer interface, no reviewer identity is recorded, there is one shared API key, and edits are not captured as feedback. Reading tickets (`GET /tickets...`) needs no key. If the app fails after the paused run has been resumed but before the decision is saved, the run has finished while the row still says `pending_review`, and a retry gets a `409`.
 - **A bad raw resume value strands a ticket.** Always resume through `resume_review()`, which takes a validated `ReviewDecision`. Resuming the graph by hand with an invalid value raises an error, and LangGraph then replays that same bad value on every later resume, so the ticket can no longer be reviewed.
 - **Migration `0002` is applied to a database the next time the app starts against it**, because migrations run at startup. It adds the ticket reference, the review columns and the `approved`, `edited` and `rejected` statuses.
-- **No authentication except on the review endpoint, and no request limits.** The other endpoints are open, and each ticket costs up to three Claude calls and one embedding call.
+- **Authentication and limits are on the gateway only.** The gateway needs an API key and limits each client, but the Python service on port 8000 is still open to anyone who can reach it, which with the port bound to `127.0.0.1` means anyone on the machine running compose (M3.5b closes that), and the review endpoint there still uses its own shared `X-API-Key`. Each ticket costs up to three Claude calls and one embedding call.
 - **Prompt injection is only partly covered.** Ticket text goes into the prompts. The KB grader also reports `injection_suspected`, and a suspected ticket is flagged for a human. But that check only runs on tickets that reach the grader, meaning tickets with at least one candidate article; a ticket with no candidate article, or one the grader call failed on, is not checked. A check on every ticket at intake is future work. The grader is itself an LLM reading the ticket, and its detection has not been measured.
 - **Long replies are cut off, and flagged.** Every Claude call is capped at `LLM_MAX_TOKENS` (700, about 500 words). A draft that runs longer stops mid-sentence. The app detects this (Claude's stop reason is `max_tokens`) and flags the ticket for review with the reason "Draft reply was cut off at the token limit.", but the cut-off text is still returned as `suggested_reply`. If the classifier or critic is cut off, the request fails with a `500`. How often cut-offs happen has not been measured yet, so the cap itself is untuned.
 - **A failed save loses the response, unless the request carried a `ticket_id`.** If the database goes down after the work is done, the client gets a 503. Without a `ticket_id` the triage has to be paid for again on retry, and for a flagged ticket the graph has already paused, so a paused thread exists with no ticket row and nothing can find it. With a `ticket_id` (the gateway always sends one) the retry rebuilds the answer from the saved run and saves the row, with no new model calls.

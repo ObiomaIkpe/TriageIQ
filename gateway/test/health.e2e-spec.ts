@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types.js';
 import { vi } from 'vitest';
+import { stubAuthEnv } from './auth-helpers.js';
 import { FETCH, READY_TIMEOUT_MS } from '../src/health/health.constants.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 
@@ -38,6 +39,7 @@ describe('health endpoints (e2e)', () => {
     vi.stubEnv('PORT', '3000');
     vi.stubEnv('REDIS_URL', 'redis://localhost:6379');
     vi.stubEnv('TRIAGE_SERVICE_URL', 'http://localhost:8000');
+    stubAuthEnv(); // the health routes are public: these requests carry no key
   });
 
   afterEach(async () => {

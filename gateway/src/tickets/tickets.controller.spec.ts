@@ -7,6 +7,7 @@ import { IdempotencyService } from '../idempotency/idempotency.service.js';
 import { INTAKE_UNAVAILABLE, TicketsController } from './tickets.controller.js';
 
 const TIMEOUT_MS = 40;
+const ALICE = { name: 'alice', role: 'submitter' } as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function setup(queue: FakeQueue) {
@@ -31,7 +32,7 @@ describe('TicketsController.create', () => {
     const queue = new FakeQueue();
     const { controller, setHeader, response } = setup(queue);
 
-    const result = await controller.create({ subject: ' Hi ', body: 'Help', customer_id: 'c1' }, response);
+    const result = await controller.create({ subject: ' Hi ', body: 'Help', customer_id: 'c1' }, response, undefined, ALICE);
 
     expect(result).toEqual({
       job_id: expect.stringMatching(UUID),
@@ -46,7 +47,7 @@ describe('TicketsController.create', () => {
     const { controller, response } = setup(queue);
 
     const before = Date.now();
-    const result = await controller.create({ subject: ' Hi ', body: 'Help', customer_id: 'c1' }, response);
+    const result = await controller.create({ subject: ' Hi ', body: 'Help', customer_id: 'c1' }, response, undefined, ALICE);
 
     expect(queue.added).toHaveLength(1);
     const [added] = queue.added;
@@ -56,6 +57,7 @@ describe('TicketsController.create', () => {
       subject: 'Hi',
       body: 'Help',
       customer_id: 'c1',
+      client: 'alice',
       received_at: expect.any(String),
     });
     const receivedAt = new Date(added.data.received_at).getTime();
@@ -66,8 +68,8 @@ describe('TicketsController.create', () => {
 
   it('gives every ticket its own job id', async () => {
     const { controller, response } = setup(new FakeQueue());
-    const a = await controller.create({ subject: 'a', body: 'b' }, response);
-    const b = await controller.create({ subject: 'a', body: 'b' }, response);
+    const a = await controller.create({ subject: 'a', body: 'b' }, response, undefined, ALICE);
+    const b = await controller.create({ subject: 'a', body: 'b' }, response, undefined, ALICE);
     expect(a.job_id).not.toBe(b.job_id);
   });
 
@@ -75,7 +77,7 @@ describe('TicketsController.create', () => {
     const queue = new FakeQueue();
     const { controller, response } = setup(queue);
 
-    const error = await failure(controller.create({ subject: '', body: 'ok' }, response));
+    const error = await failure(controller.create({ subject: '', body: 'ok' }, response, undefined, ALICE));
 
     expect(error.getStatus()).toBe(400);
     expect(error.getResponse()).toEqual({
@@ -90,7 +92,7 @@ describe('TicketsController.create', () => {
     queue.mode = 'fail';
     const { controller, setHeader, response } = setup(queue);
 
-    const error = await failure(controller.create({ subject: 'a', body: 'b' }, response));
+    const error = await failure(controller.create({ subject: 'a', body: 'b' }, response, undefined, ALICE));
 
     expect(error.getStatus()).toBe(503);
     expect(error.getResponse()).toEqual({ detail: INTAKE_UNAVAILABLE });
@@ -104,7 +106,7 @@ describe('TicketsController.create', () => {
     const { controller, setHeader, response } = setup(queue);
 
     const started = Date.now();
-    const error = await failure(controller.create({ subject: 'a', body: 'b' }, response));
+    const error = await failure(controller.create({ subject: 'a', body: 'b' }, response, undefined, ALICE));
     const took = Date.now() - started;
 
     expect(error.getStatus()).toBe(503);
@@ -119,7 +121,7 @@ describe('TicketsController.create', () => {
     queue.mode = 'not-ready';
     const { controller, setHeader, response } = setup(queue);
 
-    const error = await failure(controller.create({ subject: 'a', body: 'b' }, response));
+    const error = await failure(controller.create({ subject: 'a', body: 'b' }, response, undefined, ALICE));
     expect(error.getStatus()).toBe(503);
 
     // Redis comes back after the client was already told 503.
@@ -135,7 +137,7 @@ describe('TicketsController.create', () => {
     queue.mode = 'not-ready';
     const { controller, response } = setup(queue);
 
-    const pending = controller.create({ subject: 'a', body: 'b' }, response);
+    const pending = controller.create({ subject: 'a', body: 'b' }, response, undefined, ALICE);
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(queue.added).toHaveLength(0); // still waiting, nothing sent
 

@@ -1,5 +1,6 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { ErrorRequestHandler } from 'express';
+import helmet from 'helmet';
 
 /** JSON bodies larger than this get a 413 before they are parsed. */
 export const BODY_LIMIT = '100kb';
@@ -33,6 +34,9 @@ export const bodyErrorHandler: ErrorRequestHandler = (error, _request, response,
  * size limit, followed by the handler for its errors (order matters).
  */
 export function configureApp(app: NestExpressApplication): void {
+  // First, so every response (errors and 401s included) carries the security headers.
+  // helmet's defaults also remove X-Powered-By.
+  app.use(helmet());
   app.useBodyParser('json', { limit: BODY_LIMIT });
   app.use(bodyErrorHandler);
 }

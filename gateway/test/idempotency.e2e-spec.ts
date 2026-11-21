@@ -1,8 +1,8 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import request from 'supertest';
 import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { startAppWithFakeQueue, stubEnv } from './app-helpers.js';
 import { FakeQueue } from './fake-queue.js';
+import { api } from './auth-helpers.js';
 
 /** POST /tickets with an Idempotency-Key through the real HTTP stack, with a fake queue. */
 const TICKET = { subject: 'Cannot log in', body: 'I forgot my password.', customer_id: 'c1' };
@@ -26,7 +26,7 @@ describe('POST /tickets with an Idempotency-Key header (fake queue)', () => {
   async function start() {
     queue = new FakeQueue();
     app = await startAppWithFakeQueue(queue);
-    return request(app.getHttpServer());
+    return api(app);
   }
 
   it('first request: 202, no replay header. Same key and ticket again: same body, same Location, replay header', async () => {
@@ -119,7 +119,7 @@ describe('POST /tickets with an Idempotency-Key header (fake queue)', () => {
     queue.addError = new Error('connect ECONNREFUSED 10.9.9.9:6379');
     const failed = await http.post('/tickets').set('Idempotency-Key', 'k').send(TICKET).expect(503);
     expect(failed.body).toEqual({ detail: 'Ticket intake is temporarily unavailable; please retry' });
-    expect(queue.kv.entries.has('idem:k')).toBe(false);
+    expect(queue.kv.entries.has('idem:ops:k')).toBe(false);
 
     queue.addError = undefined;
     const retry = await http.post('/tickets').set('Idempotency-Key', 'k').send(TICKET).expect(202);

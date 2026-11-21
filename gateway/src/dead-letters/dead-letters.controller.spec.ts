@@ -49,12 +49,19 @@ describe('DeadLettersController.list', () => {
           subject: 'subject 5',
           body: 'body 5',
           customer_id: 'c5',
+          client: null, // a job from before API clients existed
         },
       ],
       total: 1,
       limit: 20,
       offset: 0,
     });
+  });
+
+  it('shows the client that submitted the job', async () => {
+    const queue = new FakeQueue();
+    queue.jobs.set(ID, failedJob(1, { data: { subject: 's', body: 'b', received_at: 'r', client: 'alice' } }));
+    expect((await setup(queue).list({})).items[0].client).toBe('alice');
   });
 
   it('customer_id is null when the ticket had none; reason falls back when empty', async () => {
