@@ -349,3 +349,25 @@ Remaining gaps:
 - **Python's 422 body is passed through,** and FastAPI's validation errors can echo the submitted input. The gateway validates first, so this should be unreachable.
 - **`Retry-After` from Python's 503 is not passed on.**
 
+## M3 in one page: the gateway, end to end (M3.1 to M3.6)
+
+What M3 added, in the order it was built:
+
+- **M3.1 foundation:** a NestJS 12 service (`gateway/`, Node 24, Vitest, oxlint) with validated config, Redis, `/health` and `/ready`.
+- **M3.2 intake:** `POST /tickets` validates a ticket and queues it on BullMQ; `GET /jobs/:id` reports its state. 202 means "stored".
+- **M3.3 worker:** it sends each job to Python with a retry policy (503, 429, 502, 504 and network failures retry; other 4xx and 500 do not), custom backoff honouring `Retry-After`, and a shutdown that waits for running jobs.
+- **M3.4a dead letters:** 8 attempts (about 15 minutes), failed jobs kept 30 days and listed and retried by reviewers, with the same job id.
+- **M3.4b idempotency:** `Idempotency-Key` on the gateway (client to gateway), and the job id as `ticket_id` on Python (gateway to Python), so a ticket is queued and saved once however often anything is retried.
+- **M3.5a client auth:** hashed API keys, `submitter` and `reviewer` roles, job ownership (404, not 403), per-client idempotency keys and rate limits, helmet.
+- **M3.5b only way in:** reviewer routes that forward to Python with the gateway's own review key, and Python's port no longer published (`docker-compose.debug.yml` brings it back for debugging).
+- **M3.6 smoke test and docs:** `scripts/e2e_smoke.py` (standard library only) drives the running system through the gateway in nine steps, and the README gained the whole-system diagram, "Life of a ticket", a one-page run guide, a security table, troubleshooting and known gaps.
+
+Decisions that shaped the smoke test:
+
+- **It goes through the gateway only,** with real keys, the way a client would; it imports nothing from `app/` or `gateway/`. It cannot be a unit test of the system, so its own tests (`tests/test_e2e_smoke.py`) run it against an in-process fake gateway: they check the script's logic (steps, dependants skipped on failure, exit codes, no key ever printed), not the real system.
+- **It never asserts model wording.** The answerable ticket is checked only for a finished job with a ticket id and a reference in the right format. The one model-dependent check is the vague ticket ("Help" / "It does not work."): category `other` always goes to a human, so it must be flagged. If the classifier ever stopped returning `other` for that text, step 7 would fail even though nothing is broken; that is the only brittle assumption, and it is visible in the report.
+- **Test tickets are marked** (`[e2e <run id>]`, customer `e2e-smoke`) and are not cleaned up: there is no delete endpoint. They are real rows in the real database.
+- **It was written but not run against a real stack by the author** (the owner runs it, since it spends model calls). Until it has been run once, treat the real-system behaviour it asserts as unverified.
+
+What is still open after M3 (also in the README's "Known gaps"): no reviewer identity until login (M4); no per-IP limit (needed before a public form); one shared review key; a single Redis; a fixed-window rate limit that allows a burst at a window edge; registry changes need a restart; anything on the compose network can call Python without a key.
+
