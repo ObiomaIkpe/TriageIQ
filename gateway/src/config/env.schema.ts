@@ -12,6 +12,8 @@ export interface AppConfig {
   /** The API clients allowed to call the gateway. Only key hashes, never keys. */
   GATEWAY_CLIENTS: RegisteredClient[];
   RATE_LIMIT_PER_MINUTE: number;
+  /** Sent to the Python service as X-API-Key on review calls. The same value as its REVIEW_API_KEY. */
+  TRIAGE_REVIEW_API_KEY: string;
 }
 
 interface Setting {
@@ -60,6 +62,10 @@ const SETTINGS: Record<keyof AppConfig, Setting> = {
     schema: z.coerce.number().int().min(1).max(10000),
     hint: 'must be a whole number from 1 to 10000',
     default: 60,
+  },
+  TRIAGE_REVIEW_API_KEY: {
+    schema: z.string().min(1),
+    hint: 'must not be empty',
   },
 };
 

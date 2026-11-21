@@ -223,12 +223,12 @@ The full, exhaustive roadmap lives in `ROADMAP.md` (sections A-L, with a suggest
 
 - **Same repo.** The gateway lives in `gateway/` next to the Python service, not in its own repository. One `docker compose` file runs both, and one commit can change both sides of a contract.
 - **ioredis.** BullMQ (the planned queue in M3.2) is built on ioredis, so the gateway uses the same client library from the start instead of adding a second Redis client later. One client is provided through Nest DI. It connects in the background and retries, so the app boots with Redis down; its error handler logs only an error code, never the URL.
-- **Python stays reachable.** Port 8000 is still published, now bound to `127.0.0.1` only, so only local users (not other machines) can call the Python service directly, without a key. That only changes at M3.5, once the gateway has auth and rate limits. Until then the gateway adds no protection.
+- **Python stays reachable (closed in M3.5b).** Port 8000 was published (later bound to `127.0.0.1`); M3.5b removed the mapping, so only the gateway can call the Python service. That only changes at M3.5, once the gateway has auth and rate limits. Until then the gateway adds no protection.
 - **Config.** `@nestjs/config` with a zod schema. The error message is built from the setting NAME and a fixed hint, never the value, so a password in `REDIS_URL` cannot reach a log. A first version used `new URL()` inside a zod refine and leaked the input in a raw TypeError; a test caught it, and the parse is now wrapped so no raw error can escape.
 - **Tooling is the Nest 12 scaffold's:** Vitest, oxlint, ESM, TypeScript 6 (TypeScript 7 exists, but the scaffold pins 6, and ts-jest, the usual Jest TypeScript transformer, only supports versions below 7; I did not test Vitest or oxlint on 7). The scaffold's `@nestjs/observe`, `@nestjs/mau`, `nest deploy` script and generated agent docs were removed on purpose.
 - **Node 24.** The Dockerfile uses `node:24-slim`, and the tests were run inside a `node:24` container so the tested Node matches the runtime Node.
 - **/ready shape.** A failing check is `"down"` in `checks`, and a sibling `reasons` object holds the short reason. The top-level status is `not_ready` (the Python service uses the same word). Only the status code of the Python `/ready` is used.
-- **Redis is published on 6380 with no password**, the same way Postgres is published on 5433. Every published port in the compose file is now bound to `127.0.0.1` (Postgres 5433, Redis 6380, the Python app 8000, the gateway 3000), so none is reachable from other machines.
+- **Redis is published on 6380 with no password**, the same way Postgres is published on 5433. Every published port in the compose file is bound to `127.0.0.1` (Postgres 5433, Redis 6380, the gateway 3000), so none is reachable from other machines. The Python app's port is not published at all since M3.5b.
 
 ## Ticket intake on the gateway (M3.2)
 
@@ -268,7 +268,7 @@ What happens to a running job when the container stops (measured with a 20 s fak
 - **BullMQ's retry does NOT reset `attemptsMade` by default.** Without options a job that used all its attempts would fail again after one more try. The gateway passes `resetAttemptsMade: true` and `resetAttemptsStarted: true`. Mutation-tested: with both `false`, the retry integration tests fail (a retried job got 1 more try instead of a full set). A retried job gets the attempts it was created with (`opts.attempts`): 8 for jobs created from M3.4a on, 5 for older ones, 1 for jobs created before attempts existed.
 - **8 attempts** wait 10, 20, 40, 80, 160, 300, 300 s: 910 s, about 15 minutes. The formula and cap are unchanged. The first backoff step travels with the job (`backoff: { type: 'custom', delay: 10000 }`; the strategy reads `job.opts.backoff.delay`, falling back to 10 s for older jobs). Tests replace the retry policy through the `TRIAGE_RETRY_POLICY` injection token (3 attempts, 50 ms); it is deliberately not an environment setting.
 - **30-day retention** for failed jobs. Jobs already in Redis keep the options they were added with (7 days, 5 attempts).
-- **No authentication yet.** `GET /dead-letters` and `POST /dead-letters/:id/retry` have no login until M3.5 and the list returns ticket subject, body and customer id. (M3.5a has since added keys and roles, see below.) The gateway port is published on `127.0.0.1` only (`127.0.0.1:3000:3000`), as is the Python app's (`127.0.0.1:8000:8000`).
+- **No authentication yet.** `GET /dead-letters` and `POST /dead-letters/:id/retry` have no login until M3.5 and the list returns ticket subject, body and customer id. (M3.5a has since added keys and roles, see below.) The gateway port is published on `127.0.0.1` only (`127.0.0.1:3000:3000`); the Python app's port is not published (M3.5b).
 - **Limits:** `offset` pagination over a set that changes (a job failing or being retried between two pages can shift items, so a page may skip or repeat one). The retry is not rate limited, and nothing stops someone retrying a job whose cause is not fixed (it just fails again, after another 15 minutes of attempts and paid calls). A retry does not duplicate the ticket in Python if the first attempt had been saved there: that is M3.4b.
 
 ## Idempotency end to end (M3.4b)
@@ -323,10 +323,29 @@ Remaining gaps:
 - **No key rotation tooling** beyond replacing the entry (and recreating the gateway); there is no overlap period where two keys work for one client unless you register two clients.
 - **Registry changes need a restart** (read once at startup).
 - **Reviewer identity is not passed to Python.** The Python review endpoint still takes one shared `X-API-Key`, and the gateway does not call it yet, so reviews are not attributed to a person. M3.5b.
-- **Python is still directly reachable** on port 8000 and unauthenticated for triage and reads, but only from the machine running compose (the port is bound to `127.0.0.1`, as is the gateway's 3000). M3.5b.
+- **Python reachability** was closed in M3.5b (see below): no published port, so nothing outside the compose network reaches it.
 - **Fixed-window burst** of up to twice the limit at a window edge.
 - **Key hashes appear in the output of `docker compose config`** and in the container's environment (`docker inspect`), since the registry is an environment variable. They are hashes, not keys.
 - **A leaked key is valid until its entry is removed;** there is no expiry.
 - **Reviewers see all ticket text** through `GET /dead-letters` and `GET /jobs/:id`.
 - **Roles are checked per route by a decorator.** A new route without `@Roles` is open to every authenticated client, including submitters.
+
+## The gateway is the only way in (M3.5b)
+
+- **Python's port is no longer published.** The `app` service has no `ports`; the gateway reaches it at `app:8000` on the compose network. `docker-compose.debug.yml` adds `127.0.0.1:8000:8000` back for local work (`docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d`); compose appends the list, so the base file stays closed. Other containers on the network (the database, Redis) can still reach `app:8000`, and so could anything else added to that network. Nothing was found that needs the host port: the eval harness runs the graph in-process (`MemorySaver`), the retrieval report uses the database directly, and the Python tests use `TestClient` or fakes. Only README examples assumed `localhost:8000`; they now say they need the debug override.
+- **A fresh request per call, never the client's headers.** `TriageClient` builds the Python request from scratch: its input is a validated path, query and body, so there is no code path that could copy `Authorization`, cookies or `X-Forwarded-For`. The one credential Python receives is `TRIAGE_REVIEW_API_KEY`. It is sent on reads too (Python ignores it there), so a future key check on reads needs no gateway change. `redirect: 'manual'` stops a redirect from carrying the key to another host.
+- **Validate before forwarding.** Ids, references, the list query and the review body are checked in the gateway (same rules as Python: `TKT-` references use Python's alphabet; `edit` needs a non-blank reply). Unknown query parameters are dropped and unknown body fields rejected, so Python only ever sees fields the gateway understands. Bad input never reaches Python, so it cannot spend a database call or leak a FastAPI validation error.
+- **502 versus 503.** 502 means the gateway or Python is broken and retrying will not help until someone fixes it: the review key is wrong or unset (Python 401, or its 503 "Review is disabled"), Python crashed (5xx), or it answered something unreadable. 503 means try again later: no connection, a timeout, or Python's own retryable 503 (database or Claude trouble). **Deviation from the task text:** a Python 503 that is not the key check is returned as 503, not 502, because Python marks it as retryable (it sends `Retry-After`); the key-check 503 is told apart by its "Review is disabled" detail, which is an assumption about Python's wording (a test pins it).
+- **Only the five statuses worth showing are passed through** (2xx, 400, 404, 409, 422). Everything else, including redirects and 403/405/429, becomes 502, so an unexpected Python answer never reaches the client.
+- **Timeouts:** 10 s for reads, 30 s for a review (a review resumes the graph and may run the critic's work again). A test-only injection token lets tests shorten them.
+- **`@Res()` instead of a returned value:** Nest overrides a status set on a passthrough response with the route's default (201 for POST), so the controller sends Python's status and body itself.
+- **Reviewer role only** (class-level `@Roles('reviewer')`), because these routes return ticket text and can decide a ticket. They share the `/tickets` prefix with intake in a second controller; the paths do not overlap, and the reference route is declared before `:id`.
+
+Remaining gaps:
+
+- **Review decisions do not record which reviewer made them.** Python sees one shared key. Per-person attribution needs user login (M4).
+- **Anything on the compose network can still call Python without a key** (only reviews need one). A second service added to the network, or a compromised container, reaches it.
+- **One review key for every reviewer client.** Rotating it means changing both `.env` files and recreating the app and the gateway.
+- **Python's 422 body is passed through,** and FastAPI's validation errors can echo the submitted input. The gateway validates first, so this should be unreachable.
+- **`Retry-After` from Python's 503 is not passed on.**
 

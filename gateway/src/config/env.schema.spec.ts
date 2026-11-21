@@ -12,6 +12,7 @@ const VALID = {
   REDIS_URL: 'redis://localhost:6379',
   TRIAGE_SERVICE_URL: 'http://localhost:8000',
   GATEWAY_CLIENTS: JSON.stringify(CLIENTS),
+  TRIAGE_REVIEW_API_KEY: 'a-review-key',
 };
 
 /** A marker that must never show up in an error message. */
@@ -38,6 +39,7 @@ describe('validateEnv', () => {
       TRIAGE_TIMEOUT_MS: 120000,
       GATEWAY_CLIENTS: CLIENTS,
       RATE_LIMIT_PER_MINUTE: 60,
+      TRIAGE_REVIEW_API_KEY: 'a-review-key',
     });
   });
 
@@ -50,7 +52,7 @@ describe('validateEnv', () => {
     expect(config.REDIS_URL).toContain('rediss://');
   });
 
-  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS'])('%s missing -> error names it', (name) => {
+  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY'])('%s missing -> error names it', (name) => {
     const env: Record<string, unknown> = { ...VALID };
     delete env[name];
     const error = failure(env);
@@ -58,7 +60,7 @@ describe('validateEnv', () => {
     expect(error.problems).toHaveLength(1);
   });
 
-  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS'])('%s empty or blank -> counts as missing', (name) => {
+  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY'])('%s empty or blank -> counts as missing', (name) => {
     expect(failure({ ...VALID, [name]: '   ' }).message).toContain(`${name} is missing`);
     expect(failure({ ...VALID, [name]: '' }).message).toContain(`${name} is missing`);
   });
@@ -82,10 +84,17 @@ describe('validateEnv', () => {
 
   it('names every bad setting at once', () => {
     const error = failure({});
-    for (const name of ['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS']) {
+    for (const name of ['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS', 'TRIAGE_REVIEW_API_KEY']) {
       expect(error.message).toContain(name);
     }
-    expect(error.problems).toHaveLength(4);
+    expect(error.problems).toHaveLength(5);
+  });
+
+  it('a missing or blank TRIAGE_REVIEW_API_KEY stops startup, naming the setting and never a value', () => {
+    const { TRIAGE_REVIEW_API_KEY: _omitted, ...without } = VALID;
+    expect(failure(without).message).toContain('TRIAGE_REVIEW_API_KEY is missing');
+    expect(failure({ ...without, TRIAGE_REVIEW_API_KEY: '   ' }).message).toContain('TRIAGE_REVIEW_API_KEY is missing');
+    expect(validateEnv(VALID).TRIAGE_REVIEW_API_KEY).toBe('a-review-key');
   });
 
   it('never puts a setting value in the error', () => {
@@ -115,6 +124,7 @@ describe('validateEnv', () => {
       'PORT',
       'RATE_LIMIT_PER_MINUTE',
       'REDIS_URL',
+      'TRIAGE_REVIEW_API_KEY',
       'TRIAGE_SERVICE_URL',
       'TRIAGE_TIMEOUT_MS',
       'WORKER_CONCURRENCY',
@@ -197,6 +207,7 @@ describe('startup with a bad environment', () => {
     vi.stubEnv('REDIS_URL', 'redis://localhost:6379');
     vi.stubEnv('TRIAGE_SERVICE_URL', 'http://localhost:8000');
     vi.stubEnv('GATEWAY_CLIENTS', JSON.stringify(CLIENTS));
+    vi.stubEnv('TRIAGE_REVIEW_API_KEY', 'a-review-key');
 
     await expect(
       ConfigModule.forRoot({ ...configModuleOptions, ignoreEnvFile: true }),
