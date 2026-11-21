@@ -1,9 +1,10 @@
 import { HttpException } from '@nestjs/common';
+import { clientPrincipal } from '../auth/principal.js';
 import { FakeJob, FakeQueue } from '../../test/fake-queue.js';
 import { TriageQueueService, type QueueLike } from '../queue/triage-queue.service.js';
 import { JobsController, STATUS_UNAVAILABLE } from './jobs.controller.js';
 
-const REVIEWER = { name: 'ops', role: 'reviewer' } as const;
+const REVIEWER = clientPrincipal('ops', 'reviewer');
 const ID = '3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34';
 const DATA = { subject: 's', body: 'b', received_at: '2026-11-20T10:00:00.000Z' };
 
@@ -149,8 +150,8 @@ describe('JobsController.get', () => {
 });
 
 describe('JobsController.get: who may see which job', () => {
-  const ALICE = { name: 'alice', role: 'submitter' } as const;
-  const BOB = { name: 'bob', role: 'submitter' } as const;
+  const ALICE = clientPrincipal('alice', 'submitter');
+  const BOB = clientPrincipal('bob', 'submitter');
   const OTHER_ID = '9a1b2c3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d';
 
   function jobs() {

@@ -8,5 +8,7 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.spec.ts'],
+    // Argon2 tests do real hashing (about 40 ms each, several threads) and run alongside many other files.
+    testTimeout: 30_000,
   },
 });

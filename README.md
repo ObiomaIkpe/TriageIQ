@@ -242,13 +242,15 @@ docker compose exec app python -m app.kb.ingest     # seeds 5 sample FAQ article
 
 On the Voyage free tier (3 requests per minute) seeding takes about a minute; the built-in rate limiter waits as needed.
 
-**Smoke test.** `scripts/e2e_smoke.py` checks the whole system through the gateway in nine steps (health, a refused request, submit and idempotent replay, the job finishing, ownership, reviewer reads, a flagged ticket reviewed once and then refused, and 403s for a submitter). It uses only the standard library. **It creates real tickets and spends model calls**, so run it deliberately. Its test tickets have a subject starting `[e2e <run id>]` and `customer_id` `e2e-smoke`. Enter the keys without echoing them:
+**Smoke test.** `scripts/e2e_smoke.py` checks the whole system through the gateway in nine steps (health, a refused request, submit and idempotent replay, the job finishing, ownership, reviewer reads, a flagged ticket reviewed once and then refused, and 403s for a submitter), plus an **optional tenth step** that logs a reviewer in with a session cookie, uses it and logs out (it needs the reviewer's email and password, and `E2E_ORIGIN` if your `ALLOWED_ORIGINS` is not `http://localhost:5173`). It uses only the standard library. **It creates real tickets and spends model calls**, so run it deliberately. Its test tickets have a subject starting `[e2e <run id>]` and `customer_id` `e2e-smoke`. Enter the keys without echoing them:
 
 ```bash
 read -rsp "submitter key: " E2E_SUBMITTER_KEY; echo
 read -rsp "reviewer key: "  E2E_REVIEWER_KEY;  echo
 read -rsp "other submitter key (optional, Enter to skip): " E2E_OTHER_SUBMITTER_KEY; echo
-export E2E_SUBMITTER_KEY E2E_REVIEWER_KEY E2E_OTHER_SUBMITTER_KEY
+read -rp  "reviewer email for the login step (optional, Enter to skip): " E2E_REVIEWER_EMAIL
+read -rsp "reviewer password (optional): " E2E_REVIEWER_PASSWORD; echo
+export E2E_SUBMITTER_KEY E2E_REVIEWER_KEY E2E_OTHER_SUBMITTER_KEY E2E_REVIEWER_EMAIL E2E_REVIEWER_PASSWORD
 python3 scripts/e2e_smoke.py        # E2E_BASE_URL defaults to http://localhost:3000
 ```
 
@@ -382,6 +384,14 @@ npm run start:dev
 | `RATE_LIMIT_PER_MINUTE` | `60` | `gateway/.env` | Requests each API client may make per minute (1 to 10000) |
 | `GATEWAY_CLIENTS` | none (required) | `gateway/.env` | JSON array of `{name, role, key_sha256}`: the API clients (see "API keys, roles and rate limits") |
 | `GATEWAY_DATABASE_URL` | none (required) | `gateway/.env` | The gateway's own database (reviewer accounts): `postgresql://gateway:<password>@db:5432/gateway`. Compose's host is `db:5432`; outside compose use `localhost:5433`. The password is `GATEWAY_DB_PASSWORD` from the root `.env`. Never logged; a bad value is reported by setting name only |
+| `SESSION_IDLE_MINUTES` | `60` | `gateway/.env` | A reviewer session ends after this many minutes without use (1 to 1440) |
+| `SESSION_ABSOLUTE_HOURS` | `8` | `gateway/.env` | A session ends this many hours after login, however busy it is (1 to 168). Also the cookie's `Max-Age` |
+| `COOKIE_SECURE` | `true` | `gateway/.env` | Whether the session cookie has the `Secure` attribute. **Leave it `true`**; set `false` only for plain-`http` local development, because browsers refuse to store a `Secure` cookie from an `http://` page (M6 adds HTTPS, where it must be `true`). Anything but `true` or `false` is refused, so a typo cannot switch it off |
+| `ALLOWED_ORIGINS` | empty | `gateway/.env` | Comma-separated browser origins (such as `http://localhost:5173`, no path) allowed to log in and to make cookie-authenticated writes. **Empty means none**, so login is refused until you set it. No CORS is added: the UI is served from the same origin as the gateway (M4.3) |
+| `LOGIN_MAX_FAILURES_PER_IP` | `20` | `gateway/.env` | Failed logins one IP address may make per window before it is refused (1 to 100000) |
+| `LOGIN_MAX_FAILURES_PER_EMAIL` | `5` | `gateway/.env` | Failed logins per email per window (1 to 1000) |
+| `LOGIN_WINDOW_MINUTES` | `15` | `gateway/.env` | The window both failure limits count in (1 to 1440) |
+| `TRUST_PROXY` | `false` | `gateway/.env` | Take the client IP from `X-Forwarded-For` (Express "trust proxy"). Only `true` behind a proxy you control: otherwise a caller could choose its own IP and dodge the per-IP limit |
 | `TRIAGE_REVIEW_API_KEY` | none (required) | `gateway/.env` | The same value as the Python app's `REVIEW_API_KEY` (root `.env`). Sent as `X-API-Key` when the gateway forwards a review decision. An empty value counts as missing |
 
 Endpoints:
@@ -399,7 +409,7 @@ Reasons are short fixed phrases (`timeout`, `connection refused`, `host not foun
 
 ### Reviewer accounts: the gateway database and the reviewer CLI (M4.1a)
 
-Human reviewers will log in to the gateway (M4.1b onward). This step builds the foundation only: **no login endpoint, no sessions and no UI yet.** Machine clients still use API keys exactly as before.
+Human reviewers log in to the gateway with an email and password (see "Reviewer login" below). Accounts are created with this CLI only: there is no sign-up endpoint, and there is no UI yet. Machine clients still use API keys exactly as before.
 
 **A separate database.** The existing Postgres server now holds a second database, `gateway`, owned by its own role, `gateway`. The role has no other powers (not a superuser, cannot create databases or roles) and can connect to no other database; no one but the superuser can connect to `gateway`. The Python app's role is the server's superuser (it is the image's bootstrap user), so it *can* technically reach `gateway`; the isolation is that the gateway's role cannot reach Python's data, and Python never has `GATEWAY_DATABASE_URL`.
 
@@ -423,7 +433,44 @@ docker compose exec gateway node dist/scripts/reviewers.js list
 # locally, inside gateway/ with GATEWAY_DATABASE_URL set:  npm run reviewers -- list
 ```
 
-Passwords are **never** command-line arguments (they would land in shell history; `--password` is refused). `create` and `set-password` ask for the password with no echo, twice to confirm; when input is not a terminal (a pipe, a script) they read one line from it instead: `echo "$PASSWORD" | docker compose exec -T gateway node dist/scripts/reviewers.js create ...`. A duplicate or unknown email is a clear error with exit code 1; `disable` and `enable` are idempotent; `list` shows email, name, role, disabled yes/no and creation time, never a hash. `set-password` stamps `password_changed_at`, and `disable` sets `disabled_at`; M4.1b will use both to end old sessions.
+Passwords are **never** command-line arguments (they would land in shell history; `--password` is refused). `create` and `set-password` ask for the password with no echo, twice to confirm; when input is not a terminal (a pipe, a script) they read one line from it instead: `echo "$PASSWORD" | docker compose exec -T gateway node dist/scripts/reviewers.js create ...`. A duplicate or unknown email is a clear error with exit code 1; `disable` and `enable` are idempotent; `list` shows email, name, role, disabled yes/no and creation time, never a hash. `set-password` stamps `password_changed_at` and `disable` sets `disabled_at`; both also **end all of that reviewer's sessions** in Redis (the command prints how many; see "Reviewer login").
+
+### Reviewer login: session cookies (M4.1b)
+
+A reviewer logs in with the email and password from the CLI and then uses the reviewer routes with a **session cookie** instead of an API key. Machine clients are unchanged. Required settings: `GATEWAY_DATABASE_URL` (accounts), Redis (sessions) and `ALLOWED_ORIGINS` (see the settings table). **For plain-`http` local development also set `COOKIE_SECURE=false` in `gateway/.env`**; otherwise the browser (and `curl`'s cookie jar) will not keep the cookie. Production must keep it `true`.
+
+```bash
+# 1. Log in. -c saves the cookie jar; the Origin header is required (it must be one of ALLOWED_ORIGINS).
+curl -i -c jar.txt -X POST localhost:3000/auth/login \
+  -H 'Content-Type: application/json' -H 'Origin: http://localhost:5173' \
+  -d '{"email":"ada@example.com","password":"..."}'
+# 200 {"user":{"id","email","display_name","role"},"expires_at":"..."}  and  Set-Cookie: tiq_session=...; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800
+
+# 2. Who am I? (-b sends the cookie jar)
+curl -b jar.txt localhost:3000/auth/me
+# 3. Use the reviewer routes. Reads need nothing more; writes also need the Origin header.
+curl -b jar.txt "localhost:3000/tickets?status=pending_review"
+curl -b jar.txt -X POST -H 'Origin: http://localhost:5173' -H 'Content-Type: application/json' \
+  -d '{"action":"approve"}' localhost:3000/tickets/<ticket_id>/review
+# 4. Log out (idempotent: 204 every time, and the cookie is cleared)
+curl -b jar.txt -c jar.txt -X POST -H 'Origin: http://localhost:5173' localhost:3000/auth/logout -i
+```
+
+| Request | Answer |
+|---|---|
+| `POST /auth/login` with the right email and password | `200` and the cookie. A **new** session every time; an old session cookie sent with the login is ended |
+| wrong password, unknown email, or a disabled account | `401 {"message":"Invalid email or password"}`, identical for all three (and all three do the same password check, so timing does not tell them apart) |
+| too many failed logins for the email or the IP | `429 {"message":"Too many failed attempts. Try again later."}` with `Retry-After`. Checked **before** any password hashing |
+| malformed login body | `400 {"message":"Invalid login request"}` (email at most 254 characters, password at most 128, no other fields) |
+| `POST /auth/login` or `/auth/logout`, or any cookie-authenticated write, with a missing or non-matching `Origin` | `403` |
+| `GET /auth/me` with a valid session | `200 {"user":{...},"expires_at":"..."}`; otherwise `401` (an API key is not a session, so it also gets `401`) |
+| `POST /auth/logout` | `204`, always |
+
+**What a session can do:** exactly what a `reviewer` API client can: everything a submitter can, plus the dead-letter routes, the ticket read and review routes, and any job. Jobs a user submits are owned by that user (`user:<id>`); jobs submitted by clients keep their client name as owner, so nothing existing changes. If a request carries **both** an `Authorization: Bearer` key and a cookie, the key alone is used and the cookie is ignored. API-key requests never need an `Origin`.
+
+**How sessions work.** The cookie holds a random 32-byte token. Redis stores the session under the **SHA-256 of the token** (`session:<hash>`), plus an index of each user's sessions (`user_sessions:<user id>`), so a copy of Redis holds nothing usable as a cookie. A session ends after `SESSION_IDLE_MINUTES` without use or `SESSION_ABSOLUTE_HOURS` after login, whichever comes first; use slides the idle timer but writes to Redis at most once a minute. **Every request also loads the user from Postgres:** if the account is gone or disabled, or its password changed after the session began, the session is refused and deleted. That per-request check is the guarantee; the CLI revoking sessions on `disable` and `set-password` is only clean-up, and a Redis outage at that moment cannot leave a disabled reviewer logged in. If Redis or Postgres cannot be reached the request fails closed with `503`.
+
+**Failed-login limits.** Only failures count, per IP (`LOGIN_MAX_FAILURES_PER_IP`) and per email (`LOGIN_MAX_FAILURES_PER_EMAIL`, stored under the SHA-256 of the email), in a fixed window of `LOGIN_WINDOW_MINUTES`; a successful login clears that email's counter. Login events are logged (`login outcome=failure reason=wrong_password user=<id> ip=...`) but **never the submitted email, the password, the cookie or the token**, because people sometimes type their password into the email box.
 
 ### API keys, roles and rate limits
 
@@ -672,6 +719,7 @@ docker stop gw-redis-test
 | The review key | `REVIEW_API_KEY` is Python's; the gateway holds the same value as `TRIAGE_REVIEW_API_KEY` and adds it itself, so no client ever sees or needs it. A wrong gateway key shows up as a `502`, not as a leak |
 | Network exposure | Every published port (gateway 3000, Postgres 5433, Redis 6380) is bound to `127.0.0.1`. Put a TLS-terminating proxy in front before exposing the gateway |
 | Secrets | Split per service: the root `.env` (Anthropic, Voyage, the review key) is read only by the Python app; `gateway/.env` (the client hashes, the gateway's review key) only by the gateway. Both are git-ignored and excluded from the images. Error messages name a setting, never its value |
+| Reviewer sessions | A random 256-bit token in an `HttpOnly`, `SameSite=Strict`, `Secure` cookie; stored in Redis only as its SHA-256; a new token at every login (no session fixation); idle and absolute lifetimes; the user row is re-checked on every request, so a disabled reviewer or a changed password ends the session immediately. Cookie-authenticated writes also need an `Origin` that matches `ALLOWED_ORIGINS` (on top of `SameSite`). Failed logins are limited per IP and per email, before any hashing |
 | Reviewer passwords | Hashed with Argon2id (parameters stored inside each hash, so they can be raised later and old hashes still verify); never stored or logged in clear; never a command-line argument; the CLI never prints a hash. The accounts live in the gateway's own database, whose role cannot reach Python's data |
 | Ticket text | Not written to logs: the worker, passthrough and dead-letter log lines carry only ids, counts, statuses and short fixed phrases |
 
@@ -683,19 +731,24 @@ docker stop gw-redis-test
 - **Every request is a 401.** The key you send is empty, or its hash is not in `GATEWAY_CLIENTS`. Check that the shell variable is set (`echo ${#KEY}` should print 47), that you pasted the entry made for that key, and that you recreated the gateway after editing `gateway/.env` (`docker compose up -d --force-recreate gateway`).
 - **Reviews answer `502 Triage service rejected the gateway`.** `TRIAGE_REVIEW_API_KEY` in `gateway/.env` differs from `REVIEW_API_KEY` in the root `.env`, or the latter is empty. Make them equal and recreate both services.
 - **`gateway-migrate` fails, so the gateway never starts.** Run `docker compose logs gateway-migrate`. `password authentication failed` or `role "gateway" does not exist` means the gateway role is missing or its password differs from `GATEWAY_DATABASE_URL`: on an existing database volume run `scripts/create_gateway_db.sh` (it also resets the password to `GATEWAY_DB_PASSWORD`), and make sure both values are the same. `migration ... was changed after it was applied` means someone edited an applied file: restore it and add a new numbered migration instead. Compose itself refusing to start with `Set GATEWAY_DB_PASSWORD in .env` means that line is missing from the root `.env`.
+- **`POST /auth/login` answers `403`.** The `Origin` header is missing or not in `ALLOWED_ORIGINS`. `ALLOWED_ORIGINS` is empty by default, which refuses every login: set it in `gateway/.env` (for example `http://localhost:5173`) and recreate the gateway. `curl` sends no `Origin` unless you add `-H 'Origin: ...'`.
+- **Login returns 200 but the browser or `curl -b` does not stay logged in.** On plain `http` the browser drops a `Secure` cookie. Set `COOKIE_SECURE=false` in `gateway/.env` for local development only (and recreate the gateway); keep it `true` in production.
+- **A reviewer cannot log in and gets `429`.** Five failed attempts (default) in 15 minutes block that email, and 20 block that IP, even for the right password, until the window ends (`Retry-After` says how long). There is nothing to reset: the counters expire by themselves in Redis, so wait for `Retry-After`.
 - **`/ready` says `postgres: down`.** The gateway cannot reach its database (the reason names the cause: `connection refused`, `authentication failed`, `database not found`). `/health` stays up, so the container is not restarted for this.
 - **The Voyage free tier is slow.** It allows 3 embedding requests per minute, and the Python service waits for its own limiter (`VOYAGE_RPM`), so ingesting the KB takes about a minute and a triage can take far longer than a normal call. If jobs time out and retry under load, lower `WORKER_CONCURRENCY`, raise `TRIAGE_TIMEOUT_MS`, or use a paid Voyage account and raise `VOYAGE_RPM`. The smoke test takes minutes on the free tier.
 
 ## Known gaps
 
-- **No reviewer identity until login (M4).** A review decision records the decision, not who made it: Python sees one shared key.
+- **No reviewer identity in Python yet (M4.1c).** A review decision records the decision, not who made it: Python sees one shared key, even when the reviewer logged in with their own account.
 - **No per-IP limit** (needed for a public submission form in M4). The limit is per client, so one leaked key can use that client's whole allowance, and an unauthenticated flood is only stopped by the cheap `401`, not throttled.
 - **One shared review key** for every reviewer client. Rotating it means editing both `.env` files and recreating two services.
 - **Redis is a single instance** with appendonly persistence but no replica or backup. A lost Redis loses queued jobs, idempotency keys and the dead-letter list (tickets already saved in Postgres are safe).
 - **The rate limit is a fixed window**, so a client can make up to twice the limit across a window edge.
 - **Registry changes need a restart,** and there is no key-rotation tooling beyond replacing an entry.
 - **Anything on the compose network can call Python without a key** (only reviews need one).
-- **Reviewer accounts exist but nobody can log in yet** (M4.1b adds login and sessions, M4.1c the Python side). Until then reviews are still made with the machine clients' keys.
+- **Reviews are not yet attributed to the logged-in reviewer.** A reviewer can log in and use the reviewer routes with a session cookie, but the review decision Python records still does not say who made it (M4.1c passes the reviewer through). There is also no UI yet (M4.3), no password reset by email, no multi-factor authentication and no "remember me".
+- **Failing logins on someone's email locks that email out for one window.** After 5 failures (default) in 15 minutes, logins for that email are refused for the rest of the window, even with the right password, so anyone who knows a reviewer's email can lock them out briefly. Accepted for now: the alternative (not limiting per email) lets passwords be guessed.
+- **The failure limits use the client IP,** which behind a proxy is only right with `TRUST_PROXY=true`, and then only if the proxy is trusted and sets `X-Forwarded-For` itself (M6). There is still no per-IP limit on anything else, for the public form (M4.2) that will be needed.
 - **Python's database role is the server's superuser,** so it can technically read the gateway database. Only the reverse is blocked. A least-privilege role for Python would need a change on the Python side.
 - **The gateway database shares the Postgres server** (and its volume and backups) with Python's. A server outage takes both down.
 - **Migrations only go forward.** There are no down migrations.

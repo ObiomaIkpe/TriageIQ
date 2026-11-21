@@ -195,4 +195,36 @@ describe('UsersRepository', () => {
       for (const user of users) expect(user).not.toHaveProperty('passwordHash');
     });
   });
+
+  describe('findById (the per-request session check)', () => {
+    it('is one primary-key query, returns the account WITHOUT the hash, and passes the id as a parameter', async () => {
+      const { pool, calls } = fakePool([{ rows: [row()] }]);
+      const user = await new UsersRepository(pool).findById('3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].text).toContain('WHERE id = $1');
+      expect(calls[0].text).not.toContain('password_hash');
+      expect(calls[0].values).toEqual(['3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34']);
+      expect(user).not.toHaveProperty('passwordHash');
+      expect(user?.email).toBe('ada@example.com');
+    });
+
+    it('is undefined for an unknown id', async () => {
+      expect(await new UsersRepository(fakePool([{ rows: [] }]).pool).findById('x')).toBeUndefined();
+    });
+  });
+
+  describe('rehashPassword', () => {
+    it('replaces the hash only if it is still the one that was read, and does NOT touch password_changed_at', async () => {
+      const { pool, calls } = fakePool([{ rows: [{}] }]);
+      expect(await new UsersRepository(pool).rehashPassword('id-1', '$argon2id$OLD', '$argon2id$NEW')).toBe(true);
+      expect(calls[0].text).toContain('password_hash = $3');
+      expect(calls[0].text).toContain('password_hash = $2');
+      expect(calls[0].text).not.toContain('password_changed_at');
+      expect(calls[0].values).toEqual(['id-1', '$argon2id$OLD', '$argon2id$NEW']);
+    });
+
+    it('false when nothing matched (the password was changed in the meantime)', async () => {
+      expect(await new UsersRepository(fakePool([{ rows: [] }]).pool).rehashPassword('id-1', 'old', 'new')).toBe(false);
+    });
+  });
 });

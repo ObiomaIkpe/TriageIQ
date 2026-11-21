@@ -1,7 +1,7 @@
 import { getQueueToken } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { Test } from '@nestjs/testing';
+import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 import { vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { IDEMPOTENCY_REDIS } from '../src/idempotency/idempotency.constants.js';
@@ -45,10 +45,11 @@ const fakeRedisClient = {
 export async function startAppWithFakeQueue(
   queue: FakeQueue,
   timeoutMs = 100,
+  customize: (builder: TestingModuleBuilder) => TestingModuleBuilder = (builder) => builder,
 ): Promise<NestExpressApplication> {
   // Loaded here so the environment is set first (the config is checked when the module loads).
   const { AppModule } = await import('../src/app.module.js');
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+  const moduleRef = await customize(Test.createTestingModule({ imports: [AppModule] }))
     .overrideProvider(REDIS_CLIENT)
     .useValue(fakeRedisClient)
     .overrideProvider(PG_POOL)

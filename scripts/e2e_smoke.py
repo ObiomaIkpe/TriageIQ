@@ -11,8 +11,12 @@ Settings (environment variables):
   E2E_SUBMITTER_KEY          API key of a client with the "submitter" role (required)
   E2E_REVIEWER_KEY           API key of a client with the "reviewer" role (required)
   E2E_OTHER_SUBMITTER_KEY    key of a second submitter; enables the ownership step (optional)
+  E2E_REVIEWER_EMAIL         a reviewer account's email, together with ...
+  E2E_REVIEWER_PASSWORD      ... its password: enables the session-cookie login step (optional)
+  E2E_ORIGIN                 the Origin to send with login and logout (default http://localhost:5173;
+                             it must be one of the gateway's ALLOWED_ORIGINS)
 
-A key is never printed, not even in part. Exit code: 0 nothing failed, 1 something failed,
+A key, a password or a session cookie is never printed, not even in part. Exit code: 0 nothing failed, 1 something failed,
 2 a required setting is missing or invalid.
 """
 import argparse
@@ -27,6 +31,8 @@ import uuid
 from typing import Callable, Optional
 
 DEFAULT_BASE_URL = "http://localhost:3000"
+DEFAULT_ORIGIN = "http://localhost:5173"
+SESSION_COOKIE = "tiq_session"
 REFERENCE_PATTERN = re.compile(r"^TKT-[A-Z2-9]{6}$")
 CUSTOMER_ID = "e2e-smoke"
 REQUEST_TIMEOUT_SECONDS = 60
@@ -42,10 +48,11 @@ class Skipped(Exception):
 
 
 class Reply:
-    def __init__(self, status: int, headers: dict, body):
+    def __init__(self, status: int, headers: dict, body, set_cookies=None):
         self.status = status
         self.headers = headers  # lower-case names
         self.body = body  # parsed JSON, or None if the body was empty or not JSON
+        self.set_cookies = set_cookies or []  # every Set-Cookie header, as sent
 
 
 class Gateway:
@@ -88,7 +95,7 @@ class Gateway:
             body = json.loads(raw_body) if raw_body else None
         except ValueError:
             body = None
-        return Reply(status, headers, body)
+        return Reply(status, headers, body, raw_headers.get_all("Set-Cookie") or [])
 
 
 def expect_status(reply: Reply, wanted: int, what: str) -> None:
@@ -234,6 +241,36 @@ class Smoke:
         expect_status(dead, 403, "submitter GET /dead-letters")
         return "submitter gets 403 on /tickets and /dead-letters"
 
+    def step_reviewer_session(self) -> str:
+        email, password = self.keys["reviewer_email"], self.keys["reviewer_password"]
+        if not email or not password:
+            raise Skipped("E2E_REVIEWER_EMAIL and E2E_REVIEWER_PASSWORD are not set")
+        origin = {"Origin": self.keys["origin"]}
+
+        login = self.gateway.request("POST", "/auth/login", body={"email": email, "password": password}, headers=origin)
+        expect_status(login, 200, "POST /auth/login")
+        line = next((c for c in login.set_cookies if c.startswith(SESSION_COOKIE + "=")), None)
+        if line is None:
+            raise Failed("the login answer sets no session cookie")
+        attributes = [part.strip().lower() for part in line.split(";")[1:]]
+        for wanted in ("httponly", "samesite=strict"):
+            if wanted not in attributes:
+                raise Failed(f"the session cookie lacks {wanted}")
+        cookie = {"Cookie": line.split(";")[0]}  # never printed
+
+        me = self.gateway.request("GET", "/auth/me", headers=cookie)
+        expect_status(me, 200, "GET /auth/me with the cookie")
+        if str(((me.body or {}).get("user") or {}).get("email", "")).lower() != email.lower():
+            raise Failed("/auth/me returned a different user than the one that logged in")
+        tickets = self.gateway.request("GET", "/tickets?limit=1", headers=cookie)
+        expect_status(tickets, 200, "GET /tickets with the cookie")
+
+        logout = self.gateway.request("POST", "/auth/logout", headers={**cookie, **origin})
+        expect_status(logout, 204, "POST /auth/logout")
+        after = self.gateway.request("GET", "/auth/me", headers=cookie)
+        expect_status(after, 401, "GET /auth/me after logout")
+        return "login sets an HttpOnly SameSite=Strict cookie; /auth/me and GET /tickets work with it; after logout /auth/me is 401"
+
     # (number, name, function, steps it needs to have passed)
     def steps(self) -> list:
         return [
@@ -246,6 +283,7 @@ class Smoke:
             (7, "a vague ticket is flagged for human review", self.step_vague_ticket_needs_review, []),
             (8, "the reviewer reviews it once; a second review is refused", self.step_review_once_then_conflict, [7]),
             (9, "a submitter cannot use the reviewer routes", self.step_submitter_is_forbidden, []),
+            (10, "a reviewer logs in with a session cookie, uses it, and logs out", self.step_reviewer_session, []),
         ]
 
     def run(self, out: Callable[[str], None]) -> int:
@@ -294,6 +332,9 @@ def main(argv=None, env=None, out: Callable[[str], None] = print) -> int:
     if missing:
         print(f"Missing required environment variables: {', '.join(missing)}", file=sys.stderr)
         return EXIT_BAD_SETTINGS
+    reviewer_email = (env.get("E2E_REVIEWER_EMAIL") or "").strip() or None
+    reviewer_password = env.get("E2E_REVIEWER_PASSWORD") or None  # not stripped: spaces can be part of a password
+    origin = (env.get("E2E_ORIGIN") or DEFAULT_ORIGIN).strip()
     base_url = (env.get("E2E_BASE_URL") or DEFAULT_BASE_URL).strip()
     if not base_url.startswith(("http://", "https://")):
         print("E2E_BASE_URL must start with http:// or https://", file=sys.stderr)
@@ -304,7 +345,14 @@ def main(argv=None, env=None, out: Callable[[str], None] = print) -> int:
     out(f'Test tickets are marked with a subject starting "[e2e {run_id}]" and customer_id "{CUSTOMER_ID}".')
     smoke = Smoke(
         Gateway(base_url),
-        {"submitter": submitter, "reviewer": reviewer, "other": other},
+        {
+            "submitter": submitter,
+            "reviewer": reviewer,
+            "other": other,
+            "reviewer_email": reviewer_email,
+            "reviewer_password": reviewer_password,
+            "origin": origin,
+        },
         run_id,
         args.timeout,
         args.interval,

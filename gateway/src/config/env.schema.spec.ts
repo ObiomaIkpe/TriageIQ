@@ -42,6 +42,15 @@ describe('validateEnv', () => {
       RATE_LIMIT_PER_MINUTE: 60,
       TRIAGE_REVIEW_API_KEY: 'a-review-key',
       GATEWAY_DATABASE_URL: 'postgresql://gateway:secret@db:5432/gateway',
+      // The new session and login settings fall back to their defaults.
+      SESSION_IDLE_MINUTES: 60,
+      SESSION_ABSOLUTE_HOURS: 8,
+      COOKIE_SECURE: true, // fail safe: Secure unless switched off
+      ALLOWED_ORIGINS: [],
+      LOGIN_MAX_FAILURES_PER_IP: 20,
+      LOGIN_MAX_FAILURES_PER_EMAIL: 5,
+      LOGIN_WINDOW_MINUTES: 15,
+      TRUST_PROXY: false,
     });
   });
 
@@ -139,14 +148,22 @@ describe('validateEnv', () => {
       if (match) env[match[1]] = match[2].replace(/^'(.*)'$/, '$1');
     }
     expect(Object.keys(env).sort()).toEqual([
+      'ALLOWED_ORIGINS',
+      'COOKIE_SECURE',
       'GATEWAY_CLIENTS',
       'GATEWAY_DATABASE_URL',
+      'LOGIN_MAX_FAILURES_PER_EMAIL',
+      'LOGIN_MAX_FAILURES_PER_IP',
+      'LOGIN_WINDOW_MINUTES',
       'PORT',
       'RATE_LIMIT_PER_MINUTE',
       'REDIS_URL',
+      'SESSION_ABSOLUTE_HOURS',
+      'SESSION_IDLE_MINUTES',
       'TRIAGE_REVIEW_API_KEY',
       'TRIAGE_SERVICE_URL',
       'TRIAGE_TIMEOUT_MS',
+      'TRUST_PROXY',
       'WORKER_CONCURRENCY',
     ]);
     expect(() => validateEnv(env)).not.toThrow();

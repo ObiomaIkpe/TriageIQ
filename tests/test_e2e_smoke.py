@@ -25,6 +25,9 @@ REVIEWER_KEY = "tiq_test-Mh5pTc8wQe2nVx6rKj9aDs4fLb7yGu3z"
 OTHER_KEY = "tiq_test-Wy3gNf6kBa9xRq2eHt5mJc8vSd4pLz7u"
 CLIENTS = {SUBMITTER_KEY: ("alice", "submitter"), REVIEWER_KEY: ("ops", "reviewer"), OTHER_KEY: ("bob", "submitter")}
 ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+REVIEWER_EMAIL = "Ada.Reviewer@Example.com"
+REVIEWER_PASSWORD = "typed-by-a-human-in-a-test-1"
+ALLOWED_ORIGIN = "http://localhost:5173"
 
 
 class FakeGateway:
@@ -38,6 +41,9 @@ class FakeGateway:
         self.reviewed = set()
         self.polls_before_done = 2
         self.requests = []  # (method, path)
+        self.sessions = {}  # session token -> email, for the cookie login
+        self.allowed_origins = {ALLOWED_ORIGIN}
+        self.last_token = None
 
     def new_ticket(self, subject):
         vague = "Help" in subject
@@ -74,8 +80,46 @@ def make_handler(fake: FakeGateway):
         def client(self):
             header = self.headers.get("Authorization", "")
             if not header.startswith("Bearer "):
-                return None
+                return self.session_client()
             return CLIENTS.get(header[len("Bearer "):])
+
+        def session_token(self):
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                name, _, value = part.strip().partition("=")
+                if name == "tiq_session":
+                    return value
+            return None
+
+        def session_client(self):
+            return ("ada", "reviewer") if self.session_token() in fake.sessions else None
+
+        def handle_auth(self, method, path):
+            origin_ok = self.headers.get("Origin") in fake.allowed_origins or "origin_ignored" in fake.faults
+            if method == "POST" and path == "/auth/login":
+                if not origin_ok:
+                    return self.send(403, {"message": "Origin not allowed"})
+                payload = self.body()
+                if payload.get("email", "").lower() != REVIEWER_EMAIL.lower() or payload.get("password") != REVIEWER_PASSWORD:
+                    return self.send(401, {"message": "Invalid email or password"})
+                token = "".join(ALPHABET[(i * 5 + len(fake.sessions)) % len(ALPHABET)] for i in range(43))
+                fake.sessions[token] = REVIEWER_EMAIL.lower()
+                fake.last_token = token
+                flags = "" if "cookie_no_httponly" in fake.faults else "; HttpOnly"
+                same = "; SameSite=Lax" if "cookie_lax" in fake.faults else "; SameSite=Strict"
+                cookie = f"tiq_session={token}; Max-Age=28800; Path=/{flags}; Secure{same}"
+                return self.send(200, {"user": {"id": "u1", "email": REVIEWER_EMAIL.lower(), "role": "reviewer"}, "expires_at": "x"}, {"Set-Cookie": cookie})
+            if method == "GET" and path == "/auth/me":
+                email = fake.sessions.get(self.session_token())
+                if email is None:
+                    return self.send(401, {"message": "Not authenticated"})
+                return self.send(200, {"user": {"id": "u1", "email": email, "role": "reviewer"}, "expires_at": "x"})
+            if method == "POST" and path == "/auth/logout":
+                if not origin_ok:
+                    return self.send(403, {"message": "Origin not allowed"})
+                if "logout_keeps_session" not in fake.faults:
+                    fake.sessions.pop(self.session_token(), None)
+                return self.send(204, None, {"Set-Cookie": "tiq_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict"})
+            return self.send(404, {"detail": "no such route"})
 
         def body(self):
             length = int(self.headers.get("Content-Length") or 0)
@@ -89,6 +133,8 @@ def make_handler(fake: FakeGateway):
             if path == "/ready":
                 triage = "down" if "triage_down" in fake.faults else "ok"
                 return self.send(200, {"status": "ready", "checks": {"redis": "ok", "triage": triage}})
+            if path.startswith("/auth/"):
+                return self.handle_auth(method, path)
             who = self.client()
             if who is None:
                 return self.send(200 if "open_gateway" in fake.faults else 401, {"detail": "Missing or invalid API key"})
@@ -181,10 +227,13 @@ def gateway():
     server.server_close()
 
 
-def run(fake, capsys, other=True, extra_env=None, argv=("--interval", "0.01", "--timeout", "3")):
+def run(fake, capsys, other=True, extra_env=None, argv=("--interval", "0.01", "--timeout", "3"), login=False):
     env = {"E2E_BASE_URL": fake.url, "E2E_SUBMITTER_KEY": SUBMITTER_KEY, "E2E_REVIEWER_KEY": REVIEWER_KEY}
     if other:
         env["E2E_OTHER_SUBMITTER_KEY"] = OTHER_KEY
+    if login:
+        env["E2E_REVIEWER_EMAIL"] = REVIEWER_EMAIL
+        env["E2E_REVIEWER_PASSWORD"] = REVIEWER_PASSWORD
     env.update(extra_env or {})
     code = smoke.main(list(argv), env)
     captured = capsys.readouterr()
@@ -210,17 +259,18 @@ def test_all_steps_pass_against_a_healthy_gateway(gateway, capsys):
     code, out, err = run(gateway, capsys)
 
     assert code == 0, out
-    assert results(out) == {n: "PASS" for n in range(1, 10)}
-    assert re.search(r"Summary: 9 passed, 0 failed, 0 skipped in \d+\.\ds", out)
+    # steps 1 to 9 as before; the optional login step 10 is skipped without reviewer credentials
+    assert results(out) == {**{n: "PASS" for n in range(1, 10)}, 10: "SKIP"}
+    assert re.search(r"Summary: 9 passed, 0 failed, 1 skipped in \d+\.\ds", out)
     assert err == ""
 
 
 def test_every_step_line_has_a_status_and_a_detail(gateway, capsys):
     _, out, _ = run(gateway, capsys)
     lines = [l for l in out.splitlines() if l.startswith("[")]
-    assert len(lines) == 9
+    assert len(lines) == 10
     for line in lines:
-        assert re.match(r"^\[(PASS|FAIL|SKIP)\] step \d: .+ - .+", line)
+        assert re.match(r"^\[(PASS|FAIL|SKIP)\] step \d+: .+ - .+", line)
 
 
 def test_the_test_tickets_are_marked_with_the_run_id_and_customer_id(gateway, capsys):
@@ -282,7 +332,7 @@ def test_a_failing_step_skips_the_steps_that_depend_on_it_and_the_rest_still_run
     assert [found[n] for n in (4, 5, 6)] == ["SKIP", "SKIP", "SKIP"]  # all need step 3 or 4
     assert "depends on step 3" in out
     assert [found[n] for n in (1, 2, 7, 8, 9)] == ["PASS"] * 5  # independent steps still ran
-    assert re.search(r"Summary: 5 passed, 1 failed, 3 skipped", out)
+    assert re.search(r"Summary: 5 passed, 1 failed, 4 skipped", out)
 
 
 def test_a_dependant_of_a_skipped_step_is_skipped_too(gateway, capsys):
@@ -416,3 +466,101 @@ def test_the_script_is_runnable_and_documents_its_settings():
     assert source.startswith("#!/usr/bin/env python3")
     for name in ("E2E_BASE_URL", "E2E_SUBMITTER_KEY", "E2E_REVIEWER_KEY", "E2E_OTHER_SUBMITTER_KEY"):
         assert name in source
+
+
+# --- the optional session-cookie login step (10) -----------------------------------------------
+
+def test_step_10_is_skipped_cleanly_without_reviewer_credentials(gateway, capsys):
+    code, out, _ = run(gateway, capsys)
+    assert code == 0
+    assert results(out)[10] == "SKIP"
+    assert "E2E_REVIEWER_EMAIL and E2E_REVIEWER_PASSWORD are not set" in out
+    assert not any(path.startswith("/auth/") for _, path in gateway.requests)  # nothing was even tried
+
+
+@pytest.mark.parametrize("only", ["E2E_REVIEWER_EMAIL", "E2E_REVIEWER_PASSWORD"])
+def test_step_10_needs_both_the_email_and_the_password(gateway, capsys, only):
+    value = REVIEWER_EMAIL if only == "E2E_REVIEWER_EMAIL" else REVIEWER_PASSWORD
+    code, out, _ = run(gateway, capsys, extra_env={only: value})
+    assert code == 0
+    assert results(out)[10] == "SKIP"
+
+
+def test_all_ten_steps_pass_with_reviewer_credentials(gateway, capsys):
+    code, out, err = run(gateway, capsys, login=True)
+
+    assert code == 0, out
+    assert results(out) == {n: "PASS" for n in range(1, 11)}
+    assert re.search(r"Summary: 10 passed, 0 failed, 0 skipped", out)
+    assert err == ""
+
+
+def test_step_10_logs_in_with_an_origin_uses_the_cookie_and_logs_out(gateway, capsys):
+    run(gateway, capsys, login=True)
+    auth = [(m, p) for m, p in gateway.requests if p.startswith("/auth/")]
+    assert auth == [("POST", "/auth/login"), ("GET", "/auth/me"), ("POST", "/auth/logout"), ("GET", "/auth/me")]
+    assert ("GET", "/tickets") in gateway.requests
+    assert gateway.sessions == {}  # logged out
+
+
+def test_step_10_sends_the_configured_origin(gateway, capsys):
+    gateway.allowed_origins = {"https://reviews.example.org"}
+    code, out, _ = run(gateway, capsys, login=True, extra_env={"E2E_ORIGIN": "https://reviews.example.org"})
+    assert code == 0 and results(out)[10] == "PASS"
+
+
+def test_step_10_fails_when_the_origin_is_not_allowed(gateway, capsys):
+    gateway.allowed_origins = {"https://somewhere.else"}
+    code, out, _ = run(gateway, capsys, login=True)
+    assert code == 1
+    assert results(out)[10] == "FAIL"
+    assert "expected 200, got 403" in out
+
+
+def test_step_10_fails_with_a_wrong_password(gateway, capsys):
+    code, out, _ = run(gateway, capsys, login=True, extra_env={"E2E_REVIEWER_PASSWORD": "not the right one 123"})
+    assert code == 1
+    assert results(out)[10] == "FAIL"
+    assert "expected 200, got 401" in out
+
+
+@pytest.mark.parametrize("fault, text", [("cookie_no_httponly", "httponly"), ("cookie_lax", "samesite=strict")])
+def test_step_10_checks_the_cookie_attributes(gateway, capsys, fault, text):
+    gateway.faults.add(fault)
+    code, out, _ = run(gateway, capsys, login=True)
+    assert code == 1
+    assert results(out)[10] == "FAIL"
+    assert text in out
+
+
+def test_step_10_fails_if_the_session_survives_logout(gateway, capsys):
+    gateway.faults.add("logout_keeps_session")
+    code, out, _ = run(gateway, capsys, login=True)
+    assert code == 1
+    assert results(out)[10] == "FAIL"
+    assert "after logout" in out and "expected 401, got 200" in out
+
+
+def test_a_failing_step_10_does_not_affect_the_nine_before_it(gateway, capsys):
+    gateway.faults.add("logout_keeps_session")
+    _, out, _ = run(gateway, capsys, login=True)
+    assert {n: results(out)[n] for n in range(1, 10)} == {n: "PASS" for n in range(1, 10)}
+
+
+def test_the_password_and_the_session_cookie_are_never_printed(gateway, capsys):
+    for faults in (set(), {"logout_keeps_session"}, {"cookie_lax"}):
+        gateway.faults = set(faults)
+        code, out, err = run(gateway, capsys, login=True)
+        assert code in (0, 1)
+        assert REVIEWER_PASSWORD not in out + err
+        assert "typed-by-a-human" not in out + err
+        assert (gateway.last_token or "@@") not in out + err
+        assert "tiq_session" not in out + err
+        assert_no_key_in(out, err)
+
+
+def test_the_script_documents_the_new_settings():
+    source = SCRIPT.read_text()
+    for name in ("E2E_REVIEWER_EMAIL", "E2E_REVIEWER_PASSWORD", "E2E_ORIGIN"):
+        assert name in source
+

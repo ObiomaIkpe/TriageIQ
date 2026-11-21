@@ -61,9 +61,10 @@ export class IdempotencyService {
    * request with the same key gets the same job id back, or a conflict if its ticket differs.
    * Every Redis call has the usual deadline; trouble becomes QueueUnavailableError (503).
    */
-  async submit(client: string, key: string, ticket: TicketInput): Promise<SubmitResult> {
-    // One namespace per client: the same Idempotency-Key from two clients is two different keys.
-    const redisKey = `${IDEMPOTENCY_KEY_PREFIX}${client}:${key}`;
+  async submit(principalId: string, key: string, ticket: TicketInput, ownerId: string = principalId): Promise<SubmitResult> {
+    // One namespace per principal ("client:<name>" or "user:<uuid>"): the same Idempotency-Key from two
+    // callers is two different keys, and a client can never collide with a user.
+    const redisKey = `${IDEMPOTENCY_KEY_PREFIX}${principalId}:${key}`;
     const fingerprint = fingerprintTicket(ticket);
 
     for (let round = 0; round < MAX_CLAIM_ROUNDS; round += 1) {
@@ -80,7 +81,7 @@ export class IdempotencyService {
 
       if (claimed) {
         try {
-          await this.queue.enqueue(ticket, client, jobId);
+          await this.queue.enqueue(ticket, ownerId, jobId);
           return { jobId, replayed: false };
         } catch (error) {
           // Nothing was queued, so the key must not keep pointing at a job that does not

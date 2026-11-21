@@ -1,106 +1,30 @@
-import { type ExecutionContext, HttpException, SetMetadata } from '@nestjs/common';
+import { HttpException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { FakeKeyValue, FakeQueue } from '../../test/fake-queue.js';
 import { TriageQueueService, type QueueLike } from '../queue/triage-queue.service.js';
-import { hashKey } from './client-key.js';
-import { IS_PUBLIC, ROLES_KEY, type AuthedRequest } from './auth.decorators.js';
-import { AuthGuard, INVALID_KEY } from './auth.guard.js';
-import type { AuthenticatedClient, Role } from './auth.types.js';
+import { IS_PUBLIC, ROLES_KEY } from './auth.decorators.js';
+import type { Role } from './auth.types.js';
+import { config, context, route, thrown } from './guard-fixtures.js';
+import { clientPrincipal, type ClientPrincipal } from './principal.js';
 import { RATE_LIMIT_UNAVAILABLE, RateLimitGuard } from './rate-limit.guard.js';
 import { RolesGuard } from './roles.guard.js';
 
-const KEY_ALICE = 'tiq_alice-key';
-const KEY_OPS = 'tiq_ops-key';
-const REGISTRY = [
-  { name: 'alice', role: 'submitter', key_sha256: hashKey(KEY_ALICE) },
-  { name: 'ops', role: 'reviewer', key_sha256: hashKey(KEY_OPS) },
-];
-const config = (values: Record<string, unknown>) => ({ get: (name: string) => values[name] }) as never;
-
-/** A handler and a controller class carrying the same metadata Nest decorators would set. */
-function route(metadata: Record<string, unknown> = {}) {
-  const handler = () => undefined;
-  class Controller {}
-  for (const [key, value] of Object.entries(metadata)) {
-    SetMetadata(key, value)(Controller.prototype, 'handler', { value: handler });
-  }
-  return { handler, Controller };
-}
-
-function context(target: ReturnType<typeof route>, request: Partial<AuthedRequest>, headers: Record<string, string> = {}) {
-  const request_ = { headers: {}, ...request } as AuthedRequest;
-  const response = { headers, setHeader: (name: string, value: string) => (headers[name] = value) };
-  const ctx = {
-    getHandler: () => target.handler,
-    getClass: () => target.Controller,
-    switchToHttp: () => ({ getRequest: () => request_, getResponse: () => response }),
-  } as unknown as ExecutionContext;
-  return { ctx, request: request_, headers };
-}
-
-function thrown(fn: () => unknown): HttpException {
-  try {
-    fn();
-  } catch (error) {
-    return error as HttpException;
-  }
-  throw new Error('expected a throw');
-}
-
-describe('AuthGuard', () => {
-  const guard = new AuthGuard(new Reflector(), config({ GATEWAY_CLIENTS: REGISTRY }));
-
-  it('lets a public route through with no key at all', () => {
-    const { ctx } = context(route({ [IS_PUBLIC]: true }), {});
-    expect(guard.canActivate(ctx)).toBe(true);
-  });
-
-  it('a valid key passes and attaches the client name and role (never the key)', () => {
-    const { ctx, request } = context(route(), { headers: { authorization: `Bearer ${KEY_ALICE}` } });
-    expect(guard.canActivate(ctx)).toBe(true);
-    expect(request.apiClient).toEqual({ name: 'alice', role: 'submitter' });
-    expect(JSON.stringify(request.apiClient)).not.toContain(KEY_ALICE);
-  });
-
-  it.each([
-    ['no header', undefined],
-    ['an empty header', ''],
-    ['the wrong scheme', 'Basic abc'],
-    ['no key after Bearer', 'Bearer'],
-    ['an unknown key', 'Bearer tiq_not-registered'],
-    ['a key with a space in it', 'Bearer tiq_alice key'],
-    ['the hash instead of the key', `Bearer ${hashKey(KEY_ALICE)}`],
-  ])('%s -> 401 with the fixed body and WWW-Authenticate: Bearer', (_label, authorization) => {
-    const { ctx, request, headers } = context(route(), { headers: authorization === undefined ? {} : { authorization } });
-    const error = thrown(() => guard.canActivate(ctx));
-    expect(error.getStatus()).toBe(401);
-    expect(error.getResponse()).toEqual({ detail: INVALID_KEY });
-    expect(headers['WWW-Authenticate']).toBe('Bearer');
-    expect(request.apiClient).toBeUndefined();
-  });
-
-  it('never repeats the presented key in the answer', () => {
-    const { ctx } = context(route(), { headers: { authorization: 'Bearer tiq_SECRETVALUE' } });
-    expect(JSON.stringify(thrown(() => guard.canActivate(ctx)).getResponse())).not.toContain('SECRET');
-  });
-});
-
 describe('RolesGuard', () => {
   const guard = new RolesGuard(new Reflector());
-  const as = (role: Role): AuthenticatedClient => ({ name: 'x', role });
+  const as = (role: Role): ClientPrincipal => clientPrincipal('x', role);
 
   it('a route without @Roles is open to every authenticated client', () => {
     for (const role of ['submitter', 'reviewer'] as const) {
-      expect(guard.canActivate(context(route(), { apiClient: as(role) }).ctx)).toBe(true);
+      expect(guard.canActivate(context(route(), { principal: as(role) }).ctx)).toBe(true);
     }
   });
 
   it('@Roles("reviewer"): a reviewer passes', () => {
-    expect(guard.canActivate(context(route({ [ROLES_KEY]: ['reviewer'] }), { apiClient: as('reviewer') }).ctx)).toBe(true);
+    expect(guard.canActivate(context(route({ [ROLES_KEY]: ['reviewer'] }), { principal: as('reviewer') }).ctx)).toBe(true);
   });
 
   it('@Roles("reviewer"): a submitter gets 403 { detail: "Not allowed" }', () => {
-    const error = thrown(() => guard.canActivate(context(route({ [ROLES_KEY]: ['reviewer'] }), { apiClient: as('submitter') }).ctx));
+    const error = thrown(() => guard.canActivate(context(route({ [ROLES_KEY]: ['reviewer'] }), { principal: as('submitter') }).ctx));
     expect(error.getStatus()).toBe(403);
     expect(error.getResponse()).toEqual({ detail: 'Not allowed' });
   });
@@ -115,16 +39,16 @@ describe('RolesGuard', () => {
 });
 
 describe('RateLimitGuard', () => {
-  const ALICE = { name: 'alice', role: 'submitter' } as const;
-  const BOB = { name: 'bob', role: 'submitter' } as const;
+  const ALICE = clientPrincipal('alice', 'submitter');
+  const BOB = clientPrincipal('bob', 'submitter');
 
   function setup(limit = 3, window = 60) {
     const queue = new FakeQueue();
     const kv = queue.kv as FakeKeyValue;
     const service = new TriageQueueService(queue as QueueLike, 60);
     const guard = new RateLimitGuard(new Reflector(), config({ RATE_LIMIT_PER_MINUTE: limit }), kv, service, window);
-    const call = async (client: AuthenticatedClient | undefined, route_ = route()) => {
-      const made = context(route_, client ? { apiClient: client } : {});
+    const call = async (client: ClientPrincipal | undefined, route_ = route()) => {
+      const made = context(route_, client ? { principal: client } : {});
       try {
         await guard.canActivate(made.ctx);
         return { ok: true as const, headers: made.headers };
@@ -231,7 +155,7 @@ describe('RateLimitGuard', () => {
       60,
     );
     const started = Date.now();
-    await expect(guard.canActivate(context(route(), { apiClient: ALICE }).ctx)).rejects.toMatchObject({
+    await expect(guard.canActivate(context(route(), { principal: ALICE }).ctx)).rejects.toMatchObject({
       response: { detail: RATE_LIMIT_UNAVAILABLE },
     });
     expect(Date.now() - started).toBeLessThan(250);

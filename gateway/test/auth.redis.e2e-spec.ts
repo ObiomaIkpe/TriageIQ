@@ -96,7 +96,7 @@ describe.skipIf(!REDIS_TEST_URL)('API clients against a real Redis', () => {
 
   it('idempotency: the same key from alice and bob -> two jobs; the same key twice from alice -> one', async () => {
     const key = `${RUN}-shared`;
-    keys.push(`idem:alice:${key}`, `idem:bob:${key}`);
+    keys.push(`idem:client:alice:${key}`, `idem:client:bob:${key}`);
     const a1 = await submit('alice', 'idem', key);
     const b1 = await submit('bob', 'idem', key);
     const a2 = await submit('alice', 'idem', key);
@@ -108,7 +108,7 @@ describe.skipIf(!REDIS_TEST_URL)('API clients against a real Redis', () => {
     expect(a2.body.job_id).toBe(a1.body.job_id);
     expect(a2.headers['idempotent-replayed']).toBe('true');
 
-    const stored = async (who: string) => JSON.parse((await redis.get(`idem:${who}:${key}`)) ?? 'null').job_id;
+    const stored = async (who: string) => JSON.parse((await redis.get(`idem:client:${who}:${key}`)) ?? 'null').job_id;
     expect(await stored('alice')).toBe(a1.body.job_id);
     expect(await stored('bob')).toBe(b1.body.job_id);
     const mine = (await inspector.getJobs(['waiting'])).filter((job) => job.data.subject === ticket('idem').subject);

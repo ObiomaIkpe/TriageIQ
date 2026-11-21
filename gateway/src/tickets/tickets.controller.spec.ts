@@ -3,11 +3,12 @@ import type { Response } from 'express';
 import { vi } from 'vitest';
 import { FakeQueue } from '../../test/fake-queue.js';
 import { TriageQueueService, type QueueLike } from '../queue/triage-queue.service.js';
+import { clientPrincipal } from '../auth/principal.js';
 import { IdempotencyService } from '../idempotency/idempotency.service.js';
 import { INTAKE_UNAVAILABLE, TicketsController } from './tickets.controller.js';
 
 const TIMEOUT_MS = 40;
-const ALICE = { name: 'alice', role: 'submitter' } as const;
+const ALICE = clientPrincipal('alice', 'submitter');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function setup(queue: FakeQueue) {

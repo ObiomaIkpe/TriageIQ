@@ -13,8 +13,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { CurrentClient } from '../auth/auth.decorators.js';
-import type { AuthenticatedClient } from '../auth/auth.types.js';
+import { CurrentPrincipal } from '../auth/auth.decorators.js';
+import type { Principal } from '../auth/principal.js';
 import { IDEMPOTENCY_HEADER, parseIdempotencyKey } from '../idempotency/idempotency-key.js';
 import { IdempotencyConflictError, IdempotencyService } from '../idempotency/idempotency.service.js';
 import { TriageQueueService } from '../queue/triage-queue.service.js';
@@ -43,7 +43,7 @@ export class TicketsController {
     @Body() body: unknown,
     @Res({ passthrough: true }) response: Response,
     @Headers('idempotency-key') idempotencyKey: string | string[] | undefined,
-    @CurrentClient() client: AuthenticatedClient,
+    @CurrentPrincipal() principal: Principal,
   ) {
     const key = parseIdempotencyKey(idempotencyKey);
     if (!key.ok) {
@@ -57,9 +57,9 @@ export class TicketsController {
     let jobId: string;
     try {
       if (key.key === undefined) {
-        ({ jobId } = await this.queue.enqueue(parsed.data, client.name));
+        ({ jobId } = await this.queue.enqueue(parsed.data, principal.ownerId));
       } else {
-        const submitted = await this.idempotency.submit(client.name, key.key, parsed.data);
+        const submitted = await this.idempotency.submit(principal.id, key.key, parsed.data, principal.ownerId);
         jobId = submitted.jobId;
         if (submitted.replayed) response.setHeader('Idempotent-Replayed', 'true');
       }
