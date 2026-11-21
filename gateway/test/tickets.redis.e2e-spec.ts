@@ -6,6 +6,8 @@ import { configureApp } from '../src/app.setup.js';
 import { WorkerModule } from '../src/worker/worker.module.js';
 import { NoWorkerModule, stubEnv } from './app-helpers.js';
 import { api } from './auth-helpers.js';
+import { PG_POOL } from '../src/database/database.constants.js';
+import { fakeGatewayDb } from './app-helpers.js';
 
 /**
  * Runs against a REAL Redis. Skipped unless REDIS_TEST_URL is set, e.g.
@@ -26,6 +28,8 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
     const { AppModule } = await import('../src/app.module.js');
     // No worker here: this file checks intake only, and a worker would take the job off the queue.
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(PG_POOL)
+      .useValue(fakeGatewayDb)
       .overrideModule(WorkerModule)
       .useModule(NoWorkerModule)
       .compile();

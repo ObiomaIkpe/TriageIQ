@@ -44,11 +44,32 @@ export interface SubmitResult {
 export interface SubmitOptions {
   /** The reference to give a NEW job (and to remember with the key, so a replay returns the same one). */
   reference?: string;
+  /**
+   * Reserves the reference. Called ONLY after this request has claimed the key (a new submission, never a
+   * replay) and before the job is queued. It gets the candidate and returns the reference now reserved, which
+   * may differ (then the key is updated to it). If it throws, the key is released and nothing is queued.
+   */
+  reserveReference?: (candidate: string | undefined) => Promise<string>;
   /** Replaces the default fingerprint (a route whose body has more than a ticket, such as the public form). */
   fingerprint?: string;
   /** Contact details that travel with the job (public form). */
   contact?: { customer_name: string; customer_email: string };
 }
+
+/**
+ * Replaces the reference stored with a key, only if the key still belongs to this job (and keeps its expiry).
+ * Used when the reference first chosen was already taken and a new one was reserved.
+ */
+export const SET_REFERENCE_SCRIPT = `
+local value = redis.call('GET', KEYS[1])
+if not value then return 0 end
+local ok, decoded = pcall(cjson.decode, value)
+if ok and type(decoded) == 'table' and decoded.job_id == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
+  return 1
+end
+return 0
+`;
 
 /** What a read-only look at a key found. */
 export type PeekResult = { kind: 'none' } | { kind: 'replay'; jobId: string; reference?: string };
@@ -106,12 +127,21 @@ export class IdempotencyService {
 
       if (claimed) {
         try {
+          let reference = options.reference;
+          if (options.reserveReference) {
+            const reserved = await options.reserveReference(reference);
+            if (reserved !== reference) {
+              // The first candidate was taken. The key must hold the reference that will really be used.
+              await this.setReference(redisKey, jobId, { job_id: jobId, fingerprint, reference: reserved });
+              reference = reserved;
+            }
+          }
           await this.queue.enqueue(ticket, ownerId, jobId, {
-            reference: options.reference,
+            reference,
             customer_name: options.contact?.customer_name,
             customer_email: options.contact?.customer_email,
           });
-          return { jobId, replayed: false, reference: options.reference };
+          return { jobId, replayed: false, reference };
         } catch (error) {
           // Nothing was queued, so the key must not keep pointing at a job that does not
           // exist: the client's retry with the same key has to work.
@@ -148,6 +178,13 @@ export class IdempotencyService {
     const known = parseStored(stored);
     if (known.fingerprint !== fingerprint) throw new IdempotencyConflictError();
     return { kind: 'replay', jobId: known.job_id, reference: known.reference };
+  }
+
+  private async setReference(redisKey: string, jobId: string, value: StoredKey): Promise<void> {
+    await this.queue.guarded(async (expired) => {
+      await waitUntilReady(this.redis, expired);
+      return this.redis.eval(SET_REFERENCE_SCRIPT, 1, redisKey, jobId, JSON.stringify(value));
+    });
   }
 
   /** Best effort. If Redis is gone too, the key expires on its own after the TTL. */

@@ -7,6 +7,8 @@ import { afterAll, beforeAll, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { stubEnv } from './app-helpers.js';
 import { api } from './auth-helpers.js';
+import { PG_POOL } from '../src/database/database.constants.js';
+import { fakeGatewayDb } from './app-helpers.js';
 
 /**
  * Shutting the app down while a job is running must let that job finish.
@@ -44,7 +46,9 @@ describe.skipIf(!REDIS_TEST_URL)('closing the app while a job is running', () =>
     vi.stubEnv('TRIAGE_TIMEOUT_MS', '30000');
 
     const { AppModule } = await import('../src/app.module.js');
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(PG_POOL)
+      .useValue(fakeGatewayDb).compile();
     app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
     configureApp(app);
     await app.init();

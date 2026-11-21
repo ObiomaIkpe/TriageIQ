@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterEach, beforeEach, vi } from 'vitest';
+import { PG_POOL } from '../src/database/database.constants.js';
 import { FETCH } from '../src/health/health.constants.js';
 import { PUBLIC_CLOCK, PUBLIC_STORE, TURNSTILE_TIMEOUT_MS } from '../src/public-tickets/public.constants.js';
 import { startAppWithFakeQueue, stubEnv } from './app-helpers.js';
@@ -33,6 +34,8 @@ describe('POST /public/tickets (fake Turnstile, fake queue)', () => {
   let turnstileCalls: URLSearchParams[];
   let verdict: Verdict;
   let lines: string[];
+  let reservations: string[];
+  let collide: Set<string>;
 
   async function start(env: Record<string, string> = {}) {
     stubEnv();
@@ -46,6 +49,18 @@ describe('POST /public/tickets (fake Turnstile, fake queue)', () => {
     store = new MemoryPublicStore(clock);
     queue = new FakeQueue();
     turnstileCalls = [];
+    reservations = [];
+    collide = new Set();
+    // The gateway database: only the reference reservation uses it here. A reference in `collide` is already taken.
+    const pool = {
+      query: async (_sql: string, values: string[]) => {
+        reservations.push(values[0]);
+        return collide.has(values[0]) ? { rows: [], rowCount: 0 } : { rows: [{ reference: values[0] }], rowCount: 1 };
+      },
+      connect: async () => ({ query: async () => ({ rows: [], rowCount: 0 }), release: () => undefined }),
+      end: async () => undefined,
+      on: () => undefined,
+    };
     verdict = () => json({ success: true, hostname: 'example.com', challenge_ts: '2026-11-21T12:00:00Z', 'error-codes': [] });
     const fetchFn = (async (_url: string, init: RequestInit) => {
       turnstileCalls.push(new URLSearchParams(init.body as URLSearchParams));
@@ -57,6 +72,7 @@ describe('POST /public/tickets (fake Turnstile, fake queue)', () => {
     app = await startAppWithFakeQueue(queue, 100, (b) =>
       b
         .overrideProvider(ConfigService).useValue(config)
+        .overrideProvider(PG_POOL).useValue(pool)
         .overrideProvider(PUBLIC_STORE).useValue(store)
         .overrideProvider(PUBLIC_CLOCK).useValue(clock.fn)
         .overrideProvider(TURNSTILE_TIMEOUT_MS).useValue(150)
@@ -379,6 +395,64 @@ describe('POST /public/tickets (fake Turnstile, fake queue)', () => {
       const b = await api(app, 'alice').post('/tickets').set('Idempotency-Key', 'api-1').send({ subject: 'Hi', body: 'Help' }).expect(202);
       expect(b.body.reference).toBe(a.body.reference);
       expect(queue.added).toHaveLength(1);
+    });
+  });
+
+  describe('reference reservation', () => {
+    beforeEach(() => start({ PUBLIC_MAX_PER_IP_PER_HOUR: '100' }));
+
+    it('a new submission reserves its reference once, and the job and the answer carry that reference', async () => {
+      const res = await post().expect(202);
+      expect(reservations).toEqual([res.body.reference]);
+      expect(queue.added[0].data.reference).toBe(res.body.reference);
+    });
+
+    it('a replay reserves nothing more and returns the same reference', async () => {
+      const key = newKey();
+      const first = await post(BODY, { 'Idempotency-Key': key }).expect(202);
+      await post({ ...BODY, turnstile_token: 'new-token' }, { 'Idempotency-Key': key }).expect(202);
+      expect(reservations).toEqual([first.body.reference]);
+    });
+
+    it('a honeypot reserves nothing', async () => {
+      await post({ ...BODY, website: 'x' }).expect(202);
+      expect(reservations).toEqual([]);
+    });
+
+    it('requests refused before the claim (Turnstile, wrong Origin, bad body) reserve nothing', async () => {
+      verdict = () => json({ success: false, 'error-codes': ['invalid-input-response'] });
+      await post().expect(403);
+      await post(BODY, { Origin: 'http://evil.example' }).expect(403);
+      await post({ ...BODY, email: 'no' }).expect(400);
+      expect(reservations).toEqual([]);
+    });
+
+    it('a taken first candidate is retried: the ticket gets (and the key remembers) a different reserved reference', async () => {
+      // every reference collides once, then free: the real service tries the first candidate, then a new one
+      const orig = collide;
+      let tries = 0;
+      collide = { has: () => (tries += 1) === 1 } as unknown as Set<string>; // only the very first insert collides
+      const key = newKey();
+      const first = await post(BODY, { 'Idempotency-Key': key }).expect(202);
+      expect(reservations).toHaveLength(2);
+      expect(reservations[1]).toBe(first.body.reference);
+      const replay = await post(BODY, { 'Idempotency-Key': key }).expect(202);
+      expect(replay.body.reference).toBe(first.body.reference);
+      expect(reservations).toHaveLength(2);
+      collide = orig;
+    });
+
+    it('five collisions in a row: 503, nothing queued, the daily cap slot is given back, and the key works on retry', async () => {
+      collide = { has: () => true } as unknown as Set<string>;
+      const key = newKey();
+      const res = await post(BODY, { 'Idempotency-Key': key }).expect(503);
+      expect(res.body).toEqual({ message: 'Please try again in a moment.' });
+      expect(reservations).toHaveLength(5);
+      expect(queue.added).toHaveLength(0);
+      expect(store.capUsed('2026-11-21')).toBe(0);
+      expect(lines.join('\n')).toContain('COULD NOT RESERVE');
+      collide = new Set();
+      await post(BODY, { 'Idempotency-Key': key }).expect(202);
     });
   });
 });

@@ -26,8 +26,9 @@ export function stubEnv(redisUrl = 'redis://localhost:6379') {
 @Module({})
 export class NoWorkerModule {}
 
-/** Stands in for the gateway database pool: answers SELECT 1 and closes at once. */
-const fakePgPool = {
+/** Stands in for the gateway database pool: answers SELECT 1 and closes at once. An INSERT ... RETURNING (a ticket
+ * reference reservation) gets one row back, i.e. "reserved". Specs that run the real app against a real Redis use this too. */
+export const fakeGatewayDb = {
   query: async () => ({ rows: [{ '?column?': 1 }], rowCount: 1 }),
   connect: async () => ({ query: async () => ({ rows: [], rowCount: 0 }), release: () => undefined }),
   end: async () => undefined,
@@ -49,11 +50,10 @@ export async function startAppWithFakeQueue(
 ): Promise<NestExpressApplication> {
   // Loaded here so the environment is set first (the config is checked when the module loads).
   const { AppModule } = await import('../src/app.module.js');
-  const moduleRef = await customize(Test.createTestingModule({ imports: [AppModule] }))
+  // The fake gateway database goes first, so a test's own `customize` can replace it (the last override wins).
+  const moduleRef = await customize(Test.createTestingModule({ imports: [AppModule] }).overrideProvider(PG_POOL).useValue(fakeGatewayDb))
     .overrideProvider(REDIS_CLIENT)
     .useValue(fakeRedisClient)
-    .overrideProvider(PG_POOL)
-    .useValue(fakePgPool)
     .overrideProvider(getQueueToken(TRIAGE_QUEUE))
     .useValue(queue)
     .overrideProvider(IDEMPOTENCY_REDIS)

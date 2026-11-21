@@ -9,6 +9,8 @@ import { configureApp } from '../src/app.setup.js';
 import { TRIAGE_RETRY_POLICY } from '../src/queue/retry-policy.js';
 import { stubEnv } from './app-helpers.js';
 import { api } from './auth-helpers.js';
+import { PG_POOL } from '../src/database/database.constants.js';
+import { fakeGatewayDb } from './app-helpers.js';
 
 /**
  * Dead-letter list and retry against a REAL Redis and a fake triage server.
@@ -62,6 +64,8 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
 
     const { AppModule } = await import('../src/app.module.js');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(PG_POOL)
+      .useValue(fakeGatewayDb)
       .overrideProvider(TRIAGE_RETRY_POLICY)
       .useValue({ attempts: ATTEMPTS, backoffBaseMs: 50 })
       .compile();

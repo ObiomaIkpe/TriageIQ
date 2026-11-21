@@ -1,0 +1,23 @@
+@import 'tailwindcss';
+
+/* The theme from the mockup. Every text/background pair used below meets WCAG AA (4.5:1); a test checks it. */
+@theme {
+  --color-page: #f4f5f7;
+  --color-card: #ffffff;
+  --color-ink: #1f2937;
+  --color-muted: #4b5563;
+  --color-line: #d1d5db;
+  --color-accent: #2457d6;
+  --color-accent-hover: #1a3fa0;
+  --color-on-accent: #ffffff;
+  --color-danger: #b42318;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+}
+
+body {
+  background-color: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 0.875rem; /* compact text */
+  line-height: 1.5;
+}
