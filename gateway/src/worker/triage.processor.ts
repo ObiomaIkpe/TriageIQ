@@ -1,0 +1,77 @@
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { Inject, Logger, type OnApplicationBootstrap } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { type Job, UnrecoverableError } from 'bullmq';
+import type { AppConfig } from '../config/env.schema.js';
+import { FETCH } from '../health/health.constants.js';
+import { TRIAGE_QUEUE } from '../queue/queue.constants.js';
+import type { TicketJobData } from '../queue/triage-queue.service.js';
+import { MAX_ATTEMPTS, triageBackoffStrategy } from './backoff.js';
+import { callTriage, type TriageOutcome } from './triage-outcome.js';
+import { RetryableTriageError } from './triage.errors.js';
+
+const logger = new Logger('TriageWorker');
+
+/**
+ * Takes jobs from the "triage" queue and sends each ticket to the Python service.
+ *
+ *  - success         -> the Python response becomes the job result (status "done")
+ *  - worth retrying  -> throws RetryableTriageError; BullMQ waits (custom backoff) and retries
+ *  - not worth it    -> throws UnrecoverableError; the job fails at once, no more attempts
+ */
+@Processor(TRIAGE_QUEUE, { settings: { backoffStrategy: triageBackoffStrategy } })
+export class TriageProcessor extends WorkerHost implements OnApplicationBootstrap {
+  constructor(
+    @Inject(ConfigService) private readonly config: ConfigService<AppConfig, true>,
+    @Inject(FETCH) private readonly fetchFn: typeof fetch,
+  ) {
+    super();
+  }
+
+  /**
+   * @nestjs/bullmq builds the worker from decorator options, which are fixed when the code
+   * loads. Concurrency comes from config, so it is set on the finished worker instead.
+   */
+  onApplicationBootstrap(): void {
+    this.worker.concurrency = this.config.get('WORKER_CONCURRENCY', { infer: true });
+  }
+
+  async process(job: Job<TicketJobData>): Promise<unknown> {
+    const attempt = job.attemptsMade + 1;
+    const started = Date.now();
+
+    const { subject, body, customer_id } = job.data;
+    const outcome = await callTriage(
+      this.fetchFn,
+      this.config.get('TRIAGE_SERVICE_URL', { infer: true }),
+      { subject, body, customer_id },
+      this.config.get('TRIAGE_TIMEOUT_MS', { infer: true }),
+    );
+
+    this.logAttempt(job, attempt, outcome, Date.now() - started);
+
+    switch (outcome.kind) {
+      case 'success':
+        return outcome.result;
+      case 'retry':
+        throw new RetryableTriageError(outcome.reason, outcome.retryAfterSeconds);
+      case 'fail':
+        throw new UnrecoverableError(outcome.reason);
+    }
+  }
+
+  /** One line per attempt. Only ids, counts and fixed phrases: never the ticket text. */
+  private logAttempt(job: Job<TicketJobData>, attempt: number, outcome: TriageOutcome, ms: number) {
+    const result =
+      outcome.kind === 'success' ? 'success' : `${outcome.kind} (${outcome.reason})`;
+    const line = `job=${job.id} attempt=${attempt}/${job.opts.attempts ?? MAX_ATTEMPTS} outcome=${result} duration_ms=${ms}`;
+    if (outcome.kind === 'success') logger.log(line);
+    else logger.warn(line);
+  }
+
+  @OnWorkerEvent('error')
+  onError(error: NodeJS.ErrnoException): void {
+    // A connection problem in the worker itself (not a job failing). Log a short code only.
+    logger.warn(`Worker connection problem (${error.code ?? error.name})`);
+  }
+}

@@ -10,3 +10,4 @@ venv/
 **/*.pyc
 tests/
 *.sql
+gateway/

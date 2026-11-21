@@ -9,3 +9,8 @@ __pycache__/
 
 # eval run output: the .json holds full replies and labels; the .md scorecards stay committable
 evals/results/*.json
+
+# gateway (NestJS) install and build output
+gateway/node_modules/
+gateway/dist/
+gateway/*.tsbuildinfo
