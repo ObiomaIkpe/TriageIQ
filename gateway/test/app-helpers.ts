@@ -5,6 +5,7 @@ import { Test } from '@nestjs/testing';
 import { vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { IDEMPOTENCY_REDIS } from '../src/idempotency/idempotency.constants.js';
+import { PG_POOL } from '../src/database/database.constants.js';
 import { QUEUE_TIMEOUT_MS, TRIAGE_QUEUE } from '../src/queue/queue.constants.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { WorkerModule } from '../src/worker/worker.module.js';
@@ -16,12 +17,22 @@ export function stubEnv(redisUrl = 'redis://localhost:6379') {
   vi.stubEnv('PORT', '3000');
   vi.stubEnv('REDIS_URL', redisUrl);
   vi.stubEnv('TRIAGE_SERVICE_URL', 'http://localhost:8000');
+  // Never connected to in these tests: the pool is lazy, or replaced by a fake.
+  vi.stubEnv('GATEWAY_DATABASE_URL', 'postgresql://gateway:test-password@localhost:5432/gateway_test');
   stubAuthEnv();
 }
 
 /** Stands in for WorkerModule, so a test that only checks intake never runs a worker. */
 @Module({})
 export class NoWorkerModule {}
+
+/** Stands in for the gateway database pool: answers SELECT 1 and closes at once. */
+const fakePgPool = {
+  query: async () => ({ rows: [{ '?column?': 1 }], rowCount: 1 }),
+  connect: async () => ({ query: async () => ({ rows: [], rowCount: 0 }), release: () => undefined }),
+  end: async () => undefined,
+  on: () => undefined,
+};
 
 const fakeRedisClient = {
   ping: async () => 'PONG',
@@ -40,6 +51,8 @@ export async function startAppWithFakeQueue(
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(REDIS_CLIENT)
     .useValue(fakeRedisClient)
+    .overrideProvider(PG_POOL)
+    .useValue(fakePgPool)
     .overrideProvider(getQueueToken(TRIAGE_QUEUE))
     .useValue(queue)
     .overrideProvider(IDEMPOTENCY_REDIS)

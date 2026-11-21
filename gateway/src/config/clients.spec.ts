@@ -103,6 +103,7 @@ describe('validateEnv with the client registry and the rate limit', () => {
     TRIAGE_SERVICE_URL: 'http://localhost:8000',
     GATEWAY_CLIENTS: JSON.stringify([entry()]),
     TRIAGE_REVIEW_API_KEY: 'a-review-key',
+    GATEWAY_DATABASE_URL: 'postgresql://gateway:secret@db:5432/gateway',
   };
 
   function failure(env: Record<string, unknown>): ConfigValidationError {

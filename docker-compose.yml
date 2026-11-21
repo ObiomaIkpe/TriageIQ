@@ -6,10 +6,24 @@ services:
       POSTGRES_USER: triageiq
       POSTGRES_PASSWORD: triageiq
       POSTGRES_DB: triageiq
+      # The password of the gateway's own database role (see db/gateway-db.sql). Read from the root
+      # .env. The db service needs nothing else of the gateway's.
+      GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:?Set GATEWAY_DB_PASSWORD in .env (see README, Run the whole system)}
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
       - triageiq_pgdata:/var/lib/postgresql/data
+      # Runs once on a fresh volume and creates the gateway role and database. Existing volumes:
+      # scripts/create_gateway_db.sh.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./db/gateway-db.sql:/gateway-db.sql:ro
+    healthcheck:
+      # Over TCP on purpose: while the image runs its init scripts its temporary server listens
+      # only on the unix socket, so a check through the socket would pass too early.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U triageiq -d triageiq"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   app:
     build: .
@@ -37,6 +51,19 @@ services:
       timeout: 3s
       retries: 10
 
+  # One-shot: applies the gateway's database migrations, then exits. The gateway starts only after
+  # it has finished successfully. The gateway itself never migrates.
+  gateway-migrate:
+    build: ./gateway
+    command: ["node", "dist/database/migrate.js"]
+    restart: "no"
+    env_file:
+      - path: gateway/.env
+        required: true
+    depends_on:
+      db:
+        condition: service_healthy
+
   gateway:
     build: ./gateway
     restart: unless-stopped
@@ -60,6 +87,8 @@ services:
         condition: service_healthy
       app:
         condition: service_started
+      gateway-migrate:
+        condition: service_completed_successfully
 
 volumes:
   triageiq_pgdata:
