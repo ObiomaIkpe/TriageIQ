@@ -5,8 +5,9 @@ import { type Job, UnrecoverableError } from 'bullmq';
 import type { AppConfig } from '../config/env.schema.js';
 import { FETCH } from '../health/health.constants.js';
 import { TRIAGE_QUEUE } from '../queue/queue.constants.js';
+import { shortReason } from '../jobs/job-status.js';
 import type { TicketJobData } from '../queue/triage-queue.service.js';
-import { MAX_ATTEMPTS, triageBackoffStrategy } from './backoff.js';
+import { triageBackoffStrategy } from './backoff.js';
 import { callTriage, type TriageOutcome } from './triage-outcome.js';
 import { RetryableTriageError } from './triage.errors.js';
 
@@ -64,9 +65,24 @@ export class TriageProcessor extends WorkerHost implements OnApplicationBootstra
   private logAttempt(job: Job<TicketJobData>, attempt: number, outcome: TriageOutcome, ms: number) {
     const result =
       outcome.kind === 'success' ? 'success' : `${outcome.kind} (${outcome.reason})`;
-    const line = `job=${job.id} attempt=${attempt}/${job.opts.attempts ?? MAX_ATTEMPTS} outcome=${result} duration_ms=${ms}`;
+    const line = `job=${job.id} attempt=${attempt}/${job.opts.attempts ?? 1} outcome=${result} duration_ms=${ms}`;
     if (outcome.kind === 'success') logger.log(line);
     else logger.warn(line);
+  }
+
+  /**
+   * BullMQ emits 'failed' for every failed attempt, including ones it will retry. A job is only
+   * in the dead-letter list when its state is really "failed", so ask for that before logging.
+   */
+  @OnWorkerEvent('failed')
+  async onFailed(job: Job<TicketJobData> | undefined, error: Error): Promise<void> {
+    if (!job) return;
+    try {
+      if ((await job.getState()) !== 'failed') return;
+    } catch {
+      return; // Redis trouble: the job is not confirmed final, so say nothing.
+    }
+    logDeadLetter(job.id, job.attemptsMade, error.message);
   }
 
   @OnWorkerEvent('error')
@@ -74,4 +90,9 @@ export class TriageProcessor extends WorkerHost implements OnApplicationBootstra
     // A connection problem in the worker itself (not a job failing). Log a short code only.
     logger.warn(`Worker connection problem (${error.code ?? error.name})`);
   }
+}
+
+/** One WARN line when a job lands in the dead-letter list. Never the ticket text. */
+export function logDeadLetter(jobId: string | undefined, attemptsMade: number, reason: string) {
+  logger.warn(`dead-letter job=${jobId} attempts_made=${attemptsMade} reason=${shortReason(reason)}`);
 }

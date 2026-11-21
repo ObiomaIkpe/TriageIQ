@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { configModuleOptions } from './config/config.options.js';
+import { DeadLettersModule } from './dead-letters/dead-letters.module.js';
 import { HealthModule } from './health/health.module.js';
 import { JobsModule } from './jobs/jobs.module.js';
 import { RedisModule } from './redis/redis.module.js';
@@ -15,6 +16,7 @@ import { WorkerModule } from './worker/worker.module.js';
     HealthModule,
     TicketsModule,
     JobsModule,
+    DeadLettersModule,
     WorkerModule,
   ],
 })

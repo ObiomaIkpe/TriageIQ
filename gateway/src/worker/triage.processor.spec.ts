@@ -101,3 +101,62 @@ describe('TriageProcessor.process', () => {
     }
   });
 });
+
+describe('TriageProcessor attempts in the log line', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows 1 as the total for a job created before attempts existed, never "/0"', async () => {
+    const lines: string[] = [];
+    vi.spyOn(Logger.prototype, 'log').mockImplementation((message: unknown) => void lines.push(String(message)));
+    const old = { id: 'job-old', data: DATA, attemptsMade: 0, opts: {} } as unknown as Job<TicketJobData>;
+    await new TriageProcessor(config, reply(200, '{}')).process(old);
+    expect(lines[0]).toMatch(/^job=job-old attempt=1\/1 outcome=success/);
+  });
+});
+
+describe('TriageProcessor dead-letter log', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const failedJob = (state: string | Error, attemptsMade = 8) =>
+    ({
+      id: 'job-9',
+      data: DATA,
+      attemptsMade,
+      getState: () => (state instanceof Error ? Promise.reject(state) : Promise.resolve(state)),
+    }) as unknown as Job<TicketJobData>;
+
+  function warnings() {
+    const lines: string[] = [];
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation((message: unknown) => void lines.push(String(message)));
+    return lines;
+  }
+  const processor = () => new TriageProcessor(config, reply(200, '{}'));
+
+  it('logs one WARN line with job id, attempts made and the short reason when the job is failed', async () => {
+    const lines = warnings();
+    await processor().onFailed(failedJob('failed'), new Error('triage service unavailable (503)\n    at x (/app/y.js:1:1)'));
+    expect(lines).toEqual(['dead-letter job=job-9 attempts_made=8 reason=triage service unavailable (503)']);
+  });
+
+  it('says nothing for an attempt that will be retried (state delayed)', async () => {
+    const lines = warnings();
+    await processor().onFailed(failedJob('delayed', 1), new Error('triage service unavailable (503)'));
+    expect(lines).toEqual([]);
+  });
+
+  it('says nothing when the state cannot be read, or there is no job', async () => {
+    const lines = warnings();
+    await processor().onFailed(failedJob(new Error('Connection is closed.')), new Error('x'));
+    await processor().onFailed(undefined, new Error('x'));
+    expect(lines).toEqual([]);
+  });
+
+  it('never contains ticket text', async () => {
+    const lines = warnings();
+    await processor().onFailed(failedJob('failed'), new Error('rejected by triage service (422)'));
+    for (const line of lines) {
+      expect(line).not.toContain(SUBJECT);
+      expect(line).not.toContain(BODY);
+    }
+  });
+});

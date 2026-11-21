@@ -81,7 +81,9 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
 
     const job = await inspector.getJob(post.body.job_id);
     expect(job?.opts.removeOnComplete).toEqual({ age: 86400 });
-    expect(job?.opts.removeOnFail).toEqual({ age: 604800 });
+    expect(job?.opts.removeOnFail).toEqual({ age: 2592000 }); // 30 days (was 7)
+    expect(job?.opts.attempts).toBe(8);
+    expect(job?.opts.backoff).toEqual({ type: 'custom', delay: 10000 });
     expect(job?.data).not.toHaveProperty('customer_id');
   });
 

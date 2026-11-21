@@ -340,11 +340,11 @@ Rules and limits:
 | `GET /jobs/:id` with an unknown id | `404 {"detail":"Job not found"}` |
 | `GET /jobs/:id` while Redis is down | `503` |
 
-The field names match the Python `TicketIn`, but the gateway is stricter: the Python service accepts an empty subject or body, no length limits, and `"customer_id": null`, while the gateway rejects all three. A ticket the gateway accepts is always valid for the Python service. Finished jobs stay in Redis for 1 day (failed ones for 7 days) and are then removed.
+The field names match the Python `TicketIn`, but the gateway is stricter: the Python service accepts an empty subject or body, no length limits, and `"customer_id": null`, while the gateway rejects all three. A ticket the gateway accepts is always valid for the Python service. Finished jobs stay in Redis for 1 day (failed ones for 30 days, see the dead-letter list below) and are then removed.
 
 ### The worker and retries
 
-The worker runs inside the gateway process. For each job it sends `{subject, body, customer_id}` to `POST {TRIAGE_SERVICE_URL}/triage` and waits up to `TRIAGE_TIMEOUT_MS`. A job gets at most **5 attempts**. After a failed attempt that is worth repeating, it waits `max(Retry-After, 10 s x 2^(n-1))` after attempt n, never more than 5 minutes: 10 s, 20 s, 40 s, then 80 s.
+The worker runs inside the gateway process. For each job it sends `{subject, body, customer_id}` to `POST {TRIAGE_SERVICE_URL}/triage` and waits up to `TRIAGE_TIMEOUT_MS`. A job gets at most **8 attempts**. After a failed attempt that is worth repeating, it waits `max(Retry-After, 10 s x 2^(n-1))` after attempt n, never more than 5 minutes: 10, 20, 40, 80, 160, 300 and 300 seconds, about **15 minutes** of retrying in total (long enough for a Python restart or a short Claude outage).
 
 | Answer from the Python service | What happens | Why |
 |---|---|---|
@@ -355,11 +355,60 @@ The worker runs inside the gateway process. For each job it sends `{subject, bod
 | `500`, `501` and any other `5xx` | `failed` at once | **A `500` is not retried on purpose.** The Python service returns `500` for problems a retry cannot fix, such as an invalid Anthropic key or a bug, and every retry would repeat several paid LLM calls |
 | `2xx` that is not valid JSON | `failed` at once | Something is wrong with the service, not the load |
 
-When the attempts run out the job is `failed` with the last reason. Failure reasons are short fixed phrases such as `triage service unavailable (503)`, `timeout` or `rejected by triage service (422)`: never a URL, response body or ticket text. The worker logs one line per attempt (job id, attempt, outcome, duration) and never the ticket text. Jobs queued before M3.3 keep the options they were queued with (one attempt, no backoff).
+When the attempts run out the job is `failed` with the last reason. Failure reasons are short fixed phrases such as `triage service unavailable (503)`, `timeout` or `rejected by triage service (422)`: never a URL, response body or ticket text. The worker logs one line per attempt (job id, attempt, outcome, duration) and never the ticket text. Jobs queued before M3.3 keep the options they were queued with (one attempt, no backoff), and jobs queued before M3.4a keep their 5 attempts and 7-day retention.
 
-**Stopping the gateway.** On `SIGTERM` the gateway stops taking work and waits for the jobs that are running, then exits. Docker only waits 10 seconds by default and then kills the container. A job that was running at that moment is not lost, but BullMQ only notices after the job's lock runs out (about a minute) and then runs it again, so the Python service can receive the same ticket twice. To avoid this, give the gateway a stop timeout longer than `TRIAGE_TIMEOUT_MS` (for example `stop_grace_period: 130s` in `docker-compose.yml`); the compose file does not set one yet.
+**Stopping the gateway.** On `SIGTERM` the gateway stops taking work and waits for the jobs that are running, then exits. Docker only waits 10 seconds by default and then kills the container. A job that was running at that moment is not lost, but BullMQ only notices after the job's lock runs out (about a minute) and then runs it again, so the Python service can receive the same ticket twice. To avoid this, give the gateway a stop timeout longer than `TRIAGE_TIMEOUT_MS` (`docker-compose.yml` sets `stop_grace_period: 130s` on the gateway; keep it longer than `TRIAGE_TIMEOUT_MS`).
 
-**Known gap (fixed in M3.4).** If the worker stops after the Python service has saved the ticket but before the job is marked `done` (a crash, a killed container, a timeout that fires just after Python finished), the retry sends the ticket again and Python saves a second one. Until M3.4 adds idempotency, treat a retry after a timeout as possibly creating a duplicate ticket.
+### Dead letters: tickets that failed for good
+
+A job is `failed` only when it is final: its attempts are used up, or the Python service rejected it in a way a retry cannot fix (such as a `422`). Between retries a job is `delayed`, not `failed`. BullMQ keeps final failures in its **failed set**, and the gateway uses that set as the dead-letter list instead of a separate store: nothing to keep in sync, and a failed job keeps its data, its reason and its id. Failed jobs stay for **30 days** and are then removed (jobs already in Redis keep the retention they were added with). Without this list, a ticket that failed after 15 minutes of retries was only reachable if you knew its id, and expired quietly after a week.
+
+When a job reaches `failed` the worker logs one WARN line: `dead-letter job=<id> attempts_made=<n> reason=<short reason>`. It never contains ticket text.
+
+**`GET /dead-letters?limit=20&offset=0`** lists failed jobs, newest failure first. `limit` is 1 to 100 (default 20), `offset` is 0 or more; anything else is `400`.
+
+```bash
+curl -s "localhost:3000/dead-letters?limit=2"
+```
+
+```json
+{
+  "items": [
+    {
+      "job_id": "2261b984-fe29-4c2b-9b82-4f26d2460d72",
+      "failed_at": "2026-11-20T09:15:02.311Z",
+      "received_at": "2026-11-20T09:12:40.870Z",
+      "attempts_made": 5,
+      "reason": "triage service unreachable (connection refused)",
+      "subject": "Cannot log in",
+      "body": "I get an error when I try to sign in.",
+      "customer_id": "cust-42"
+    }
+  ],
+  "total": 1,
+  "limit": 2,
+  "offset": 0
+}
+```
+
+(Illustrative values.) `customer_id` is `null` when the ticket had none. `reason` is the short one-line reason, never a stack trace. `503` if Redis cannot be reached within about 2 seconds, like the other endpoints.
+
+**`POST /dead-letters/:id/retry`** puts a failed job back on the queue under the **same job id**, with all its attempts again, and answers `202 {"job_id", "status": "queued", "status_url": "/jobs/<id>"}`. Keep polling the same `status_url`.
+
+```bash
+curl -s -X POST localhost:3000/dead-letters/2261b984-fe29-4c2b-9b82-4f26d2460d72/retry
+```
+
+| Case | Answer |
+|---|---|
+| id is not a UUID | `400 {"detail":"Malformed job id"}` |
+| no such job | `404 {"detail":"Job not found"}` |
+| the job exists but is not failed (queued, running, done, or already retried) | `409 {"detail":"Job is not in the dead-letter list"}` |
+| Redis unreachable | `503` |
+
+Retrying twice in a row gives `409` the second time, never a second copy: BullMQ checks and moves the job in one atomic step. **These two endpoints have no login until M3.5 and expose ticket text, which is why the compose file binds the gateway port to localhost only.** Do not publish port 3000 beyond localhost before M3.5.
+
+**Known gap (fixed in M3.4b).** If the worker stops after the Python service has saved the ticket but before the job is marked `done` (a crash, a killed container, a timeout that fires just after Python finished), the retry sends the ticket again and Python saves a second one. Until M3.4b adds idempotency, treat a retry after a timeout as possibly creating a duplicate ticket.
 
 Tests (Vitest; lint is oxlint): `npm test`, `npm run test:e2e` and `npm run lint` inside `gateway/`. Tests that need a real Redis (including the worker retry tests, which take about 30 seconds because they use the real backoff) are skipped unless `REDIS_TEST_URL` is set, for example:
 
