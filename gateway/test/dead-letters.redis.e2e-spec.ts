@@ -4,11 +4,11 @@ import type { AddressInfo } from 'node:net';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { Queue } from 'bullmq';
-import request from 'supertest';
 import { afterAll, beforeAll, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { TRIAGE_RETRY_POLICY } from '../src/queue/retry-policy.js';
 import { stubEnv } from './app-helpers.js';
+import { api } from './auth-helpers.js';
 
 /**
  * Dead-letter list and retry against a REAL Redis and a fake triage server.
@@ -87,7 +87,7 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
   });
 
   async function submit(subject: string): Promise<string> {
-    const response = await request(app.getHttpServer())
+    const response = await api(app)
       .post('/tickets')
       .send({ subject, body: 'Please help', customer_id: 'cust-1' })
       .expect(202);
@@ -98,7 +98,7 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
   async function waitForStatus(id: string, wanted: string, timeoutMs = 10_000) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const body = (await request(app.getHttpServer()).get(`/jobs/${id}`).expect(200)).body;
+      const body = (await api(app).get(`/jobs/${id}`).expect(200)).body;
       if (body.status === wanted) return body;
       if (Date.now() > deadline) throw new Error(`job stayed "${body.status}", wanted "${wanted}"`);
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -106,7 +106,7 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
   }
 
   async function list(query = '') {
-    return (await request(app.getHttpServer()).get(`/dead-letters${query}`).expect(200)).body;
+    return (await api(app).get(`/dead-letters${query}`).expect(200)).body;
   }
 
   it('a 422 fails the job at once and it shows up with the right fields', async () => {
@@ -125,6 +125,7 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
       subject: 'DL-422-a',
       body: 'Please help',
       customer_id: 'cust-1',
+      client: 'ops', // the API client that submitted it
     });
     expect(callsFor('DL-422-a')).toBe(1);
     expect(warnings).toContain(`dead-letter job=${id} attempts_made=1 reason=rejected by triage service (422)`);
@@ -154,7 +155,7 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
     expect(callsFor('DL-FIX-a')).toBe(ATTEMPTS);
 
     fixed.add('DL-FIX-a'); // the triage service "recovers"
-    const response = await request(app.getHttpServer()).post(`/dead-letters/${id}/retry`).expect(202);
+    const response = await api(app).post(`/dead-letters/${id}/retry`).expect(202);
     expect(response.body).toEqual({ job_id: id, status: 'queued', status_url: `/jobs/${id}` });
 
     const done = await waitForStatus(id, 'done');
@@ -172,7 +173,7 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
     await waitForStatus(id, 'failed');
     expect(callsFor('DL-AGAIN-a')).toBe(ATTEMPTS);
 
-    await request(app.getHttpServer()).post(`/dead-letters/${id}/retry`).expect(202);
+    await api(app).post(`/dead-letters/${id}/retry`).expect(202);
     // Wait for the second failure: its dead-letter log line (the first one is already there).
     const deadline = Date.now() + 10_000;
     while (
@@ -193,12 +194,12 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
     await waitForStatus(id, 'failed');
     fixed.add('DL-FIX-b');
 
-    await request(app.getHttpServer()).post(`/dead-letters/${id}/retry`).expect(202);
-    const second = await request(app.getHttpServer()).post(`/dead-letters/${id}/retry`).expect(409);
+    await api(app).post(`/dead-letters/${id}/retry`).expect(202);
+    const second = await api(app).post(`/dead-letters/${id}/retry`).expect(409);
     expect(second.body).toEqual({ detail: 'Job is not in the dead-letter list' });
 
     await waitForStatus(id, 'done');
-    await request(app.getHttpServer()).post(`/dead-letters/${id}/retry`).expect(409); // done is not failed
+    await api(app).post(`/dead-letters/${id}/retry`).expect(409); // done is not failed
     expect(callsFor('DL-FIX-b')).toBe(ATTEMPTS + 1); // one retry ran, not two
   });
 
@@ -208,8 +209,8 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
     fixed.add('DL-FIX-c');
 
     const answers = await Promise.all([
-      request(app.getHttpServer()).post(`/dead-letters/${id}/retry`),
-      request(app.getHttpServer()).post(`/dead-letters/${id}/retry`),
+      api(app).post(`/dead-letters/${id}/retry`),
+      api(app).post(`/dead-letters/${id}/retry`),
     ]);
     expect(answers.map((answer) => answer.status).sort((a, b) => a - b)).toEqual([202, 409]);
     await waitForStatus(id, 'done');
@@ -217,15 +218,15 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
   });
 
   it('unknown id -> 404, malformed id -> 400, a queued/done job -> 409', async () => {
-    await request(app.getHttpServer())
+    await api(app)
       .post('/dead-letters/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34/retry')
       .expect(404);
-    await request(app.getHttpServer()).post('/dead-letters/not-an-id/retry').expect(400);
+    await api(app).post('/dead-letters/not-an-id/retry').expect(400);
 
     const id = await submit('DL-OK-a');
     fixed.add('DL-OK-a');
     await waitForStatus(id, 'done');
-    await request(app.getHttpServer()).post(`/dead-letters/${id}/retry`).expect(409);
+    await api(app).post(`/dead-letters/${id}/retry`).expect(409);
   });
 
   it('pagination across 3 failed jobs, newest failure first', async () => {
@@ -253,9 +254,9 @@ describe.skipIf(!REDIS_TEST_URL)('dead letters against a real Redis and a fake t
   });
 
   it('bad query values -> 400', async () => {
-    await request(app.getHttpServer()).get('/dead-letters?limit=0').expect(400);
-    await request(app.getHttpServer()).get('/dead-letters?limit=101').expect(400);
-    await request(app.getHttpServer()).get('/dead-letters?offset=-1').expect(400);
-    await request(app.getHttpServer()).get('/dead-letters?limit=abc').expect(400);
+    await api(app).get('/dead-letters?limit=0').expect(400);
+    await api(app).get('/dead-letters?limit=101').expect(400);
+    await api(app).get('/dead-letters?offset=-1').expect(400);
+    await api(app).get('/dead-letters?limit=abc').expect(400);
   });
 });

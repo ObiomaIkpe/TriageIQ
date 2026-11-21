@@ -4,10 +4,10 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
-import request from 'supertest';
 import { afterAll, beforeAll, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { stubEnv } from './app-helpers.js';
+import { api } from './auth-helpers.js';
 
 /**
  * The real app WITH its worker, a REAL Redis, and a fake triage server started in the test.
@@ -113,7 +113,7 @@ describe.skipIf(!REDIS_TEST_URL)('triage worker against a real Redis and a fake 
   });
 
   async function submit(subject: string): Promise<string> {
-    const response = await request(app.getHttpServer())
+    const response = await api(app)
       .post('/tickets')
       .send({ subject, body: 'Please help', customer_id: 'cust-1' })
       .expect(202);
@@ -122,7 +122,7 @@ describe.skipIf(!REDIS_TEST_URL)('triage worker against a real Redis and a fake 
   }
 
   async function status(id: string) {
-    return (await request(app.getHttpServer()).get(`/jobs/${id}`).expect(200)).body;
+    return (await api(app).get(`/jobs/${id}`).expect(200)).body;
   }
 
   async function waitFor(id: string, wanted: string, timeoutMs: number) {

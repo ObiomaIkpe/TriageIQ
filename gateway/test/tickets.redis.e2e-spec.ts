@@ -1,11 +1,11 @@
 import { Queue } from 'bullmq';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
-import request from 'supertest';
 import { afterAll, beforeAll, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { WorkerModule } from '../src/worker/worker.module.js';
 import { NoWorkerModule, stubEnv } from './app-helpers.js';
+import { api } from './auth-helpers.js';
 
 /**
  * Runs against a REAL Redis. Skipped unless REDIS_TEST_URL is set, e.g.
@@ -45,12 +45,12 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
 
   it('POST stores the job in Redis, GET reports it queued, and the data matches', async () => {
     const before = Date.now();
-    const post = await request(app.getHttpServer()).post('/tickets').send(TICKET).expect(202);
+    const post = await api(app).post('/tickets').send(TICKET).expect(202);
     const id: string = post.body.job_id;
     created.push(id);
     expect(post.headers.location).toBe(`/jobs/${id}`);
 
-    const get = await request(app.getHttpServer()).get(`/jobs/${id}`).expect(200);
+    const get = await api(app).get(`/jobs/${id}`).expect(200);
     expect(get.body).toEqual({
       job_id: id,
       status: 'queued',
@@ -66,6 +66,7 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
       body: 'I forgot my password.',
       customer_id: 'cust-42',
       received_at: get.body.received_at,
+      client: 'ops', // the API client that submitted it
     });
     expect(new Date(get.body.received_at).getTime()).toBeGreaterThanOrEqual(before - 1);
     // No worker runs in this file (see beforeAll), so the job must still be waiting.
@@ -73,7 +74,7 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
   });
 
   it('the default job options (retention) are applied', async () => {
-    const post = await request(app.getHttpServer())
+    const post = await api(app)
       .post('/tickets')
       .send({ subject: 'a', body: 'b' })
       .expect(202);
@@ -88,7 +89,7 @@ describe.skipIf(!REDIS_TEST_URL)('ticket intake against a real Redis', () => {
   });
 
   it('GET of an id that was never created -> 404', async () => {
-    await request(app.getHttpServer())
+    await api(app)
       .get('/jobs/9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d')
       .expect(404);
   });

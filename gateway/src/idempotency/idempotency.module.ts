@@ -38,7 +38,8 @@ export function createIdempotencyRedis(url: string): Redis {
     },
     IdempotencyService,
   ],
-  exports: [IdempotencyService],
+  // The token is exported because the rate limiter counts on the same connection.
+  exports: [IdempotencyService, IDEMPOTENCY_REDIS],
 })
 export class IdempotencyModule implements OnApplicationShutdown {
   constructor(@Inject(IDEMPOTENCY_REDIS) private readonly client: Redis) {}

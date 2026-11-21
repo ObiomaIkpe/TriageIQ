@@ -19,7 +19,7 @@ services:
     environment:
       DATABASE_URL: postgresql://triageiq:triageiq@db:5432/triageiq
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       - db
 
@@ -42,6 +42,11 @@ services:
     restart: unless-stopped
     # Must stay longer than TRIAGE_TIMEOUT_MS, so a running job can finish before the container is killed.
     stop_grace_period: 130s
+    # The secrets (GATEWAY_CLIENTS) and RATE_LIMIT_PER_MINUTE come from gateway/.env.
+    # If compose reports that file as missing: cp gateway/.env.example gateway/.env, then edit it.
+    env_file:
+      - path: gateway/.env
+        required: true
     environment:
       PORT: "3000"
       REDIS_URL: redis://redis:6379
@@ -49,7 +54,7 @@ services:
       WORKER_CONCURRENCY: "2"
       TRIAGE_TIMEOUT_MS: "120000"
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       redis:
         condition: service_healthy

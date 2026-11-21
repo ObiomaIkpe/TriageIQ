@@ -1,4 +1,5 @@
 import type { KeyValueClient } from '../src/idempotency/idempotency.constants.js';
+import { RATE_LIMIT_SCRIPT } from '../src/auth/rate-limit.guard.js';
 import { COMPARE_AND_DELETE_SCRIPT } from '../src/idempotency/idempotency.service.js';
 import type { JobLike, QueueLike, TicketJobData } from '../src/queue/triage-queue.service.js';
 
@@ -9,6 +10,19 @@ export class FakeKeyValue implements KeyValueClient {
   /** Like ioredis: not 'ready' while the connection is down. */
   get status() {
     return this.mode() === 'fail' ? 'reconnecting' : 'ready';
+  }
+
+  /** What RATE_LIMIT_SCRIPT does in Redis: count, and start the expiry on the first request. */
+  private count(key: string, windowSeconds: number) {
+    if (this.limiterDown) return Promise.reject(new Error('Connection is closed.'));
+    const now = this.now();
+    let entry = this.counters.get(key);
+    if (!entry || entry.expiresAt <= now) {
+      entry = { count: 0, expiresAt: now + windowSeconds * 1000 };
+    }
+    entry.count += 1;
+    this.counters.set(key, entry);
+    return Promise.resolve([entry.count, Math.ceil((entry.expiresAt - now) / 1000)]);
   }
 
   quit() {
@@ -24,6 +38,12 @@ export class FakeKeyValue implements KeyValueClient {
   entries = new Map<string, { value: string; ttl: number }>();
   /** Every write that reached the store, in order, for assertions. */
   log: string[] = [];
+  /** The rate limiter's counters, and the clock they use (a test moves it to end a window). */
+  counters = new Map<string, { count: number; expiresAt: number }>();
+  now = () => Date.now();
+  /** Makes the rate limiter's counting fail, as if Redis were down for it. Off by default so
+   *  tests of the queue's own failures are not answered by the limiter first. */
+  limiterDown = false;
   /** Makes the next eval() (the compare-and-delete) fail. */
   evalError: Error | undefined;
 
@@ -41,6 +61,7 @@ export class FakeKeyValue implements KeyValueClient {
   }
 
   eval(script: string, _numberOfKeys: number, key: string, jobId: string) {
+    if (script === RATE_LIMIT_SCRIPT) return this.count(key, Number(jobId));
     if (this.hangs()) return new Promise<never>(() => undefined);
     if (this.evalError) return Promise.reject(this.evalError);
     if (script !== COMPARE_AND_DELETE_SCRIPT) return Promise.reject(new Error('unknown script'));

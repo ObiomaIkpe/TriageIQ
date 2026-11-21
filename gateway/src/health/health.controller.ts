@@ -1,6 +1,9 @@
 import { Controller, Get, HttpException, HttpStatus, Inject } from '@nestjs/common';
+import { Public } from '../auth/auth.decorators.js';
 import { ReadyService } from './ready.service.js';
 
+/** Both routes stay public: orchestrators and uptime checks have no API key. */
+@Public()
 @Controller()
 export class HealthController {
   constructor(@Inject(ReadyService) private readonly readyService: ReadyService) {}

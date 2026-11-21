@@ -1,8 +1,8 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import request from 'supertest';
 import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { startAppWithFakeQueue, stubEnv } from './app-helpers.js';
 import { FakeJob, FakeQueue } from './fake-queue.js';
+import { api } from './auth-helpers.js';
 
 const SECRET = 'SECRETVALUE123';
 const TICKET = { subject: 'Cannot log in', body: 'I forgot my password.', customer_id: 'cust-42' };
@@ -28,7 +28,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
 
   describe('POST /tickets', () => {
     it('valid ticket -> 202 with job id, status_url and a Location header', async () => {
-      const response = await request(app.getHttpServer()).post('/tickets').send(TICKET).expect(202);
+      const response = await api(app).post('/tickets').send(TICKET).expect(202);
 
       expect(response.body).toEqual({
         job_id: expect.stringMatching(UUID),
@@ -42,7 +42,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     });
 
     it('accepts a charset on the content type', async () => {
-      await request(app.getHttpServer())
+      await api(app)
         .post('/tickets')
         .set('Content-Type', 'application/json; charset=utf-8')
         .send(JSON.stringify(TICKET))
@@ -50,7 +50,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     });
 
     it('invalid ticket -> 400 with field/problem entries, values not echoed', async () => {
-      const response = await request(app.getHttpServer())
+      const response = await api(app)
         .post('/tickets')
         .send({ subject: '', body: SECRET.repeat(500), extra: SECRET })
         .expect(400);
@@ -68,7 +68,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     });
 
     it('malformed JSON -> 400 JSON error that does not quote the input', async () => {
-      const response = await request(app.getHttpServer())
+      const response = await api(app)
         .post('/tickets')
         .set('Content-Type', 'application/json')
         .send(`{"subject": "${SECRET}", oops`)
@@ -79,7 +79,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     });
 
     it('empty JSON body -> 400 listing the required fields', async () => {
-      const response = await request(app.getHttpServer())
+      const response = await api(app)
         .post('/tickets')
         .set('Content-Type', 'application/json')
         .send('{}')
@@ -95,7 +95,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
       ['application/x-www-form-urlencoded', 'subject=x&body=y'],
       ['application/xml', '<ticket/>'],
     ])('content type %s -> 415', async (type, payload) => {
-      const response = await request(app.getHttpServer())
+      const response = await api(app)
         .post('/tickets')
         .set('Content-Type', type)
         .send(payload)
@@ -105,12 +105,12 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     });
 
     it('no content type -> 415', async () => {
-      await request(app.getHttpServer()).post('/tickets').expect(415);
+      await api(app).post('/tickets').expect(415);
     });
 
     it('JSON body over 100 kb -> 413 before anything is queued', async () => {
       const big = JSON.stringify({ subject: 'x', body: 'y'.repeat(150 * 1024) });
-      const response = await request(app.getHttpServer())
+      const response = await api(app)
         .post('/tickets')
         .set('Content-Type', 'application/json')
         .send(big)
@@ -121,7 +121,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     });
 
     it('a body just under the limit gets as far as validation (400 for length, not 413)', async () => {
-      const response = await request(app.getHttpServer())
+      const response = await api(app)
         .post('/tickets')
         .set('Content-Type', 'application/json')
         .send(JSON.stringify({ subject: 'x', body: 'y'.repeat(90 * 1024) }))
@@ -132,8 +132,9 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     });
 
     it('queue failing -> 503, nothing stored', async () => {
-      queue.mode = 'fail';
-      const response = await request(app.getHttpServer()).post('/tickets').send(TICKET).expect(503);
+      // The write fails; Redis itself answers (the rate limiter would otherwise be the first 503).
+      queue.addError = new Error('connect ECONNREFUSED 10.9.9.9:6379');
+      const response = await api(app).post('/tickets').send(TICKET).expect(503);
       expect(response.body).toEqual({
         detail: 'Ticket intake is temporarily unavailable; please retry',
       });
@@ -144,7 +145,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     it('queue hanging -> 503 within about the timeout, never a hang', async () => {
       queue.mode = 'hang';
       const started = Date.now();
-      await request(app.getHttpServer()).post('/tickets').send(TICKET).expect(503);
+      await api(app).post('/tickets').send(TICKET).expect(503);
       expect(Date.now() - started).toBeLessThan(1500);
     });
   });
@@ -155,7 +156,7 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
         KNOWN_ID,
         new FakeJob({ subject: 's', body: 'b', received_at: '2026-11-20T10:00:00.000Z' }),
       );
-      const response = await request(app.getHttpServer()).get(`/jobs/${KNOWN_ID}`).expect(200);
+      const response = await api(app).get(`/jobs/${KNOWN_ID}`).expect(200);
       expect(response.body).toEqual({
         job_id: KNOWN_ID,
         status: 'queued',
@@ -164,36 +165,36 @@ describe('ticket intake and job status (e2e, fake queue)', () => {
     });
 
     it('a job just created through POST can be read back', async () => {
-      const created = await request(app.getHttpServer()).post('/tickets').send(TICKET).expect(202);
-      const response = await request(app.getHttpServer()).get(created.body.status_url).expect(200);
+      const created = await api(app).post('/tickets').send(TICKET).expect(202);
+      const response = await api(app).get(created.body.status_url).expect(200);
       expect(response.body).toMatchObject({ job_id: created.body.job_id, status: 'queued' });
     });
 
     it('unknown id -> 404', async () => {
-      const response = await request(app.getHttpServer()).get(`/jobs/${OTHER_ID}`).expect(404);
+      const response = await api(app).get(`/jobs/${OTHER_ID}`).expect(404);
       expect(response.body).toEqual({ detail: 'Job not found' });
     });
 
     it('malformed id -> 400, not echoed', async () => {
-      const response = await request(app.getHttpServer()).get(`/jobs/${SECRET}`).expect(400);
+      const response = await api(app).get(`/jobs/${SECRET}`).expect(400);
       expect(response.body).toEqual({ detail: 'Malformed job id' });
       expect(JSON.stringify(response.body)).not.toContain(SECRET);
     });
 
     it('queue failing -> 503', async () => {
       queue.mode = 'fail';
-      await request(app.getHttpServer()).get(`/jobs/${KNOWN_ID}`).expect(503);
+      await api(app).get(`/jobs/${KNOWN_ID}`).expect(503);
     });
 
     it('queue hanging -> 503 within about the timeout', async () => {
       queue.mode = 'hang';
       const started = Date.now();
-      await request(app.getHttpServer()).get(`/jobs/${KNOWN_ID}`).expect(503);
+      await api(app).get(`/jobs/${KNOWN_ID}`).expect(503);
       expect(Date.now() - started).toBeLessThan(1500);
     });
   });
 
   it('existing endpoints still work next to the new ones', async () => {
-    await request(app.getHttpServer()).get('/health').expect(200);
+    await api(app).get('/health').expect(200);
   });
 });

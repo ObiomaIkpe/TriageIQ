@@ -10,6 +10,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { z } from 'zod';
+import { CurrentClient } from '../auth/auth.decorators.js';
+import type { AuthenticatedClient } from '../auth/auth.types.js';
 import { TriageQueueService, type JobSnapshot } from '../queue/triage-queue.service.js';
 import { QueueUnavailableError } from '../queue/with-timeout.js';
 import { mapJobState, shortReason } from './job-status.js';
@@ -23,7 +25,7 @@ export class JobsController {
   constructor(@Inject(TriageQueueService) private readonly queue: TriageQueueService) {}
 
   @Get(':id')
-  async get(@Param('id') id: string) {
+  async get(@Param('id') id: string, @CurrentClient() client: AuthenticatedClient) {
     // The id is not echoed back in any error.
     if (!z.uuid().safeParse(id).success) {
       throw new BadRequestException({ detail: 'Malformed job id' });
@@ -44,6 +46,12 @@ export class JobsController {
       throw new NotFoundException({ detail: 'Job not found' });
     }
 
+    // A submitter sees only its own jobs. Another client's job, and a job from before clients
+    // existed (no `client`), answer exactly like a missing one: 404, never 403, so job ids
+    // cannot be probed. The check comes before anything else about the job is looked at.
+    if (client.role !== 'reviewer' && snapshot.data?.client !== client.name) {
+      throw new NotFoundException({ detail: 'Job not found' });
+    }
     const status = mapJobState(snapshot.state);
     if (!status) {
       logger.error(`Unmapped BullMQ job state: ${snapshot.state}`);

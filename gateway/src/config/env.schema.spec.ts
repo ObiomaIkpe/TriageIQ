@@ -4,10 +4,14 @@ import { afterEach, vi } from 'vitest';
 import { configModuleOptions } from './config.options.js';
 import { ConfigValidationError, validateEnv } from './env.schema.js';
 
+const HASH = 'a'.repeat(64);
+const CLIENTS = [{ name: 'alice', role: 'submitter', key_sha256: HASH }];
+
 const VALID = {
   PORT: '3000',
   REDIS_URL: 'redis://localhost:6379',
   TRIAGE_SERVICE_URL: 'http://localhost:8000',
+  GATEWAY_CLIENTS: JSON.stringify(CLIENTS),
 };
 
 /** A marker that must never show up in an error message. */
@@ -32,6 +36,8 @@ describe('validateEnv', () => {
       // The two optional settings fall back to their defaults.
       WORKER_CONCURRENCY: 2,
       TRIAGE_TIMEOUT_MS: 120000,
+      GATEWAY_CLIENTS: CLIENTS,
+      RATE_LIMIT_PER_MINUTE: 60,
     });
   });
 
@@ -44,7 +50,7 @@ describe('validateEnv', () => {
     expect(config.REDIS_URL).toContain('rediss://');
   });
 
-  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL'])('%s missing -> error names it', (name) => {
+  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS'])('%s missing -> error names it', (name) => {
     const env: Record<string, unknown> = { ...VALID };
     delete env[name];
     const error = failure(env);
@@ -52,7 +58,7 @@ describe('validateEnv', () => {
     expect(error.problems).toHaveLength(1);
   });
 
-  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL'])('%s empty or blank -> counts as missing', (name) => {
+  it.each(['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS'])('%s empty or blank -> counts as missing', (name) => {
     expect(failure({ ...VALID, [name]: '   ' }).message).toContain(`${name} is missing`);
     expect(failure({ ...VALID, [name]: '' }).message).toContain(`${name} is missing`);
   });
@@ -76,10 +82,10 @@ describe('validateEnv', () => {
 
   it('names every bad setting at once', () => {
     const error = failure({});
-    for (const name of ['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL']) {
+    for (const name of ['PORT', 'REDIS_URL', 'TRIAGE_SERVICE_URL', 'GATEWAY_CLIENTS']) {
       expect(error.message).toContain(name);
     }
-    expect(error.problems).toHaveLength(3);
+    expect(error.problems).toHaveLength(4);
   });
 
   it('never puts a setting value in the error', () => {
@@ -101,10 +107,13 @@ describe('validateEnv', () => {
     const env: Record<string, string> = {};
     for (const line of text.split('\n')) {
       const match = /^([A-Z_]+)=(.*)$/.exec(line.trim());
-      if (match) env[match[1]] = match[2];
+      // Like dotenv and compose: a value in single quotes is taken literally, quotes removed.
+      if (match) env[match[1]] = match[2].replace(/^'(.*)'$/, '$1');
     }
     expect(Object.keys(env).sort()).toEqual([
+      'GATEWAY_CLIENTS',
       'PORT',
+      'RATE_LIMIT_PER_MINUTE',
       'REDIS_URL',
       'TRIAGE_SERVICE_URL',
       'TRIAGE_TIMEOUT_MS',
@@ -187,6 +196,7 @@ describe('startup with a bad environment', () => {
     vi.stubEnv('PORT', '3000');
     vi.stubEnv('REDIS_URL', 'redis://localhost:6379');
     vi.stubEnv('TRIAGE_SERVICE_URL', 'http://localhost:8000');
+    vi.stubEnv('GATEWAY_CLIENTS', JSON.stringify(CLIENTS));
 
     await expect(
       ConfigModule.forRoot({ ...configModuleOptions, ignoreEnvFile: true }),

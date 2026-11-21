@@ -13,6 +13,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { z } from 'zod';
+import { Roles } from '../auth/auth.decorators.js';
 import { TriageQueueService } from '../queue/triage-queue.service.js';
 import { QueueUnavailableError } from '../queue/with-timeout.js';
 import { parsePage } from './pagination.js';
@@ -24,6 +25,7 @@ export const DEAD_LETTERS_UNAVAILABLE = 'Dead-letter list is temporarily unavail
  * They carry ticket text and these routes have no login until M3.5, so the gateway port
  * must stay bound to localhost.
  */
+@Roles('reviewer')
 @Controller('dead-letters')
 export class DeadLettersController {
   constructor(@Inject(TriageQueueService) private readonly queue: TriageQueueService) {}

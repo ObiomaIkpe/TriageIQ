@@ -3,10 +3,10 @@ import type { AddressInfo } from 'node:net';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { Queue } from 'bullmq';
-import request from 'supertest';
 import { afterAll, beforeAll, vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { stubEnv } from './app-helpers.js';
+import { api } from './auth-helpers.js';
 
 /**
  * Shutting the app down while a job is running must let that job finish.
@@ -61,7 +61,7 @@ describe.skipIf(!REDIS_TEST_URL)('closing the app while a job is running', () =>
   });
 
   it('app.close() waits for the running job, and the job ends up completed', async () => {
-    const post = await request(app!.getHttpServer())
+    const post = await api(app!)
       .post('/tickets')
       .send({ subject: 'S-SHUTDOWN', body: 'x' })
       .expect(202);
