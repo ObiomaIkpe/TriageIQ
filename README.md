@@ -320,10 +320,20 @@ Every pull request and every push to `main` runs all the suites on GitHub's serv
 | `python` | Python 3.12, `pip install -r requirements.txt`, the default suite with no database, then the integration suite against a `pgvector/pgvector:pg16` service container (a skipped integration test fails the job) |
 | `gateway` | Node 24, `npm ci`, lint, build, unit tests, then the e2e tests with `redis:8.10.3-alpine` and `pgvector/pgvector:pg16` service containers, so **nothing is skipped** (a skipped e2e test fails the job) |
 | `web` | Node 24, `npm ci`, lint, typecheck, tests, build |
-| `docker-build` | builds the app, gateway and web images (nothing is pushed), checks that none contains an env file, key or secret, and runs the deployment tests on throwaway containers: the compose file, `make-secrets.sh`, the web image's headers and caching, the database roles (fresh and existing volume), and backup then restore with row counts compared (`deploy/tests/`) |
+| `docker-build` | builds the app, gateway and web images (nothing is pushed), checks that none contains an env file, key or secret, and runs the deployment tests on throwaway containers: the compose file, `make-secrets.sh`, `deploy.sh` (with a fake docker), the edge Caddy's two Caddyfiles (`caddy validate` in the pinned image), the web image's headers and caching, the database roles (fresh and existing volume), and backup then restore with row counts compared (`deploy/tests/`) |
 | `publish-images` | **only on a push to `main`, after the four checks above passed**: pushes `triageiq-app`, `-gateway` and `-web` to `ghcr.io` with tags `sha-<7 chars>` and `main`. The only job with `packages: write`. The web image's Turnstile site key comes from the repository **variable** `VITE_TURNSTILE_SITE_KEY` (a public value, not a secret). Not a pull-request check: do not add it to branch protection |
 
 The service images are the same ones `docker-compose.yml` uses. CI uses **no secrets of its own** (the publish job signs in to ghcr.io with the automatic `GITHUB_TOKEN`) and no real API key: the model-provider keys are set to obviously fake values, and the Anthropic URL points at an address that refuses connections, so a test that tried to call a model would fail loudly rather than spend money. The workflow can only read the repository (`permissions: contents: read`), every third-party action is pinned to a full commit SHA, and a newer push to the same branch or pull request cancels the run that is still going (runs on `main` are never cancelled, so a publish is not cut in half). To run the same things locally, use the commands in Development above and "Gateway (M3)" / "The reviewer web UI". The tests do not read your `.env` files: the Python test setup builds its settings from the code defaults and the environment only.
+
+## Deployment
+
+TriageIQ runs on one small VPS: a shared **edge Caddy** (one per server, HTTPS for every app, `deploy/edge/`) in front of the TriageIQ production stack (`deploy/docker-compose.prod.yml`: db, redis, the Python app, the gateway, the web UI; no published ports), with images pulled from `ghcr.io` by an exact `sha-<commit>` tag. The server needs only the `deploy/` folder, not the source.
+
+- **First deployment, step by step:** [`deploy/FIRST_DEPLOY.md`](deploy/FIRST_DEPLOY.md) (server preparation, the edge, secrets, the first deploy, reviewer account, knowledge base, backups, the final checks, and what to do when the certificate, a 502, the production guard or memory goes wrong).
+- **Every later update:** `ssh contabo`, `cd /opt/triageiq/deploy`, `./backup.sh`, `./deploy.sh sha-<new>`; `./deploy.sh --rollback` goes back.
+- **Reference** (layout, backups, restore, rotating secrets, GitHub settings): [`deploy/README.md`](deploy/README.md). **Adding another app** behind the same Caddy: `deploy/edge/sites/README.md`.
+- **Try the whole shape on your laptop first:** `deploy/local-test.sh up`, then `check` (about 40 automatic checks), then `down`.
+- Email is **off** in production for now (`MAIL_ENABLED=false`); the public form is capped at 30 accepted tickets a day (`PUBLIC_DAILY_CAP=30`) until the real cost per ticket is measured.
 
 ## Evals
 

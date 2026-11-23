@@ -3,8 +3,8 @@
 #   cd deploy && cp .env.example .env && cp env/*.example (see README) && ./make-secrets.sh
 #   docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
 #
-# NOTHING is published on the host: no ports at all. The only way in is the shared "edge" Docker network, which only `gateway`
-# and `web` join: a separate Caddy stack on that network terminates HTTPS and forwards
+# NOTHING is published on the host: no ports at all. The only way in is the shared "edge" Docker network, which only
+# `triageiq-gateway` and `triageiq-web` join: a separate Caddy stack on that network terminates HTTPS and forwards
 #   https://triageiq.bamstoneopus.com/api/*  ->  triageiq-gateway:3000   (the /api prefix stripped)
 #   everything else                           ->  triageiq-web:8080
 # (deploy/README.md has the Caddy lines). db and redis are on an INTERNAL network: no route in or out of the host.
@@ -110,7 +110,7 @@ services:
     networks: [backend]
     logging: *logging
 
-  gateway:
+  triageiq-gateway:
     image: ghcr.io/${GHCR_OWNER:-obiomaikpe}/triageiq-gateway:${TAG:?Set TAG in deploy/.env (sha-<commit> or main)}
     restart: unless-stopped
     # Must stay longer than TRIAGE_TIMEOUT_MS, so a running job can finish before the container is killed.
@@ -144,16 +144,13 @@ services:
       gateway-migrate:
         condition: service_completed_successfully
     # backend: db, redis, app. egress: Cloudflare Turnstile verification and (when enabled) the SMTP provider.
-    # edge: the shared network the edge Caddy reaches us on. The alias is what the Caddyfile names: the service name "gateway"
-    # is also an alias on edge, and other apps on that network may have a "gateway" of their own, so never use the bare name there.
-    networks:
-      backend: {}
-      egress: {}
-      edge:
-        aliases: [triageiq-gateway]
+    # edge: the shared network the edge Caddy reaches us on. Compose makes every service name a DNS name on each network it joins and
+    # cannot be told otherwise, and other apps on "edge" may have services called "gateway" or "web" of their own. So the two
+    # services on edge are NAMED triageiq-gateway and triageiq-web: those are their only names there (checked by deploy/tests).
+    networks: [backend, egress, edge]
     logging: *logging
 
-  web:
+  triageiq-web:
     image: ghcr.io/${GHCR_OWNER:-obiomaikpe}/triageiq-web:${TAG:?Set TAG in deploy/.env (sha-<commit> or main)}
     restart: unless-stopped
     mem_limit: 64m
@@ -167,9 +164,7 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
-    networks:
-      edge:
-        aliases: [triageiq-web]
+    networks: [edge]
     logging: *logging
 
 networks:
@@ -178,10 +173,11 @@ networks:
     internal: true
   # Ordinary outbound access, nothing published: app and gateway only.
   egress: {}
-  # Created once by the edge stack (docker network create edge); we only join it.
+  # Created once by deploy/server/setup.sh (docker network create edge); the edge Caddy and every app only join it.
+  # EDGE_NETWORK exists so a laptop test can use a different name; on the server it is simply "edge".
   edge:
     external: true
-    name: edge
+    name: ${EDGE_NETWORK:-edge}
 
 volumes:
   pgdata:

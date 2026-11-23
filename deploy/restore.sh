@@ -31,7 +31,7 @@ fi
 
 # 1. The services that use the database must be stopped.
 if [ "${#COMPOSE[@]}" -gt 0 ]; then
-  users=(gateway); [ "$DB" = "triageiq" ] && users=(app gateway)
+  users=(triageiq-gateway); [ "$DB" = "triageiq" ] && users=(app triageiq-gateway)
   running="$("${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -Fxf <(printf '%s\n' "${users[@]}") || true)"
   if [ -n "$running" ]; then
     echo "Refusing: still running: $(echo "$running" | tr "\n" " "). Stop them first:  docker compose -f ${COMPOSE_FILE:-docker-compose.prod.yml} stop ${users[*]}" >&2

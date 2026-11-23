@@ -1,0 +1,8 @@
+# The edge Caddy's main file. It holds only what is true for every site; each app brings its own file in sites/.
+{
+	# Let's Encrypt account address (from /opt/edge/.env).
+	email {$ACME_EMAIL}
+}
+
+# One file per app: sites/<app>.caddy. A new file is picked up by `docker compose exec caddy caddy reload` (sites/README.md).
+import sites/*.caddy
