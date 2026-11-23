@@ -90,6 +90,15 @@ services:
       gateway-migrate:
         condition: service_completed_successfully
 
+  # A local FAKE mail server for development: it accepts every message and keeps it, and never delivers anything to the
+  # internet. Open the web UI at http://localhost:8025 to read what the gateway "sent". SMTP (1025) is reachable only from
+  # the other containers (not published). Production uses a real provider (M6); demo mode must never send real email.
+  mailpit:
+    image: axllent/mailpit:v1.33.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+
 volumes:
   triageiq_pgdata:
   triageiq_redisdata:

@@ -42,6 +42,20 @@ export interface AppConfig {
   PUBLIC_MAX_PER_IP_PER_HOUR: number;
   /** Accepted public tickets per UTC day, across everyone: the cap on what the form can cost. */
   PUBLIC_DAILY_CAP: number;
+  /** Send approved replies to customers by email. Off by default; nothing is ever emailed without a reviewer's approval. */
+  MAIL_ENABLED: boolean;
+  SMTP_HOST: string;
+  SMTP_PORT: number;
+  /** TLS from the first byte (port 465). False: plain, or STARTTLS if the server offers it. */
+  SMTP_SECURE: boolean;
+  /** Both or neither. Never logged. */
+  SMTP_USER: string;
+  SMTP_PASS: string;
+  /** "Name <address>" or just an address. */
+  MAIL_FROM: string;
+  MAIL_REPLY_TO: string;
+  /** Reply emails one recipient may receive per UTC day (a guard against using us to mail someone repeatedly). */
+  MAIL_MAX_PER_RECIPIENT_PER_DAY: number;
 }
 
 interface Setting {
@@ -91,6 +105,10 @@ function parseOrigins(value: string): OriginsResult {
   });
   return problems.length > 0 ? { ok: false, problems } : { ok: true, origins };
 }
+
+/** MAIL_FROM: `Name <a@b.c>` or `a@b.c`. No control characters (a header must never be able to carry a line break). */
+const MAIL_ADDRESS = /^(?:[^<>\r\n"]{1,100}\s)?<?[^\s<>@,;"\r\n]+@[^\s<>@,;"\r\n]+\.[^\s<>@,;"\r\n]+>?$/;
+const mailAddressSetting = z.string().max(200).regex(MAIL_ADDRESS);
 
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
@@ -231,6 +249,19 @@ const SETTINGS: Record<keyof AppConfig, Setting> = {
     hint: 'must be a whole number from 1 to 1000000',
     default: 200,
   },
+  MAIL_ENABLED: { schema: booleanSetting, hint: 'must be true or false', default: false },
+  SMTP_HOST: { schema: z.string().min(1).max(253).regex(/^[A-Za-z0-9.-]+$/), hint: 'must be a host name', default: '' },
+  SMTP_PORT: { schema: z.coerce.number().int().min(1).max(65535), hint: 'must be a whole number from 1 to 65535', default: 587 },
+  SMTP_SECURE: { schema: booleanSetting, hint: 'must be true or false', default: false },
+  SMTP_USER: { schema: z.string().min(1).max(200), hint: 'must be 1 to 200 characters', default: '' },
+  SMTP_PASS: { schema: z.string().min(1).max(500), hint: 'must be 1 to 500 characters', default: '' },
+  MAIL_FROM: { schema: mailAddressSetting, hint: 'must be an address such as support@example.com or Name <support@example.com>', default: '' },
+  MAIL_REPLY_TO: { schema: mailAddressSetting, hint: 'must be an address such as support@example.com', default: '' },
+  MAIL_MAX_PER_RECIPIENT_PER_DAY: {
+    schema: z.coerce.number().int().min(1).max(1000),
+    hint: 'must be a whole number from 1 to 1000',
+    default: 3,
+  },
 };
 
 const NAMES = Object.keys(SETTINGS) as (keyof AppConfig)[];
@@ -295,6 +326,16 @@ export function validateEnv(raw: Record<string, unknown>): AppConfig {
   // Fail fast: an open public form with no way to check the bot test would let anyone spend the budget.
   if (values.PUBLIC_FORM_ENABLED === true && values.TURNSTILE_SECRET_KEY === '') {
     problems.push('TURNSTILE_SECRET_KEY is missing (required when PUBLIC_FORM_ENABLED is true)');
+  }
+  // Mail: with MAIL_ENABLED the server and the sender must be named (fail fast, not at the first reply), and a login is both or neither.
+  const blank = (name: string) => raw[name] === undefined || (typeof raw[name] === 'string' && (raw[name] as string).trim() === '');
+  if (values.MAIL_ENABLED === true) {
+    for (const name of ['SMTP_HOST', 'SMTP_PORT', 'MAIL_FROM']) {
+      if (blank(name)) problems.push(`${name} is missing (required when MAIL_ENABLED is true)`);
+    }
+  }
+  if ((values.SMTP_USER === '') !== (values.SMTP_PASS === '')) {
+    problems.push('SMTP_USER and SMTP_PASS must be set together (both or neither)');
   }
   if (problems.length > 0) {
     throw new ConfigValidationError(problems);

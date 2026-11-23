@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
-import { cursorAfter, fetchCounts, fetchTicket, fetchTickets, PAGE_SIZE, type Ticket, type TicketStatus } from '../api/tickets.js';
+import { cursorAfter, fetchCounts, fetchDelivery, fetchTicket, fetchTickets, PAGE_SIZE, type Ticket, type TicketStatus } from '../api/tickets.js';
 
 /** The list and the counts refetch every 30 s and when the window gets focus again. */
 export const REFRESH_MS = 30_000;
@@ -11,6 +11,7 @@ export const keys = {
   list: (status: TicketStatus) => ['tickets', 'list', status] as const,
   counts: ['tickets', 'counts'] as const,
   detail: (reference: string) => ['tickets', 'detail', reference] as const,
+  delivery: (ticketId: string) => ['tickets', 'delivery', ticketId] as const,
 };
 
 export function useCounts() {
@@ -63,3 +64,18 @@ export function useTicket(reference: string | null) {
 function listsDisagree(lists: [unknown, InfiniteData<Ticket[]> | undefined][], ticket: Ticket): boolean {
   return lists.some(([, data]) => data?.pages.some((page) => page.some((t) => t.ticket_id === ticket.ticket_id && t.status !== ticket.status)));
 }
+
+/** While an email is "queued" the status is asked again every 5 seconds, and the polling stops by itself once it is final. */
+export const deliveryPolling = { ms: 5_000 }; // an object, so a test can shorten it
+
+export function useDelivery(ticketId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.delivery(ticketId),
+    queryFn: () => fetchDelivery(ticketId),
+    enabled,
+    refetchInterval: (query) => (query.state.data?.status === 'queued' ? deliveryPolling.ms : false),
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+  });
+}
+

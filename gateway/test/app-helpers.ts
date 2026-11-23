@@ -6,11 +6,13 @@ import { vi } from 'vitest';
 import { configureApp } from '../src/app.setup.js';
 import { IDEMPOTENCY_REDIS } from '../src/idempotency/idempotency.constants.js';
 import { PG_POOL } from '../src/database/database.constants.js';
+import { REPLY_QUEUE } from '../src/mail/mail.constants.js';
 import { QUEUE_TIMEOUT_MS, TRIAGE_QUEUE } from '../src/queue/queue.constants.js';
 import { REDIS_CLIENT } from '../src/redis/redis.constants.js';
 import { WorkerModule } from '../src/worker/worker.module.js';
 import { stubAuthEnv } from './auth-helpers.js';
 import type { FakeQueue } from './fake-queue.js';
+import { FakeReplyQueue } from './mail-fakes.js';
 
 /** Valid settings for the app. Call before loading the app module. */
 export function stubEnv(redisUrl = 'redis://localhost:6379') {
@@ -51,7 +53,7 @@ export async function startAppWithFakeQueue(
   // Loaded here so the environment is set first (the config is checked when the module loads).
   const { AppModule } = await import('../src/app.module.js');
   // The fake gateway database goes first, so a test's own `customize` can replace it (the last override wins).
-  const moduleRef = await customize(Test.createTestingModule({ imports: [AppModule] }).overrideProvider(PG_POOL).useValue(fakeGatewayDb))
+  const moduleRef = await customize(Test.createTestingModule({ imports: [AppModule] }).overrideProvider(PG_POOL).useValue(fakeGatewayDb).overrideProvider(getQueueToken(REPLY_QUEUE)).useValue(new FakeReplyQueue()))
     .overrideProvider(REDIS_CLIENT)
     .useValue(fakeRedisClient)
     .overrideProvider(getQueueToken(TRIAGE_QUEUE))

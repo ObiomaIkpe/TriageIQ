@@ -5,6 +5,7 @@ import {
   Controller,
   Get,
   Inject,
+  Logger,
   Param,
   Post,
   Query,
@@ -23,6 +24,7 @@ import {
   parseListQuery,
   parseReviewDecision,
 } from './passthrough.schemas.js';
+import { ReplyDeliveryService } from '../mail/reply-delivery.service.js';
 import { MSG_ERROR } from './triage-api.constants.js';
 import { TriageClient, type TriageAnswer } from './triage-client.js';
 
@@ -32,10 +34,15 @@ import { TriageClient, type TriageAnswer } from './triage-client.js';
  * TicketsController; these paths do not overlap with it, and the reference route is
  * declared before the :id route so a reference can never be read as an id.
  */
+const logger = new Logger('ReviewerTickets');
+
 @Roles('reviewer')
 @Controller('tickets')
 export class ReviewerTicketsController {
-  constructor(@Inject(TriageClient) private readonly triage: TriageClient) {}
+  constructor(
+    @Inject(TriageClient) private readonly triage: TriageClient,
+    @Inject(ReplyDeliveryService) private readonly replies: ReplyDeliveryService,
+  ) {}
 
   @Get()
   async list(
@@ -131,9 +138,7 @@ export class ReviewerTicketsController {
       throw new BadRequestException({ detail: 'Invalid review decision', errors: decision.problems });
     }
     const reviewer = reviewerFor(principal);
-    this.send(
-      response,
-      await this.triage.call({
+    const answer = await this.triage.call({
         method: 'POST',
         path: `/tickets/${id}/review`,
         // The client's validated decision, plus WHO is reviewing, taken from the authenticated principal.
@@ -143,8 +148,29 @@ export class ReviewerTicketsController {
         route: 'POST /tickets/:id/review',
         client: principal.label,
         reviewer: reviewer.id,
-      }),
-    );
+    });
+    // An approval or an edit (any 200 from a review that is not a rejection) may need an email. It never changes the answer.
+    if (answer.status >= 200 && answer.status < 300) await this.triggerReply(answer.body);
+    this.send(response, answer);
+  }
+
+  /**
+   * Records the delivery and queues the email. If that fails the review stays successful: the failure is logged loudly and the
+   * 5-minute sweep makes the delivery later. Nothing here ever logs the address or the reply.
+   */
+  private async triggerReply(ticket: unknown): Promise<void> {
+    const t = ticket as { ticket_id?: unknown; reference?: unknown; status?: unknown; customer_email?: unknown } | null;
+    if (!t || typeof t.ticket_id !== 'string' || typeof t.reference !== 'string' || typeof t.status !== 'string') return;
+    try {
+      await this.replies.onApproved({
+        ticket_id: t.ticket_id,
+        reference: t.reference,
+        status: t.status,
+        customer_email: typeof t.customer_email === 'string' ? t.customer_email : null,
+      });
+    } catch {
+      logger.error(`Could not queue the reply email for ${t.reference} (ticket ${t.ticket_id}); the sweep will retry within minutes`);
+    }
   }
 
   /** Python's status and JSON body, as they are, if a successful answer has a well-formed reviewed_by. */

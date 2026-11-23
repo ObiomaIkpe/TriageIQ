@@ -207,8 +207,10 @@ def record_review(
     decision: ReviewDecision,
     final_reply: Optional[str],
     reviewer: Reviewer,
+    from_status: TicketStatus = TicketStatus.pending_review,
 ) -> Optional[TicketRecord]:
-    """Store a reviewer's decision on a ticket that is still pending_review.
+    """Store a reviewer's decision on a ticket that is still `from_status` (pending_review, or triaged for the
+    one-click approval of an auto-handled ticket).
 
     One UPDATE with `status = 'pending_review'` in its WHERE clause, so of two
     reviewers deciding at the same moment only one matches a row. Returns the updated
@@ -223,7 +225,7 @@ def record_review(
         update(TicketRow)
         .where(
             TicketRow.id == UUID(ticket_id),
-            TicketRow.status == TicketStatus.pending_review.value,
+            TicketRow.status == from_status.value,
         )
         .values(
             status=_STATUS_FOR_ACTION[decision.action].value,
@@ -245,6 +247,7 @@ def list_tickets(
     status: Optional[TicketStatus] = None,
     limit: int = 50,
     before: Optional[tuple[datetime, UUID]] = None,
+    reviewed_since: Optional[datetime] = None,
 ) -> list[TicketRecord]:
     """Newest first, ties broken by id so the order is total (no ticket is skipped or repeated).
 
@@ -261,6 +264,9 @@ def list_tickets(
         query = query.where(TicketRow.status == status.value)
     if before is not None:
         query = query.where(tuple_(TicketRow.created_at, TicketRow.id) < tuple_(*before))
+    if reviewed_since is not None:
+        # Tickets decided at or after this moment (the gateway's sweep looks for approvals it may have missed).
+        query = query.where(TicketRow.reviewed_at >= reviewed_since)
 
     with get_session() as session:
         return [_to_record(row) for row in session.scalars(query)]

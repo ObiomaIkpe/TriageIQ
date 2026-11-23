@@ -16,6 +16,8 @@ from app.tickets.store import (
 router = APIRouter(prefix="/tickets", tags=["review"])
 
 NOT_WAITING = "Ticket is not waiting for a review"
+TRIAGED_APPROVE_ONLY = "An auto-handled ticket can only be approved"
+TRIAGED_NO_DRAFT = "Cannot approve an auto-handled ticket that has no draft reply"
 
 
 @router.post(
@@ -53,6 +55,22 @@ def review_ticket(
         ticket = get_ticket_for_update(session, ticket_id)
         if ticket is None:
             raise HTTPException(status_code=404, detail="Ticket not found")
+        if ticket.status == TicketStatus.triaged:
+            # One-click approval of an AUTO-HANDLED ticket: the AI finished it without a reviewer and its graph run is over,
+            # so there is nothing to resume. Only "approve", and only when there is a draft, is accepted: its draft becomes
+            # the final reply. (Edit and reject would also be safe to apply without a graph, but this step is about sending
+            # the AI's own reply after a person has seen it; anything else stays out until it is needed.)
+            if decision.action != "approve":
+                raise HTTPException(status_code=409, detail=TRIAGED_APPROVE_ONLY)
+            if not (ticket.suggested_reply or "").strip():
+                raise HTTPException(status_code=409, detail=TRIAGED_NO_DRAFT)
+            updated = record_review(
+                session, ticket_id, decision, ticket.suggested_reply, request.reviewer,
+                from_status=TicketStatus.triaged,
+            )
+            if updated is None:
+                raise HTTPException(status_code=409, detail=NOT_WAITING)
+            return updated
         if ticket.status != TicketStatus.pending_review:
             raise HTTPException(status_code=409, detail=NOT_WAITING)
 

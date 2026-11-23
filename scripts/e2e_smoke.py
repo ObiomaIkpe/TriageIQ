@@ -18,6 +18,10 @@ Settings (environment variables):
   E2E_ORIGIN                 the Origin to send with login and logout (default http://localhost:5173;
                              it must be one of the gateway's ALLOWED_ORIGINS)
 
+  E2E_MAILPIT_URL            Mailpit's address (default http://localhost:8025). Step 11 also reviews the public ticket (an edit, or an
+                             approval if the AI already handled it) and waits for the reply email to arrive in Mailpit. It needs the
+                             gateway to run with MAIL_ENABLED=true and SMTP pointing at Mailpit. If Mailpit cannot be reached that part
+                             is skipped (the step still passes on the rest). It costs NO extra model calls.
   E2E_PUBLIC_FORM            set to 1 to also run step 11, the public ticket form (POST /public/tickets). OFF by default.
                              It needs the gateway to run with PUBLIC_FORM_ENABLED=true and Cloudflare's DUMMY Turnstile
                              secret (see gateway/.env.example), and it COSTS ONE MODEL CALL SET (one real ticket). It
@@ -33,6 +37,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from typing import Callable, Optional
@@ -105,6 +110,15 @@ class Gateway:
         except ValueError:
             body = None
         return Reply(status, headers, body, raw_headers.get_all("Set-Cookie") or [])
+
+
+def mailpit_get(url: str):
+    """Mailpit's HTTP API (no key). The parsed JSON, or None if it cannot be reached."""
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
 
 
 def expect_status(reply: Reply, wanted: int, what: str) -> None:
@@ -333,7 +347,46 @@ class Smoke:
             raise Failed("customer_name did not round-trip")
         if ticket.get("customer_id") != "public-form":
             raise Failed('customer_id is not "public-form"')
-        return f"202 with reference {reference}; the reviewer reads it back with customer_name and customer_email intact"
+        detail = f"202 with reference {reference}; the reviewer reads it back with customer_name and customer_email intact"
+        return detail + "; " + self.check_reply_email(ticket, email.lower(), reference)
+
+    def check_reply_email(self, ticket: dict, recipient: str, reference: str) -> str:
+        """Approves the public ticket as the reviewer and waits for its reply in Mailpit (no model call)."""
+        mailpit = self.keys["mailpit_url"].rstrip("/")
+        if mailpit_get(f"{mailpit}/api/v1/info") is None:
+            return "Mailpit is not reachable, so the reply email was not checked"
+
+        # A ticket still waiting for a person can be EDITED; one the AI already handled (triaged) can only be approved, which sends its draft.
+        if ticket.get("status") == "pending_review":
+            decision = {"action": "edit", "edited_reply": f"E2E reply {self.run_id}: your invoice is on its way."}
+            expected = decision["edited_reply"]
+        elif ticket.get("status") == "triaged" and (ticket.get("suggested_reply") or "").strip():
+            decision = {"action": "approve"}
+            expected = ticket["suggested_reply"].strip()
+        else:
+            return f"the ticket is {ticket.get('status')} with nothing to send, so the reply email was not checked"
+        done = self.gateway.request("POST", f"/tickets/{ticket['ticket_id']}/review", self.keys["reviewer"], decision)
+        expect_status(done, 200, "POST /tickets/<id>/review (public ticket)")
+
+        deadline = time.monotonic() + min(self.timeout, 90)
+        while True:
+            found = mailpit_get(f"{mailpit}/api/v1/search?query={urllib.parse.quote(reference)}")
+            messages = (found or {}).get("messages") or []
+            if messages:
+                break
+            if time.monotonic() >= deadline:
+                raise Failed("the reply email did not arrive in Mailpit (is MAIL_ENABLED=true and SMTP_HOST=mailpit on the gateway?)")
+            time.sleep(self.interval)
+        message = messages[0]
+        recipients = [str(r.get("Address", "")).lower() for r in message.get("To") or []]
+        if recipients != [recipient]:
+            raise Failed("the reply email went to a different recipient than the customer")
+        if reference not in str(message.get("Subject", "")):
+            raise Failed("the reply email subject does not carry the reference")
+        full = mailpit_get(f"{mailpit}/api/v1/message/{message['ID']}") or {}
+        if expected not in str(full.get("Text", "")):
+            raise Failed("the reply email body does not contain the approved reply")
+        return "the reply email arrived in Mailpit for the customer with the approved reply"
 
     # (number, name, function, steps it needs to have passed)
     def steps(self) -> list:
@@ -419,6 +472,7 @@ def main(argv=None, env=None, out: Callable[[str], None] = print) -> int:
             "reviewer_password": reviewer_password,
             "origin": origin,
             "public_form": (env.get("E2E_PUBLIC_FORM") or "").strip() == "1",
+            "mailpit_url": (env.get("E2E_MAILPIT_URL") or "http://localhost:8025").strip(),
         },
         run_id,
         args.timeout,

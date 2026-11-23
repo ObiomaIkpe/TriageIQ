@@ -124,7 +124,7 @@ The gateway is the only way in. The compose file publishes just the gateway (on 
 | Endpoint | Purpose |
 |---|---|
 | `POST /triage` | Triage a ticket and save the result. An optional `ticket_id` (a UUID) makes it safe to send the same ticket again: it is triaged and saved at most once (see below) |
-| `GET /tickets?status=&limit=&cursor=` | List tickets, newest first. `status` is `triaged`, `pending_review`, `approved`, `edited` or `rejected`; `limit` is 1 to 200 (default 50) `cursor` (`<created_at>|<ticket_id>` of the last ticket you have) gives the next page: newest first, ties broken by id, so a ticket arriving meanwhile never shifts a page |
+| `GET /tickets?status=&limit=&cursor=&reviewed_since=` | List tickets, newest first. `status` is `triaged`, `pending_review`, `approved`, `edited` or `rejected`; `limit` is 1 to 200 (default 50) `reviewed_since` (an ISO timestamp) keeps tickets decided since then (the gateway's sweep uses it). `cursor` (`<created_at>|<ticket_id>` of the last ticket you have) gives the next page: newest first, ties broken by id, so a ticket arriving meanwhile never shifts a page |
 | `GET /tickets/counts` | How many tickets have each status, every status present (`{"triaged": 0, "pending_review": 2, ...}`), from one `GROUP BY` |
 | `GET /tickets/{ticket_id}` | One ticket, with the original subject and body, and the review fields (`final_reply`, `review_note`, `reviewed_at`, all null until a reviewer decides). 404 if missing, 422 for a malformed id |
 | `GET /tickets/reference/{reference}` | The same record, found by its short reference (such as `TKT-7K3M9Q`). 404 if unknown |
@@ -187,6 +187,7 @@ curl -X POST localhost:8000/tickets/<ticket_id>/review \
   -d '{"action": "edit", "edited_reply": "Your account unlocks after 1 hour.", "note": "shortened", "reviewer": {"id": "client:ops", "name": "Ops team"}}'
 ```
 
+- A ticket the AI handled by itself (`triaged`) can also be approved: `approve` only, and only if it has a draft (`409` otherwise); see "Reply email" below.
 - `action` is `approve`, `edit` (needs a non-empty `edited_reply`) or `reject`; `note` is optional. **`reviewer` is required:** `{"id": ..., "name": ...}` where `id` is `user:<uuid>` (a logged-in reviewer) or `client:<name>` (an API client, lower case letters, digits and `-`, up to 40 characters) and `name` is 1 to 100 characters after trimming, any Unicode. A missing or malformed `reviewer` is `422`. The response is the updated ticket (`status` is `approved`, `edited` or `rejected`, with `final_reply`, `review_note`, `reviewed_at` and `reviewed_by` filled in).
 - **Who decided.** The decision is stored together with `reviewed_by_id` and `reviewed_by_name` in the same statement, so a review is never saved without its author, and the name is a snapshot (renaming a reviewer later does not change old reviews). Every ticket read (`GET /tickets`, `/tickets/{id}`, `/tickets/reference/{reference}`) includes `reviewed_by: {"id", "name"}`, or `null` for a ticket not reviewed yet and for tickets reviewed before this was recorded. **Python trusts `reviewer` only because this endpoint already requires the service review key, which only the gateway holds:** the gateway fills `reviewer` in from the caller it authenticated and never from the client's own body. Anyone who holds the key can name any reviewer, so the key must stay on the server.
 - The key is the `REVIEW_API_KEY` setting, sent as `X-API-Key`. **If the setting is empty the endpoint is disabled** and answers `503`; a missing or wrong key is `401`.
@@ -697,6 +698,24 @@ ALLOWED_ORIGINS=http://localhost:5173
 The dummy keys always report the hostname `example.com` and no action, so leave `TURNSTILE_EXPECTED_HOSTNAMES` and `TURNSTILE_EXPECTED_ACTION` empty locally (or set the hostname to `example.com`). With real keys set them to your site's hostname and `public_ticket`. Settings: `PUBLIC_FORM_ENABLED`, `TURNSTILE_SECRET_KEY` (required when enabled, or the gateway will not start), `TURNSTILE_VERIFY_URL`, `TURNSTILE_EXPECTED_HOSTNAMES`, `TURNSTILE_EXPECTED_ACTION`, `PUBLIC_MAX_PER_IP_PER_HOUR`, `PUBLIC_DAILY_CAP`; see `gateway/.env.example`. Real Turnstile keys come with M6.
 
 **Logs** carry `public_ticket outcome=<accepted|replay|honeypot|rate_limited_ip|turnstile_failed|turnstile_unavailable|daily_cap|invalid> reference=... ip=... turnstile_errors=...`. **Never** the name, email, subject, message, token or secret.
+
+### Reply email: approved replies are emailed to the customer (M4.4)
+
+**The rule: nothing is ever emailed without a human reviewer's approval.** A customer's message gets no automatic "we received it" email (an open form must not let strangers make us email arbitrary addresses). The only email is the reply a reviewer **approved or edited**; a rejected ticket sends nothing. Locally the mail goes to **Mailpit**, a fake mail server that keeps every message and delivers nothing to the internet: read it at **http://localhost:8025**.
+
+How it works:
+1. A reviewer approves or edits a ticket (`POST /tickets/:id/review`). When Python answers 200, the gateway records a row in `reply_deliveries` (its own database: ticket id, reference, status, attempts, a short error; **no email address and no reply text**) and queues one job on the `reply-email` queue (job id = ticket id, so a ticket has at most one). A ticket with no customer email (an API-client ticket) gets the status `skipped_no_email` and no job. If recording or queuing fails the review still succeeds and the failure is logged.
+2. The worker fetches the ticket from Python at send time, checks it is still approved or edited with a non-empty reply and an email, enforces the **per-recipient limit** (`MAIL_MAX_PER_RECIPIENT_PER_DAY`, default 3 replies per address per UTC day, counted in Redis under a hash of the address), and sends a **plain-text** mail: subject `Re: <subject> [TKT-XXXXXX]` (line breaks and control characters removed, length capped), the reply, and a footer with the reference. Connection errors and SMTP 4xx are retried with the same backoff as triage; SMTP 5xx fails at once. A failed delivery keeps a short generic reason, never the address or the text.
+3. Every 5 minutes a sweep asks Python for tickets approved or edited in the last 7 days and repairs any that have no delivery row (a missed trigger, a restart).
+4. Delivery is **at least once**: if the process dies after the mail server accepted a message and before the row says "sent", one duplicate can go out (the Message-ID `<ticket_id@triageiq>` is the same, so it is recognisable).
+
+Reviewer routes: `GET /tickets/:id/delivery` returns `{status: none|queued|sent|failed|skipped_no_email, attempts, sent_at, error}`; `POST /tickets/:id/delivery/retry` requeues a **failed** delivery (409 for any other). In the UI the ticket panel shows "Sending…" (asked again every 5 seconds until it is final), "Reply sent <time>", "Sending failed" with the reason and a **Retry sending** button, or "No customer email, so no reply was sent."
+
+**One-click approval of auto-handled tickets.** A ticket the AI handled without a reviewer (status `triaged`) that has a draft shows **Approve and send**: the same `POST /tickets/:id/review` with `action: approve` now also accepts a `triaged` ticket (Python makes its draft the final reply and records who approved; it does not resume the graph because there is no paused run). Only `approve` is accepted on a triaged ticket (edit and reject are `409`), and a triaged ticket with no draft is `409`.
+
+Settings (`gateway/.env`, see `.env.example`; mail is **off** unless `MAIL_ENABLED=true`, then `SMTP_HOST`, `SMTP_PORT` and `MAIL_FROM` are required): `SMTP_SECURE`, `SMTP_USER`/`SMTP_PASS` (both or neither, never logged), `MAIL_REPLY_TO`, `MAIL_MAX_PER_RECIPIENT_PER_DAY`. The Mailpit service in `docker-compose.yml` publishes its web UI on `127.0.0.1:8025` only; SMTP (1025) is reachable only inside the compose network.
+
+**Known gap:** replies go to an address the customer typed and nobody verified. What limits the harm: a human approves every reply, the public form has Turnstile, a per-IP limit and a daily cap, and one address gets at most 3 replies a day.
 
 ### The worker and retries
 

@@ -24,8 +24,14 @@ export function QueuePage() {
   const open = (next: { tab?: string; ticket?: string }) => setParams(next.ticket ? { tab: next.tab ?? tab.key, ticket: next.ticket } : { tab: next.tab ?? tab.key });
 
   /** A review was saved: refresh the lists and counts, say so, and open the next pending ticket (or show the empty queue). */
-  async function reviewed(done: Ticket) {
+  async function reviewed(done: Ticket, wasAutoHandled: boolean) {
     await queryClient.invalidateQueries({ queryKey: keys.all });
+    if (wasAutoHandled) {
+      // An auto-handled ticket was approved (its draft is being emailed). It moved to Approved: show it there, so its delivery status is in view.
+      setMessage(`Approved ${done.reference}.`);
+      setParams({ tab: 'approved', ticket: done.reference });
+      return;
+    }
     let next: Ticket | undefined;
     try {
       const page = await queryClient.fetchQuery({ queryKey: [...keys.all, 'next'], queryFn: () => fetchTickets('pending_review', undefined, 5), staleTime: 0 });
@@ -115,7 +121,7 @@ export function QueuePage() {
           </section>
 
           <section aria-label="Ticket" className="rounded-lg border border-line bg-card">
-            {reference ? <TicketDetail key={reference} reference={reference} onReviewed={(done) => void reviewed(done)} /> : <p className="p-4 text-muted">Select a ticket to see it.</p>}
+            {reference ? <TicketDetail key={reference} reference={reference} onReviewed={(done, wasAutoHandled) => void reviewed(done, wasAutoHandled)} /> : <p className="p-4 text-muted">Select a ticket to see it.</p>}
           </section>
         </div>
       </main>

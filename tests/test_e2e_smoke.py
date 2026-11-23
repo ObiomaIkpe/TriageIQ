@@ -46,6 +46,9 @@ class FakeGateway:
         self.last_token = None
         self.public_calls = []  # (headers, body) of every POST /public/tickets
         self.public_reads_before_found = 1  # the ticket is not there for the first read: the step must poll
+        self.public_status = "triaged"  # what a public-form ticket is after processing: triaged (auto-handled) or pending_review
+        self.mailbox = []  # the fake Mailpit: dicts with ID, Subject, To, Text
+        self.mailpit_url = None
 
     def new_ticket(self, subject):
         vague = "Help" in subject
@@ -171,15 +174,30 @@ def make_handler(fake: FakeGateway):
                 ticket_id = path.split("/")[2]
                 if ticket_id not in fake.tickets:
                     return self.send(404, {"detail": "Ticket not found"})
+                decision = self.body()
+                ticket = fake.tickets[ticket_id]
+                if ticket["status"] == "triaged" and decision.get("action") != "approve":
+                    return self.send(409, {"detail": "An auto-handled ticket can only be approved"})
                 if ticket_id in fake.reviewed and "review_twice_ok" not in fake.faults:
                     return self.send(409, {"detail": "Ticket is not waiting for a review"})
                 fake.reviewed.add(ticket_id)
-                fake.tickets[ticket_id]["status"] = "edited"
+                ticket["status"] = "edited" if decision.get("action") == "edit" else "approved"
+                if decision.get("action") == "edit":
+                    ticket["final_reply"] = decision.get("edited_reply")
+                elif ticket.get("suggested_reply"):
+                    ticket["final_reply"] = ticket["suggested_reply"]
+                if ticket.get("customer_email") and "no_email_sent" not in fake.faults:
+                    fake.mailbox.append({
+                        "ID": f"m{len(fake.mailbox) + 1}",
+                        "Subject": f"Re: {ticket['subject']} [{ticket['reference']}]",
+                        "To": [{"Name": "", "Address": "someone-else@example.com" if "wrong_recipient" in fake.faults else ticket["customer_email"]}],
+                        "Text": "something unrelated" if "wrong_body" in fake.faults else f"{ticket['final_reply']}\n\n--\nReference: {ticket['reference']}\n",
+                    })
                 if "no_reviewed_by" not in fake.faults:
                     # who decided: the gateway records the authenticated principal; here, the API client's name
                     reviewer_name = "someone-else" if "wrong_reviewer" in fake.faults else name
-                    fake.tickets[ticket_id]["reviewed_by"] = {"id": f"client:{reviewer_name}", "name": reviewer_name}
-                return self.send(200, fake.tickets[ticket_id])
+                    ticket["reviewed_by"] = {"id": f"client:{reviewer_name}", "name": reviewer_name}
+                return self.send(200, ticket)
             return self.send(404, {"detail": "no such route"})
 
         def public_ticket(self):
@@ -194,6 +212,8 @@ def make_handler(fake: FakeGateway):
             if payload.get("turnstile_token") != "XXXX.DUMMY.TOKEN.XXXX":
                 return self.send(403, {"message": "Verification failed, please try again."})
             record = fake.new_ticket(payload["subject"])
+            record["status"] = fake.public_status
+            record["suggested_reply"] = f"Draft reply for {record['reference']}"
             record["customer_id"] = "public-form"
             record["customer_name"] = payload["name"]
             record["customer_email"] = payload["email"] if "email_not_lowercased" in fake.faults else payload["email"].strip().lower()
@@ -247,6 +267,40 @@ def make_handler(fake: FakeGateway):
     return Handler
 
 
+def make_mailpit_handler(fake: FakeGateway):
+    """A fake of Mailpit's HTTP API: /api/v1/info, /api/v1/search?query=, /api/v1/message/<id>."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def send(self, body):
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            from urllib.parse import parse_qs, urlparse
+
+            url = urlparse(self.path)
+            if url.path == "/api/v1/info":
+                return self.send({"Version": "fake"})
+            if url.path == "/api/v1/search":
+                query = parse_qs(url.query).get("query", [""])[0]
+                found = [m for m in fake.mailbox if query in m["Subject"] or query in m["Text"]]
+                return self.send({"messages": [{k: m[k] for k in ("ID", "Subject", "To")} for m in found]})
+            if url.path.startswith("/api/v1/message/"):
+                message = next((m for m in fake.mailbox if m["ID"] == url.path.rsplit("/", 1)[1]), None)
+                return self.send(message or {})
+            self.send_response(404)
+            self.end_headers()
+
+    return Handler
+
+
 @pytest.fixture
 def gateway():
     fake = FakeGateway()
@@ -254,13 +308,17 @@ def gateway():
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     fake.url = f"http://127.0.0.1:{server.server_address[1]}"
+    mail_server = ThreadingHTTPServer(("127.0.0.1", 0), make_mailpit_handler(fake))
+    threading.Thread(target=mail_server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+    fake.mailpit_url = f"http://127.0.0.1:{mail_server.server_address[1]}"
     yield fake
-    server.shutdown()
-    server.server_close()
+    for s in (server, mail_server):
+        s.shutdown()
+        s.server_close()
 
 
 def run(fake, capsys, other=True, extra_env=None, argv=("--interval", "0.01", "--timeout", "3"), login=False):
-    env = {"E2E_BASE_URL": fake.url, "E2E_SUBMITTER_KEY": SUBMITTER_KEY, "E2E_REVIEWER_KEY": REVIEWER_KEY}
+    env = {"E2E_BASE_URL": fake.url, "E2E_SUBMITTER_KEY": SUBMITTER_KEY, "E2E_REVIEWER_KEY": REVIEWER_KEY, "E2E_MAILPIT_URL": fake.mailpit_url}
     if other:
         env["E2E_OTHER_SUBMITTER_KEY"] = OTHER_KEY
     if login:
@@ -693,3 +751,63 @@ def test_step_11_fails_with_a_wrong_origin_and_does_not_affect_the_steps_before_
 def test_the_script_documents_the_public_form_setting():
     text = open(smoke.__file__).read()
     assert "E2E_PUBLIC_FORM" in text and "one model call" in text.lower()
+
+
+# --- step 11, the reply email in Mailpit -------------------------------------------------------
+
+PUBLIC = {"E2E_PUBLIC_FORM": "1"}
+
+
+def test_step_11_reviews_a_pending_public_ticket_as_an_edit_and_finds_the_reply_in_mailpit(gateway, capsys):
+    gateway.public_status = "pending_review"
+    code, out, _ = run(gateway, capsys, extra_env=PUBLIC)
+
+    assert code == 0, out
+    assert results(out)[11] == "PASS" and "arrived in Mailpit" in out
+    assert len(gateway.mailbox) == 1
+    mail = gateway.mailbox[0]
+    assert [r["Address"] for r in mail["To"]] == [gateway.public_calls[0][1]["email"].lower()]
+    assert "E2E reply" in mail["Text"] and "[TKT-" in mail["Subject"]
+    review = [r for r in gateway.requests if r[0] == "POST" and r[1].endswith("/review") and r[1].startswith("/tickets/")]
+    assert review  # the reviewer key was used
+
+
+def test_step_11_approves_an_auto_handled_public_ticket_and_the_draft_is_what_arrives(gateway, capsys):
+    gateway.public_status = "triaged"
+    code, out, _ = run(gateway, capsys, extra_env=PUBLIC)
+
+    assert code == 0, out
+    assert "Draft reply for TKT-" in gateway.mailbox[0]["Text"]
+
+
+def test_step_11_skips_the_email_check_cleanly_when_mailpit_is_unreachable(gateway, capsys):
+    code, out, _ = run(gateway, capsys, extra_env={**PUBLIC, "E2E_MAILPIT_URL": "http://127.0.0.1:9"})
+
+    assert code == 0, out
+    assert results(out)[11] == "PASS" and "Mailpit is not reachable" in out
+    assert gateway.mailbox == []  # and nothing was reviewed, so nothing was sent
+
+
+@pytest.mark.parametrize(
+    "fault, text",
+    [
+        ("no_email_sent", "did not arrive in Mailpit"),
+        ("wrong_recipient", "different recipient"),
+        ("wrong_body", "does not contain the approved reply"),
+    ],
+)
+def test_step_11_fails_when_the_email_is_missing_or_wrong(gateway, capsys, fault, text):
+    gateway.faults.add(fault)
+    code, out, _ = run(gateway, capsys, extra_env=PUBLIC, argv=("--interval", "0.01", "--timeout", "1"))
+    assert code == 1
+    assert results(out)[11] == "FAIL" and text in out
+
+
+def test_step_11_without_the_switch_still_sends_no_email(gateway, capsys):
+    run(gateway, capsys)
+    assert gateway.mailbox == []
+
+
+def test_the_script_documents_the_mailpit_setting():
+    assert "E2E_MAILPIT_URL" in open(smoke.__file__).read()
+

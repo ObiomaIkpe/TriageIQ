@@ -1,11 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
 import { ApiError, ConflictError } from '../api/errors.js';
-import { fetchTicket, reviewTicket, type ReviewBody, type Ticket } from '../api/tickets.js';
+import { fetchTicket, retryDelivery, reviewTicket, type Delivery, type ReviewBody, type Ticket } from '../api/tickets.js';
 import { exactTime } from '../lib/time.js';
 import { StatusBadge } from './StatusBadge.js';
 import { STATUS_LABEL } from './tabs.js';
-import { keys, useTicket } from './useQueue.js';
+import { keys, useDelivery, useTicket } from './useQueue.js';
 
 /** Customer- and model-written text, shown exactly as written: a React text node (never HTML), line breaks kept, long words wrapped. */
 function Plain({ text, className = '' }: { text: string; className?: string }) {
@@ -23,8 +23,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 interface Props {
   reference: string;
-  /** Called after a review was saved. */
-  onReviewed: (ticket: Ticket) => void;
+  /** Called after a review was saved. `wasAutoHandled`: the ticket had been auto-handled (status triaged) before this approval. */
+  onReviewed: (ticket: Ticket, wasAutoHandled: boolean) => void;
 }
 
 export function TicketDetail({ reference, onReviewed }: Props) {
@@ -47,7 +47,7 @@ export function TicketDetail({ reference, onReviewed }: Props) {
   return <TicketView key={query.data.ticket_id} ticket={query.data} onReviewed={onReviewed} />;
 }
 
-function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: (ticket: Ticket) => void }) {
+function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: Props['onReviewed'] }) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [reply, setReply] = useState(ticket.suggested_reply ?? '');
@@ -60,7 +60,7 @@ function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: (ticke
     onMutate: () => setProblem(''),
     onSuccess: (saved) => {
       queryClient.setQueryData(keys.detail(saved.reference), saved);
-      onReviewed(saved);
+      onReviewed(saved, ticket.status === 'triaged');
     },
     onError: async (error) => {
       if (error instanceof ConflictError) {
@@ -80,6 +80,8 @@ function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: (ticke
   });
 
   const pending = ticket.status === 'pending_review';
+  // An auto-handled ticket (the AI finished it without a reviewer) can be approved in one click, which sends its draft.
+  const autoApprovable = ticket.status === 'triaged' && (ticket.suggested_reply ?? '').trim() !== '';
   const hasDraft = (ticket.suggested_reply ?? '').trim() !== '';
   const busy = review.isPending;
   const cleanNote = note.trim() === '' ? {} : { note: note.trim() };
@@ -167,6 +169,30 @@ function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: (ticke
         </Section>
       )}
 
+      {autoApprovable ? (
+        <section className="mt-4 border-t border-line pt-4">
+          <label htmlFor={ids.note} className="mb-1 block font-medium">
+            Review note (optional)
+          </label>
+          <textarea
+            id={ids.note}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            rows={2}
+            className="mb-3 w-full rounded border border-line bg-card p-2 focus-visible:outline-2 focus-visible:outline-accent"
+          />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => review.mutate({ action: 'approve', ...cleanNote })}
+            className="rounded bg-accent px-3 py-1.5 font-medium text-on-accent hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
+          >
+            Approve and send
+          </button>
+          <p className="mt-2 text-muted">The draft above is emailed to the customer only after you approve it.</p>
+        </section>
+      ) : null}
+
       {pending ? (
         <section className="mt-4 border-t border-line pt-4">
           <label htmlFor={ids.note} className="mb-1 block font-medium">
@@ -234,8 +260,45 @@ function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: (ticke
             {ticket.reviewed_by ? `Reviewed by ${ticket.reviewed_by.name}` : 'Reviewer unknown'}
             {ticket.reviewed_at ? `, ${exactTime(ticket.reviewed_at)}` : ''}
           </p>
+          {ticket.status === 'approved' || ticket.status === 'edited' ? <DeliveryStatus ticketId={ticket.ticket_id} /> : null}
         </Section>
       )}
     </article>
+  );
+}
+
+/** How the email of an approved reply is going. A rejected ticket never shows this. */
+function DeliveryStatus({ ticketId }: { ticketId: string }) {
+  const queryClient = useQueryClient();
+  const delivery = useDelivery(ticketId, true);
+  const retry = useMutation<Delivery, ApiError>({
+    mutationFn: () => retryDelivery(ticketId),
+    onSuccess: (fresh) => queryClient.setQueryData(keys.delivery(ticketId), fresh),
+    // 409: it was not failed any more (someone else retried it). Look again.
+    onError: () => void queryClient.invalidateQueries({ queryKey: keys.delivery(ticketId) }),
+  });
+  const state = delivery.data;
+  if (!state || state.status === 'none') return <div role="status" aria-live="polite" />;
+
+  return (
+    <div role="status" aria-live="polite" className="mt-3 rounded border border-line bg-page p-2">
+      {state.status === 'queued' ? <p>Sending…</p> : null}
+      {state.status === 'sent' ? <p>{state.sent_at ? `Reply sent ${exactTime(state.sent_at)}` : 'Reply sent'}</p> : null}
+      {state.status === 'skipped_no_email' ? <p>No customer email, so no reply was sent.</p> : null}
+      {state.status === 'failed' ? (
+        <div>
+          <p className="font-medium text-danger">Sending failed</p>
+          {state.error ? <p className="break-words text-muted">{state.error}</p> : null}
+          <button
+            type="button"
+            disabled={retry.isPending}
+            onClick={() => retry.mutate()}
+            className="mt-2 rounded border border-line bg-card px-3 py-1 hover:bg-page focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60"
+          >
+            Retry sending
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }

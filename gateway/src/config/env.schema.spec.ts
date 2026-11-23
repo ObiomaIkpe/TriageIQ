@@ -58,6 +58,15 @@ describe('validateEnv', () => {
       TURNSTILE_EXPECTED_ACTION: '',
       PUBLIC_MAX_PER_IP_PER_HOUR: 5,
       PUBLIC_DAILY_CAP: 200,
+      MAIL_ENABLED: false,
+      SMTP_HOST: '',
+      SMTP_PORT: 587,
+      SMTP_SECURE: false,
+      SMTP_USER: '',
+      SMTP_PASS: '',
+      MAIL_FROM: '',
+      MAIL_REPLY_TO: '',
+      MAIL_MAX_PER_RECIPIENT_PER_DAY: 3,
     });
   });
 
@@ -152,7 +161,7 @@ describe('validateEnv', () => {
     for (const line of text.split('\n')) {
       const match = /^([A-Z_]+)=(.*)$/.exec(line.trim());
       // Like dotenv and compose: a value in single quotes is taken literally, quotes removed.
-      if (match) env[match[1]] = match[2].replace(/^'(.*)'$/, '$1');
+      if (match) env[match[1]] = match[2].replace(/^'(.*)'$/, '$1').replace(/^"(.*)"$/, '$1');
     }
     expect(Object.keys(env).sort()).toEqual([
       'ALLOWED_ORIGINS',
@@ -162,6 +171,8 @@ describe('validateEnv', () => {
       'LOGIN_MAX_FAILURES_PER_EMAIL',
       'LOGIN_MAX_FAILURES_PER_IP',
       'LOGIN_WINDOW_MINUTES',
+      'MAIL_ENABLED',
+      'MAIL_FROM',
       'PORT',
       'PUBLIC_DAILY_CAP',
       'PUBLIC_FORM_ENABLED',
@@ -170,6 +181,9 @@ describe('validateEnv', () => {
       'REDIS_URL',
       'SESSION_ABSOLUTE_HOURS',
       'SESSION_IDLE_MINUTES',
+      'SMTP_HOST',
+      'SMTP_PORT',
+      'SMTP_SECURE',
       'TRIAGE_REVIEW_API_KEY',
       'TRIAGE_SERVICE_URL',
       'TRIAGE_TIMEOUT_MS',
@@ -316,6 +330,47 @@ describe('validateEnv: the public form settings', () => {
   it('the secret never appears in an error message', () => {
     const error = failure({ ...VALID, PUBLIC_FORM_ENABLED: 'maybe', TURNSTILE_SECRET_KEY: SECRET, TURNSTILE_VERIFY_URL: `ftp://${SECRET}` });
     expect(error.message).not.toContain(SECRET);
+  });
+});
+
+describe('validateEnv: the mail settings', () => {
+  const on = { ...VALID, MAIL_ENABLED: 'true', SMTP_HOST: 'mailpit', SMTP_PORT: '1025', MAIL_FROM: 'TriageIQ Support <support@triageiq.local>' };
+
+  it('is off by default and needs nothing else then', () => {
+    expect(validateEnv(VALID).MAIL_ENABLED).toBe(false);
+  });
+
+  it('enabled: the host, the port and the sender are required (fail fast, by name)', () => {
+    for (const missing of ['SMTP_HOST', 'SMTP_PORT', 'MAIL_FROM']) {
+      const env: Record<string, unknown> = { ...on };
+      delete env[missing];
+      expect(failure(env).problems).toEqual([`${missing} is missing (required when MAIL_ENABLED is true)`]);
+    }
+  });
+
+  it('enabled with everything set: starts, with the typed values', () => {
+    expect(validateEnv(on)).toMatchObject({ MAIL_ENABLED: true, SMTP_HOST: 'mailpit', SMTP_PORT: 1025, SMTP_SECURE: false, MAIL_FROM: 'TriageIQ Support <support@triageiq.local>', MAIL_MAX_PER_RECIPIENT_PER_DAY: 3 });
+  });
+
+  it('SMTP_USER and SMTP_PASS go together: both or neither, and no secret is ever in the message', () => {
+    expect(validateEnv({ ...on, SMTP_USER: 'u', SMTP_PASS: 'p' }).SMTP_USER).toBe('u');
+    expect(failure({ ...on, SMTP_USER: 'u' }).problems).toEqual(['SMTP_USER and SMTP_PASS must be set together (both or neither)']);
+    const error = failure({ ...on, SMTP_PASS: SECRET });
+    expect(error.message).not.toContain(SECRET);
+  });
+
+  it.each([
+    ['SMTP_PORT', '0', false], ['SMTP_PORT', '65536', false], ['SMTP_PORT', '465', true],
+    ['SMTP_SECURE', 'yes', false], ['SMTP_SECURE', 'true', true],
+    ['MAIL_FROM', 'support@example.com', true], ['MAIL_FROM', 'Support <support@example.com>', true],
+    ['MAIL_FROM', 'no-at-sign', false], ['MAIL_FROM', 'a@b.c\r\nBcc: x@y.z', false], ['MAIL_FROM', 'Name\r\n <a@b.c>', false],
+    ['MAIL_REPLY_TO', 'help@example.com', true], ['MAIL_REPLY_TO', 'bad', false],
+    ['MAIL_MAX_PER_RECIPIENT_PER_DAY', '0', false], ['MAIL_MAX_PER_RECIPIENT_PER_DAY', '1', true], ['MAIL_MAX_PER_RECIPIENT_PER_DAY', '1001', false],
+    ['SMTP_HOST', 'smtp.example.com', true], ['SMTP_HOST', 'bad host!', false],
+  ])('%s = %j -> valid %s', (name, value, valid) => {
+    const run = () => validateEnv({ ...on, [name]: value });
+    if (valid) expect(run).not.toThrow();
+    else expect(run).toThrow(ConfigValidationError);
   });
 });
 

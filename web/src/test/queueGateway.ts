@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw';
-import { PAGE_SIZE, STATUSES, type Counts, type Ticket } from '../api/tickets.js';
+import { PAGE_SIZE, STATUSES, type Counts, type Delivery, type Ticket } from '../api/tickets.js';
 
 let serial = 0;
 
@@ -44,6 +44,8 @@ export function queueGateway(initial: Ticket[]) {
     calls: [] as { method: string; path: string; search: string; body?: unknown }[],
     /** Set to make the next review answer 409 (someone else got there first), as this reviewer. */
     conflictWith: undefined as { id: string; name: string } | undefined,
+    /** The email delivery of each ticket id (absent: none). A review of a ticket with an email makes it queued, like the gateway. */
+    deliveries: new Map<string, Delivery>(),
   };
   const newestFirst = () => [...state.tickets].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.ticket_id.localeCompare(a.ticket_id));
   const counts = (): Counts => Object.fromEntries(STATUSES.map((s) => [s, state.tickets.filter((t) => t.status === s).length])) as Counts;
@@ -66,6 +68,18 @@ export function queueGateway(initial: Ticket[]) {
       }
       return HttpResponse.json(items.slice(0, limit));
     }),
+    http.get('/api/tickets/:id/delivery', ({ params }) => {
+      state.calls.push({ method: 'GET', path: `/tickets/${String(params.id)}/delivery`, search: '' });
+      return HttpResponse.json(state.deliveries.get(String(params.id)) ?? { status: 'none', attempts: 0, sent_at: null, error: null });
+    }),
+    http.post('/api/tickets/:id/delivery/retry', ({ params }) => {
+      state.calls.push({ method: 'POST', path: `/tickets/${String(params.id)}/delivery/retry`, search: '' });
+      const current = state.deliveries.get(String(params.id));
+      if (current?.status !== 'failed') return HttpResponse.json({ detail: 'Only a failed delivery can be retried' }, { status: 409 });
+      const fresh: Delivery = { status: 'queued', attempts: 0, sent_at: null, error: null };
+      state.deliveries.set(String(params.id), fresh);
+      return HttpResponse.json(fresh);
+    }),
     http.get('/api/tickets/reference/:reference', ({ params }) => {
       const ticket = state.tickets.find((t) => t.reference === params.reference);
       return ticket ? HttpResponse.json(ticket) : HttpResponse.json({ detail: 'Ticket not found' }, { status: 404 });
@@ -75,7 +89,8 @@ export function queueGateway(initial: Ticket[]) {
       state.calls.push({ method: 'POST', path: `/tickets/${String(params.id)}/review`, search: '', body });
       const ticket = state.tickets.find((t) => t.ticket_id === params.id);
       if (!ticket) return HttpResponse.json({ detail: 'Ticket not found' }, { status: 404 });
-      if (ticket.status !== 'pending_review' || state.conflictWith) {
+      const triagedApproval = ticket.status === 'triaged' && body.action === 'approve' && !!ticket.suggested_reply;
+      if ((ticket.status !== 'pending_review' && !triagedApproval) || state.conflictWith) {
         if (state.conflictWith) {
           Object.assign(ticket, { status: 'approved', reviewed_by: state.conflictWith, reviewed_at: new Date().toISOString(), final_reply: ticket.suggested_reply });
         }
@@ -88,6 +103,9 @@ export function queueGateway(initial: Ticket[]) {
         reviewed_at: new Date().toISOString(),
         reviewed_by: { id: 'user:1', name: 'Ọbiọma Ụzọ' },
       });
+      if (body.action !== 'reject' && ticket.customer_email) {
+        state.deliveries.set(ticket.ticket_id, { status: 'queued', attempts: 0, sent_at: null, error: null });
+      }
       return HttpResponse.json(ticket);
     }),
   ];

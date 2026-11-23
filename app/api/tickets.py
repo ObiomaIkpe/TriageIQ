@@ -24,10 +24,14 @@ def read_tickets(
     status: Optional[TicketStatus] = None,
     limit: int = Query(50, ge=1, le=200),
     cursor: Optional[str] = Query(None, max_length=100),
+    reviewed_since: Optional[datetime] = None,
 ) -> list[TicketRecord]:
-    if cursor is None:
-        return list_tickets(status=status, limit=limit)
-    return list_tickets(status=status, limit=limit, before=_parse_cursor(cursor))
+    extra = {}
+    if cursor is not None:
+        extra["before"] = _parse_cursor(cursor)
+    if reviewed_since is not None:
+        extra["reviewed_since"] = reviewed_since
+    return list_tickets(status=status, limit=limit, **extra)
 
 
 # Declared BEFORE /{ticket_id}: otherwise "counts" would be read as a ticket id (and be a 422).

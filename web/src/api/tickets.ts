@@ -60,3 +60,19 @@ export interface ReviewBody {
 
 export const reviewTicket = (ticketId: string, body: ReviewBody): Promise<Ticket> =>
   api<Ticket>(`/tickets/${encodeURIComponent(ticketId)}/review`, { method: 'POST', body });
+
+export type DeliveryState = 'none' | 'queued' | 'sent' | 'failed' | 'skipped_no_email';
+
+/** How the email of an approved reply is going. `error` is a short generic phrase from the gateway (never an address). */
+export interface Delivery {
+  status: DeliveryState;
+  attempts: number;
+  sent_at: string | null;
+  error: string | null;
+}
+
+export const fetchDelivery = (ticketId: string): Promise<Delivery> => api<Delivery>(`/tickets/${encodeURIComponent(ticketId)}/delivery`);
+
+export const retryDelivery = (ticketId: string): Promise<Delivery> =>
+  api<Delivery>(`/tickets/${encodeURIComponent(ticketId)}/delivery/retry`, { method: 'POST' });
+
