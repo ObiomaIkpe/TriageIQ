@@ -1,4 +1,4 @@
-import { ApiError, ForbiddenError, NetworkError, RateLimitedError, ServerError, UnauthorizedError } from './errors.js';
+import { ApiError, ConflictError, ForbiddenError, NetworkError, RateLimitedError, ServerError, UnauthorizedError } from './errors.js';
 
 /**
  * The UI calls the API ONLY under /api/... (a proxy forwards it to the gateway and removes the prefix), so the
@@ -65,6 +65,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     throw new UnauthorizedError();
   }
   if (response.status === 403) throw new ForbiddenError();
+  if (response.status === 409) throw new ConflictError();
   if (response.status === 429) throw new RateLimitedError(parseRetryAfter(response.headers.get('Retry-After')));
   if (response.status >= 500) throw new ServerError(response.status);
   throw new ApiError('Request failed', response.status);

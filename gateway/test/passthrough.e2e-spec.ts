@@ -76,6 +76,33 @@ describe('reviewer routes forwarded to Python (fake Python server)', () => {
       expect(seen[0].url).toBe('/tickets?status=pending_review&limit=5'); // evil and offset dropped
     });
 
+    it('GET /tickets forwards a keyset cursor (and encodes it)', async () => {
+      const cursor = `2026-11-23T10:00:00.123456+00:00|${ID}`;
+      await api(app, 'ops').get('/tickets').query({ status: 'pending_review', limit: 20, cursor }).expect(200);
+      expect(seen[0].url).toBe(`/tickets?status=pending_review&limit=20&cursor=${encodeURIComponent(cursor)}`);
+    });
+
+    it('GET /tickets/counts reaches the COUNTS route (not /tickets/:id) and returns the counts', async () => {
+      const counts = { triaged: 4, pending_review: 2, approved: 1, edited: 0, rejected: 3 };
+      answer = { status: 200, body: counts };
+      const response = await api(app, 'ops').get('/tickets/counts').expect(200);
+      expect(response.body).toEqual(counts);
+      expect(seen.map((s) => s.url)).toEqual(['/tickets/counts']);
+    });
+
+    it('a submitter cannot read the counts (403) and Python is not contacted', async () => {
+      await api(app, 'alice').get('/tickets/counts').expect(403);
+      expect(seen).toHaveLength(0);
+    });
+
+    it.each([{ triaged: 1 }, [], { triaged: -1, pending_review: 0, approved: 0, edited: 0, rejected: 0 }, { triaged: 'x', pending_review: 0, approved: 0, edited: 0, rejected: 0 }])(
+      'a malformed counts answer from Python is a 502',
+      async (body) => {
+        answer = { status: 200, body };
+        await api(app, 'ops').get('/tickets/counts').expect(502);
+      },
+    );
+
     it('GET /tickets with no parameters sends none', async () => {
       await api(app, 'ops').get('/tickets').expect(200);
       expect(seen[0].url).toBe('/tickets');
@@ -249,7 +276,7 @@ describe('reviewer routes forwarded to Python (fake Python server)', () => {
       expect(seen).toHaveLength(0);
     });
 
-    it.each(['limit=0', 'limit=201', 'limit=abc', 'status=bogus'])('GET /tickets?%s -> 400', async (query) => {
+    it.each(['limit=0', 'limit=201', 'limit=abc', 'status=bogus', 'cursor=nonsense', 'cursor=2026-11-23T10:00:00Z', 'status=a&status=b'])('GET /tickets?%s -> 400', async (query) => {
       const response = await api(app, 'ops').get(`/tickets?${query}`).expect(400);
       expect(response.body.detail).toBe('Invalid query');
       expect(seen).toHaveLength(0);

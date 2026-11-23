@@ -40,6 +40,13 @@ describe('theme', () => {
     ['accent', 'card'], // links and focus rings on white
     ['accent', 'page'],
     ['accent-hover', 'card'],
+    ['ink', 'accent-soft'],
+    ['accent', 'accent-soft'],
+    ['warn-ink', 'warn-bg'],
+    ['ok-ink', 'ok-bg'],
+    ['bad-ink', 'bad-bg'],
+    ['info-ink', 'info-bg'],
+    ['muted', 'accent-soft'],
   ])('%s on %s meets WCAG AA (4.5:1)', (foreground, background) => {
     expect(ratio(token(foreground), token(background))).toBeGreaterThanOrEqual(4.5);
   });

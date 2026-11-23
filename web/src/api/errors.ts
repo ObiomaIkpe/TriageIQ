@@ -23,6 +23,13 @@ export class ForbiddenError extends ApiError {
   }
 }
 
+/** 409: the ticket is not in the state the call needs (for a review: someone already reviewed it). */
+export class ConflictError extends ApiError {
+  constructor() {
+    super('Conflict', 409);
+  }
+}
+
 /** 429: too many attempts. `retryAfterSeconds` comes from the Retry-After header (undefined if it was missing or unusable). */
 export class RateLimitedError extends ApiError {
   constructor(readonly retryAfterSeconds?: number) {

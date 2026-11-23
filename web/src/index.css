@@ -11,6 +11,16 @@
   --color-accent-hover: #1a3fa0;
   --color-on-accent: #ffffff;
   --color-danger: #b42318;
+  --color-accent-soft: #eef3fd; /* the selected ticket card */
+  /* status badges: dark text on a light tint of the same hue */
+  --color-warn-bg: #fef3c7;
+  --color-warn-ink: #78350f;
+  --color-ok-bg: #dcfce7;
+  --color-ok-ink: #14532d;
+  --color-bad-bg: #fee2e2;
+  --color-bad-ink: #7f1d1d;
+  --color-info-bg: #e0e7ff;
+  --color-info-ink: #1e3a8a;
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
 }
 

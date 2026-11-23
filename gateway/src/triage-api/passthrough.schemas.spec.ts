@@ -1,4 +1,5 @@
 import {
+  isCountsPayload,
   isReference,
   isTicketPayload,
   isUuid,
@@ -42,6 +43,28 @@ describe('parseListQuery', () => {
   it('rejects a repeated parameter, and never echoes a value', () => {
     expect(parseListQuery({ limit: ['1', '2'] }).ok).toBe(false);
     expect(JSON.stringify(parseListQuery({ status: 'SECRETVALUE', limit: 'SECRETVALUE' }))).not.toContain('SECRET');
+  });
+});
+
+describe('parseListQuery cursor and isCountsPayload', () => {
+  const CURSOR = '2026-11-23T10:00:00.123456+00:00|3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34';
+  it('accepts a cursor made of a timestamp and an id, and forwards it unchanged', () => {
+    expect(parseListQuery({ cursor: CURSOR })).toEqual({ ok: true, params: { cursor: CURSOR } });
+    expect(parseListQuery({ cursor: '2026-11-23T10:00:00Z|3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34' }).ok).toBe(true);
+  });
+  it.each(['nonsense', '', '2026-11-23T10:00:00Z', 'x|y', `${CURSOR}|extra`, '<script>|3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34', 'a'.repeat(101)])('rejects %j without echoing it', (cursor) => {
+    const result = parseListQuery({ cursor });
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('<script>');
+  });
+  it('isCountsPayload wants every status as a non-negative integer and nothing else', () => {
+    const good = { triaged: 0, pending_review: 5, approved: 1, edited: 2, rejected: 3 };
+    expect(isCountsPayload(good)).toBe(true);
+    expect(isCountsPayload({ ...good, extra: 1 })).toBe(false);
+    expect(isCountsPayload({ ...good, edited: 1.5 })).toBe(false);
+    expect(isCountsPayload({ ...good, edited: -1 })).toBe(false);
+    expect(isCountsPayload([good])).toBe(false);
+    expect(isCountsPayload(null)).toBe(false);
   });
 });
 

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { answers, ADA } from './test/gateway.js';
+import { queueGateway } from './test/queueGateway.js';
 import { renderApp } from './test/render.js';
 import { server } from './test/server.js';
 
@@ -40,17 +41,17 @@ describe('routing and the session', () => {
     expect(await screen.findByText('TriageIQ · Review queue')).toBeInTheDocument();
   });
 
-  it('the queue page is a placeholder with the top bar, the name and a Log out button', async () => {
-    server.use(answers.loggedIn());
+  it('the queue page has the top bar, the name and a Log out button', async () => {
+    server.use(answers.loggedIn(), ...queueGateway([]).handlers);
     renderApp('/queue');
     expect(await screen.findByText('TriageIQ · Review queue')).toBeInTheDocument();
-    expect(screen.getByText('The review queue arrives in the next step.')).toBeInTheDocument();
+    expect(await screen.findByText('Nothing waiting. The queue is clear.')).toBeInTheDocument();
     expect(screen.getByText('Ọbiọma Ụzọ')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Log out' })).toBeInTheDocument();
   });
 
   it('an unknown route is a simple 404 page', async () => {
-    server.use(answers.loggedIn());
+    server.use(answers.loggedIn(), ...queueGateway([]).handlers);
     renderApp('/no/such/page');
     expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
   });
@@ -59,7 +60,7 @@ describe('routing and the session', () => {
     server.use(http.get('/api/auth/me', () => HttpResponse.json({}, { status: 503 })));
     renderApp('/queue');
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong. Please try again.');
-    server.use(answers.loggedIn());
+    server.use(answers.loggedIn(), ...queueGateway([]).handlers);
     await userEvent.setup().click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('TriageIQ · Review queue')).toBeInTheDocument();
   });
@@ -87,7 +88,7 @@ describe('routing and the session', () => {
   });
 
   it('a failed logout (network) stays on the page and says so; the session is not pretended to be over', async () => {
-    server.use(answers.loggedIn(), http.post('/api/auth/logout', () => HttpResponse.error()));
+    server.use(answers.loggedIn(), ...queueGateway([]).handlers, http.post('/api/auth/logout', () => HttpResponse.error()));
     renderApp('/queue');
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Log out' }));
     expect(await screen.findByText('Could not log out. Please try again.')).toBeInTheDocument();
@@ -95,7 +96,7 @@ describe('routing and the session', () => {
   });
 
   it('a 401 from a later API call sends the user to /login with "Your session has ended."', async () => {
-    server.use(answers.loggedIn(), http.post('/api/auth/logout', () => HttpResponse.json({}, { status: 401 })));
+    server.use(answers.loggedIn(), ...queueGateway([]).handlers, http.post('/api/auth/logout', () => HttpResponse.json({}, { status: 401 })));
     const { queryClient } = renderApp('/queue');
     queryClient.setQueryData(['tickets', 'pending'], ['x']);
     // Any later call that answers 401 (here the logout call stands in for the future queue calls). The same handler applies:
@@ -113,7 +114,7 @@ describe('routing and the session', () => {
   });
 
   it('after the session-ended notice, a failed login attempt replaces it with the new message', async () => {
-    server.use(answers.loggedIn());
+    server.use(answers.loggedIn(), ...queueGateway([]).handlers);
     renderApp('/queue');
     await screen.findByText('TriageIQ · Review queue');
     const { api } = await import('./api/client.js');

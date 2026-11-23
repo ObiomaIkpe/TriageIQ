@@ -124,7 +124,8 @@ The gateway is the only way in. The compose file publishes just the gateway (on 
 | Endpoint | Purpose |
 |---|---|
 | `POST /triage` | Triage a ticket and save the result. An optional `ticket_id` (a UUID) makes it safe to send the same ticket again: it is triaged and saved at most once (see below) |
-| `GET /tickets?status=&limit=` | List tickets, newest first. `status` is `triaged`, `pending_review`, `approved`, `edited` or `rejected`; `limit` is 1 to 200 (default 50) |
+| `GET /tickets?status=&limit=&cursor=` | List tickets, newest first. `status` is `triaged`, `pending_review`, `approved`, `edited` or `rejected`; `limit` is 1 to 200 (default 50) `cursor` (`<created_at>|<ticket_id>` of the last ticket you have) gives the next page: newest first, ties broken by id, so a ticket arriving meanwhile never shifts a page |
+| `GET /tickets/counts` | How many tickets have each status, every status present (`{"triaged": 0, "pending_review": 2, ...}`), from one `GROUP BY` |
 | `GET /tickets/{ticket_id}` | One ticket, with the original subject and body, and the review fields (`final_reply`, `review_note`, `reviewed_at`, all null until a reviewer decides). 404 if missing, 422 for a malformed id |
 | `GET /tickets/reference/{reference}` | The same record, found by its short reference (such as `TKT-7K3M9Q`). 404 if unknown |
 | `POST /tickets/{ticket_id}/review` | Approve, edit or reject a ticket that is waiting for review. Needs the `X-API-Key` header (see below) |
@@ -636,7 +637,7 @@ curl -i -X POST localhost:3000/tickets \
 
 ### The reviewer web UI (M4.3a: login page and app shell)
 
-`web/` is the reviewer UI: React, Vite, TypeScript (strict), Tailwind CSS v4, React Router and TanStack Query. So far it has the **login page** and a placeholder **/queue** page (the real queue comes in M4.3b, the public form page in M4.3c). It is not containerised yet.
+`web/` is the reviewer UI: React, Vite, TypeScript (strict), Tailwind CSS v4, React Router and TanStack Query. It has the **login page** and the **review queue** (M4.3b); the public form page comes in M4.3c. It is not containerised yet.
 
 ```bash
 # the stack must be up (docker compose up -d), gateway/.env needs ALLOWED_ORIGINS=http://localhost:5173 and COOKIE_SECURE=false
@@ -645,6 +646,8 @@ npm install        # once
 npm run dev        # http://localhost:5173, then open it and log in as a reviewer
 npm test           # also: npm run lint, npm run typecheck, npm run build
 ```
+
+**The review queue (`/queue`).** Tabs **Pending, Approved, Edited, Rejected and Auto-handled** (tickets the AI handled without needing review, status `triaged`), each with its count; the tab is in the URL (`?tab=pending`). The left column lists the tab's tickets newest first (reference, status, subject, why it is waiting, `category · urgency · age`) with **Load more**; the right panel shows the selected ticket (`?ticket=TKT-...`, so a link opens it): customer, message, why it is here, classification (confidence as a percentage), the knowledge-base articles with distance, and the draft reply. For a pending ticket: **Approve draft** (disabled, with the reason, when there is no draft), **Edit** (the reply becomes a textarea prefilled with the draft; **Save edited reply**), **Reject**, and an optional note. After a review the lists and counts refresh, a short confirmation is shown, and the newest pending ticket opens (or the empty state). If someone else reviewed it first the panel says "Already reviewed by <name>". Lists and counts refetch every 30 seconds and when the window regains focus. Everything a customer or the model wrote is shown as plain text (no HTML, no markdown, no links).
 
 **The `/api` rule.** The UI calls the API **only under `/api/...`**, and the dev server (port 5173) forwards `/api/*` to the gateway at `http://localhost:3000` with the `/api` prefix removed (`/api/auth/me` becomes `/auth/me`; set `TIQ_GATEWAY_URL` to use another address). The browser therefore talks to one origin only: the session cookie is same-origin (`SameSite=Strict` works) and nothing needs CORS. The browser's `Origin` header reaches the gateway unchanged, which is what its Origin check wants. UI routes never start with `/api`. Production (M6, Caddy) will do the same rewrite. The UI keeps no token or user data in `localStorage` or `sessionStorage`: the session is the `HttpOnly` cookie, and the browser's memory is cleared on logout.
 
