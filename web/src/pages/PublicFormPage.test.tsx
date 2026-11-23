@@ -40,8 +40,8 @@ async function fill(user: ReturnType<typeof userEvent.setup>, over: Partial<Reco
 }
 const send = () => screen.getByRole('button', { name: /^(Send|Sending…)$/ });
 
-function open(turnstile = fakeTurnstile(), path = '/') {
-  const view = renderApp(path, turnstile.loader);
+function open(turnstile = fakeTurnstile(), path = '/', options: { strict?: boolean } = {}) {
+  const view = renderApp(path, turnstile.loader, options);
   return { turnstile, ...view };
 }
 
@@ -171,6 +171,7 @@ describe('the public contact form', () => {
     expect(await screen.findByLabelText('Name')).toHaveValue('');
     await fill(user);
     await waitFor(() => expect(turnstile.state.renders).toBe(2)); // a new widget for the new form
+    expect(turnstile.state.refused).toBe(0);
     act(() => turnstile.token('tok-2'));
     await user.click(send());
     await screen.findByTestId('reference');
@@ -307,5 +308,48 @@ describe('the public contact form', () => {
     act(() => turnstile.fail());
     expect(await screen.findByText('The verification could not run. Please try again.')).toBeInTheDocument();
     expect(send()).toBeDisabled();
+  });
+
+  describe('React StrictMode (development mounts, unmounts and mounts again)', () => {
+    it('ends with exactly one live widget, the second render succeeds, and nothing was refused', async () => {
+      publicGateway(OK);
+      const { turnstile } = open(fakeTurnstile(), '/', { strict: true });
+      await screen.findByLabelText('Name');
+      await waitFor(() => expect(turnstile.state.live).toBe(1));
+      await new Promise((resolve) => setTimeout(resolve, 20)); // let any stray render finish
+      expect(turnstile.state.calls).toBe(2); // mounted twice
+      expect(turnstile.state.refused).toBe(0); // the second render was NOT rejected
+      expect(turnstile.state.live).toBe(1);
+      expect(turnstile.state.renders - turnstile.state.removes).toBe(1);
+      act(() => turnstile.token());
+      await waitFor(() => expect(send()).toBeEnabled()); // and a token reaches the form
+    });
+
+    it('works end to end: token, send, reference; reset and "Send another message" keep one live widget', async () => {
+      publicGateway({ status: 503 }, OK);
+      const { turnstile } = open(fakeTurnstile(), '/', { strict: true });
+      const user = userEvent.setup();
+      await fill(user);
+      await waitFor(() => expect(turnstile.state.live).toBe(1));
+      act(() => turnstile.token('a'));
+      await user.click(send());
+      await screen.findByText("We're very busy right now. Please try again later.");
+      expect(turnstile.state.resets).toBe(1);
+      expect(turnstile.state.live).toBe(1); // a reset keeps the widget, it does not add one
+      act(() => turnstile.token('b'));
+      await user.click(await screen.findByRole('button', { name: 'Send' }));
+      await user.click(await screen.findByRole('button', { name: 'Send another message' }));
+      await screen.findByLabelText('Name');
+      await waitFor(() => expect(turnstile.state.live).toBe(1)); // the old form's widget was removed, the new form has one
+      expect(turnstile.state.refused).toBe(0);
+    });
+
+    it('leaving the page removes the widget', async () => {
+      publicGateway(OK);
+      const { turnstile, unmount } = open(fakeTurnstile(), '/', { strict: true });
+      await waitFor(() => expect(turnstile.state.live).toBe(1));
+      unmount();
+      expect(turnstile.state.live).toBe(0);
+    });
   });
 });

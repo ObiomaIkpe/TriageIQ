@@ -11,8 +11,14 @@ export interface TurnstileHandlers {
 export interface TurnstileWidget {
   /** Asks for a new token (every token works once, so call it after any failed submit). */
   reset: () => void;
+  /** Takes the widget out of the page for good. Safe to call twice. */
   remove: () => void;
 }
 
-/** Puts a widget in `container`. Rejects if the Turnstile script cannot be loaded. */
-export type TurnstileLoader = (container: HTMLElement, handlers: TurnstileHandlers) => Promise<TurnstileWidget>;
+/**
+ * Puts a widget in `container`. Rejects if the Turnstile script cannot be loaded, or with an AbortError if `signal` was
+ * aborted first (the caller went away: nothing is rendered then). The widget is rendered only after the script is ready AND
+ * the signal is still live, in one synchronous step, so two calls for one container (React StrictMode mounts, unmounts and
+ * mounts again in development) can never both render.
+ */
+export type TurnstileLoader = (container: HTMLElement, handlers: TurnstileHandlers, signal: AbortSignal) => Promise<TurnstileWidget>;

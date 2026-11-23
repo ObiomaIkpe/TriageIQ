@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { MemoryRouter, useLocation } from 'react-router';
 import { App } from '../App.js';
 import { installFocusListener } from '../lib/focus.js';
@@ -14,9 +15,11 @@ function Where() {
 }
 
 /** The whole app on a fresh QueryClient (no retries, so a failure shows at once), starting at `path`. */
-export function renderApp(path = '/', turnstile?: TurnstileLoader) {
+export function renderApp(path = '/', turnstile?: TurnstileLoader, options: { strict?: boolean } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const Wrapper = options.strict ? StrictMode : ({ children }: { children: React.ReactNode }) => <>{children}</>;
   const view = render(
+    <Wrapper>
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         {turnstile ? (
@@ -28,7 +31,8 @@ export function renderApp(path = '/', turnstile?: TurnstileLoader) {
         )}
         <Where />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
+    </Wrapper>,
   );
   return { ...view, queryClient };
 }

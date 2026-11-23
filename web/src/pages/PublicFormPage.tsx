@@ -149,7 +149,9 @@ function ContactForm({ onSent }: { onSent: (reference: string) => void }) {
   const keyUsedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    // StrictMode (development) runs this effect, its cleanup, and the effect again. Each run owns an AbortController: the
+    // cleanup aborts it, so a run that has been cleaned up never renders a widget, and removes the one it did render.
+    const controller = new AbortController();
     if (!container.current) return;
     loadWidget(container.current, {
       onToken: (t) => {
@@ -164,21 +166,22 @@ function ContactForm({ onSent }: { onSent: (reference: string) => void }) {
         setToken(null);
         setWidgetNote('The verification could not run. Please try again.');
       },
-    })
+    }, controller.signal)
       .then((w) => {
-        if (cancelled) w.remove();
+        if (controller.signal.aborted) w.remove();
         else {
           widget.current = w;
           setWidgetState('ready');
         }
       })
       .catch(() => {
-        if (!cancelled) setWidgetState('failed');
+        if (!controller.signal.aborted) setWidgetState('failed'); // an aborted run is not a failure
       });
     return () => {
-      cancelled = true;
+      controller.abort();
       widget.current?.remove();
       widget.current = null;
+      setToken(null); // a token belongs to the widget that made it
     };
   }, [loadWidget]);
 
