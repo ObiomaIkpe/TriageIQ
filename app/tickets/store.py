@@ -94,6 +94,8 @@ def _to_record(row: TicketRow) -> TicketRecord:
             if row.reviewed_by_id is not None and row.reviewed_by_name is not None
             else None
         ),
+        ai_usage=row.ai_usage,
+        ai_cost_usd=row.ai_cost_usd,
     )
 
 
@@ -173,6 +175,20 @@ def save_ticket(
                 raise
             result = result.model_copy(update={"reference": new_reference()})
     raise AssertionError("unreachable")  # the loop returns or raises
+
+
+def attach_usage(ticket_id: str, usage: dict) -> None:
+    """Store the token usage and estimated cost of a ticket's model calls (see app/usage.py).
+
+    A separate small UPDATE after the ticket was saved, so cost accounting can never stop a ticket from
+    being saved. Only a ticket that has no usage yet is changed (a repeated request never overwrites it).
+    """
+    with get_session() as session:
+        session.execute(
+            update(TicketRow)
+            .where(TicketRow.id == UUID(ticket_id), TicketRow.ai_usage.is_(None))
+            .values(ai_usage=usage, ai_cost_usd=usage.get("estimated_cost_usd"))
+        )
 
 
 def get_ticket(ticket_id: str) -> Optional[TicketRecord]:

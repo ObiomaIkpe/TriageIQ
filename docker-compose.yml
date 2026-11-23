@@ -9,6 +9,9 @@ services:
       # The password of the gateway's own database role (see db/gateway-db.sql). Read from the root
       # .env. The db service needs nothing else of the gateway's.
       GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:?Set GATEWAY_DB_PASSWORD in .env (see README, Run the whole system)}
+      # The password of the Python service's own least-privilege role triageiq_app (see db/app-db.sql). Read from the root .env.
+      # Use letters and digits only (it goes into a URL). On an existing volume: scripts/create_app_role.sh.
+      TRIAGEIQ_APP_DB_PASSWORD: ${TRIAGEIQ_APP_DB_PASSWORD:?Set TRIAGEIQ_APP_DB_PASSWORD in .env (see README, Run the whole system)}
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
@@ -17,6 +20,7 @@ services:
       # scripts/create_gateway_db.sh.
       - ./db/init:/docker-entrypoint-initdb.d:ro
       - ./db/gateway-db.sql:/gateway-db.sql:ro
+      - ./db/app-db.sql:/app-db.sql:ro
     healthcheck:
       # Over TCP on purpose: while the image runs its init scripts its temporary server listens
       # only on the unix socket, so a check through the socket would pass too early.
@@ -31,7 +35,8 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://triageiq:triageiq@db:5432/triageiq
+      # The least-privilege role (it owns the triageiq database and nothing else), not the Postgres superuser.
+      DATABASE_URL: postgresql://triageiq_app:${TRIAGEIQ_APP_DB_PASSWORD:?Set TRIAGEIQ_APP_DB_PASSWORD in .env}@db:5432/triageiq
     # No ports: the Python service is reached only by the gateway, at app:8000 on the compose
     # network. To publish it on localhost for debugging, add docker-compose.debug.yml.
     depends_on:
@@ -75,6 +80,9 @@ services:
       - path: gateway/.env
         required: true
     environment:
+      # The image sets NODE_ENV=production, which makes the gateway refuse development settings (COOKIE_SECURE=false, http
+      # origins, Mailpit; see gateway/src/config/production-guard.ts). This local stack uses exactly those, so it says so.
+      NODE_ENV: development
       PORT: "3000"
       REDIS_URL: redis://redis:6379
       TRIAGE_SERVICE_URL: http://app:8000

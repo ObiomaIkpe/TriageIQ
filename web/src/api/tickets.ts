@@ -32,6 +32,18 @@ export interface Ticket {
   reviewed_at: string | null;
   reviewed_by: { id: string; name: string } | null;
   created_at: string;
+  /** What the model calls for this ticket used, and an ESTIMATED cost (US dollars). Missing or null on tickets from before cost tracking. */
+  ai_usage?: { total_tokens?: number; estimated_cost_usd?: number | null } | null;
+  ai_cost_usd?: number | null;
+}
+
+/** "AI cost (estimate): $0.0123 · 4,210 tokens", or null when the ticket has no usage recorded. */
+export function aiCostLine(ticket: Pick<Ticket, 'ai_usage' | 'ai_cost_usd'>): string | null {
+  const tokens = ticket.ai_usage?.total_tokens;
+  if (typeof tokens !== 'number') return null;
+  const cost = ticket.ai_cost_usd;
+  const money = typeof cost === 'number' ? `$${cost.toFixed(4)} · ` : '';
+  return `AI cost (estimate): ${money}${tokens.toLocaleString('en-US')} tokens`;
 }
 
 export type Counts = Record<TicketStatus, number>;

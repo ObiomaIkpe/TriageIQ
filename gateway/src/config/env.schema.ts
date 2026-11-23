@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { RegisteredClient } from '../auth/auth.types.js';
 import { parseClients } from './clients.js';
+import { productionProblems } from './production-guard.js';
 
 /** The validated settings the gateway needs to run. */
 export interface AppConfig {
@@ -337,6 +338,8 @@ export function validateEnv(raw: Record<string, unknown>): AppConfig {
   if ((values.SMTP_USER === '') !== (values.SMTP_PASS === '')) {
     problems.push('SMTP_USER and SMTP_PASS must be set together (both or neither)');
   }
+  // NODE_ENV=production: refuse development-only settings (COOKIE_SECURE=false, http origins, Turnstile test secrets, Mailpit, placeholders).
+  problems.push(...productionProblems({ raw, values }));
   if (problems.length > 0) {
     throw new ConfigValidationError(problems);
   }

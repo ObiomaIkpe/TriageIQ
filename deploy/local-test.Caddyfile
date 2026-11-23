@@ -1,0 +1,14 @@
+# Stands in for the real edge Caddy, on this machine only. Same routing as production.
+{
+	auto_https disable_redirects
+}
+
+https://localhost:8443 {
+	tls internal
+	handle_path /api/* {
+		reverse_proxy triageiq-gateway:3000
+	}
+	handle {
+		reverse_proxy triageiq-web:8080
+	}
+}

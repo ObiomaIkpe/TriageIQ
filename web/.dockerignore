@@ -1,0 +1,9 @@
+# Keeps the build context small and keeps secrets and local state out of the image.
+# The Dockerfile copies only package files, index.html, tsconfig.json, vite.config.ts and src/.
+node_modules
+dist
+.env
+.env.*
+*.log
+coverage
+.git

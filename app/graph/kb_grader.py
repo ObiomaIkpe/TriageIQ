@@ -5,6 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.usage import usage_callback
 from app.models import GraphState
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ _llm = ChatAnthropic(
     timeout=settings.llm_timeout_seconds,
     max_tokens=settings.llm_max_tokens,
     max_retries=settings.llm_max_retries,
+    callbacks=[usage_callback]
 )
 
 _chain = _prompt | _llm.with_structured_output(KbGradeResult)

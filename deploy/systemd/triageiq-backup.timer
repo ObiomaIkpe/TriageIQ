@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the TriageIQ database backup every night at 03:30 (server time)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# If the server was off at 03:30, run once when it is back.
+Persistent=true
+Unit=triageiq-backup.service
+
+[Install]
+WantedBy=timers.target

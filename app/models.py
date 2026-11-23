@@ -95,6 +95,10 @@ class TicketRecord(TriageResult):
     # From the public form; None for tickets that came in through an API client.
     customer_name: Optional[str] = None
     customer_email: Optional[str] = None
+    # Token usage per provider and an ESTIMATED cost in US dollars (see app/usage.py). Shown to reviewers only.
+    # None for tickets saved before this existed.
+    ai_usage: Optional[dict] = None
+    ai_cost_usd: Optional[float] = None
 
 
 class ReviewDecision(BaseModel):

@@ -12,6 +12,7 @@ from app.db import get_session
 from app.kb.orm import KbDocumentRow
 from app.kb.ratelimit import RateLimiter
 from app.models import KbMatch
+from app.usage import record_embedding
 
 EMBEDDING_MODEL = "voyage-3"
 
@@ -62,6 +63,7 @@ def _embed_with_retry(text: str, input_type: str) -> list[float]:
             result = _voyage.embed(
                 [text], model=EMBEDDING_MODEL, input_type=input_type
             )
+            record_embedding(EMBEDDING_MODEL, getattr(result, "total_tokens", None))
             return result.embeddings[0]
         except _RETRYABLE:
             if attempt == MAX_ATTEMPTS:

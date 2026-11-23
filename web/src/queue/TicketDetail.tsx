@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
 import { ApiError, ConflictError } from '../api/errors.js';
-import { fetchTicket, retryDelivery, reviewTicket, type Delivery, type ReviewBody, type Ticket } from '../api/tickets.js';
+import { aiCostLine, fetchTicket, retryDelivery, reviewTicket, type Delivery, type ReviewBody, type Ticket } from '../api/tickets.js';
 import { exactTime } from '../lib/time.js';
 import { StatusBadge } from './StatusBadge.js';
 import { STATUS_LABEL } from './tabs.js';
@@ -131,6 +131,7 @@ function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: Props[
           <dt className="text-muted">Confidence</dt>
           <dd>{confidence}</dd>
         </dl>
+        {aiCostLine(ticket) ? <p className="mt-2 text-xs text-muted">{aiCostLine(ticket)}</p> : null}
       </Section>
 
       <Section title="Knowledge base">

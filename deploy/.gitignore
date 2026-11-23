@@ -1,0 +1,4 @@
+# Real secrets and local state never go in git. The *.example files do.
+env/*.env
+env.local-test/
+.env

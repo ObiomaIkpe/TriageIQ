@@ -95,7 +95,7 @@ def test_0004_is_idempotent_at_startup_and_when_the_version_table_is_lost(clean_
         conn.execute(text("UPDATE alembic_version SET version_num = '0003'"))
     run_migrations(clean_database)  # runs 0004 again over existing columns
     with _engine(clean_database).connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["0004"]
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["0005"]
     assert COLUMNS <= _columns(clean_database)
 
 

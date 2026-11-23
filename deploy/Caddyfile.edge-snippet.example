@@ -1,0 +1,20 @@
+# The lines to add to the SEPARATE edge Caddy stack (not part of this repository's stack). The edge Caddy must be attached to the
+# external Docker network "edge" (docker network create edge, once), the same network gateway and web join.
+# Nothing here is applied by this repository; it is documentation you copy.
+
+triageiq.bamstoneopus.com {
+	# /api/* goes to the gateway with the /api prefix removed: /api/auth/me -> http://triageiq-gateway:3000/auth/me
+	handle_path /api/* {
+		reverse_proxy triageiq-gateway:3000
+	}
+	# Everything else is the static web UI.
+	handle {
+		reverse_proxy triageiq-web:8080
+	}
+	# Caddy's reverse_proxy overwrites X-Forwarded-For with the address it saw (it trusts no upstream proxy unless you
+	# configure trusted_proxies), which is what TRUST_PROXY=true (exactly one hop) in gateway.env relies on. Do not add
+	# trusted_proxies for this site unless something (for example Cloudflare's proxy) really sits in front of Caddy,
+	# and then the gateway needs a different setting: ask before doing that.
+}
+# Use the aliases triageiq-gateway and triageiq-web, never the bare names "gateway" and "web": other apps on the edge network may have
+# services of those names, and the network would answer with either.

@@ -5,6 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.config import settings
+from app.usage import usage_callback
 from app.graph.formatting import format_kb_context
 from app.models import GraphState
 
@@ -46,7 +47,8 @@ _llm = ChatAnthropic(model=settings.model_id,
                     temperature=0.3,
                     timeout=settings.llm_timeout_seconds,
                     max_tokens=settings.llm_max_tokens,
-                    max_retries=settings.llm_max_retries,)
+                    max_retries=settings.llm_max_retries,
+    callbacks=[usage_callback])
 
 # The chain returns Claude's whole message, not just its text, because the
 # message also says why Claude stopped (see draft_reply). The text is taken out
