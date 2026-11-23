@@ -3,7 +3,10 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router';
 import { App } from './App.js';
+import { installFocusListener } from './lib/focus.js';
 import './index.css';
+
+installFocusListener();
 
 const queryClient = new QueryClient();
 const root = document.getElementById('root');

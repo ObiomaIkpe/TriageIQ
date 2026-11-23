@@ -637,7 +637,7 @@ curl -i -X POST localhost:3000/tickets \
 
 ### The reviewer web UI (M4.3a: login page and app shell)
 
-`web/` is the reviewer UI: React, Vite, TypeScript (strict), Tailwind CSS v4, React Router and TanStack Query. It has the **login page** and the **review queue** (M4.3b); the public form page comes in M4.3c. It is not containerised yet.
+`web/` is the reviewer UI: React, Vite, TypeScript (strict), Tailwind CSS v4, React Router and TanStack Query. It has the **public contact form** (M4.3c), the reviewers' **login page** and the **review queue** (M4.3b). It is not containerised yet.
 
 ```bash
 # the stack must be up (docker compose up -d), gateway/.env needs ALLOWED_ORIGINS=http://localhost:5173 and COOKIE_SECURE=false
@@ -646,6 +646,8 @@ npm install        # once
 npm run dev        # http://localhost:5173, then open it and log in as a reviewer
 npm test           # also: npm run lint, npm run typecheck, npm run build
 ```
+
+**The public contact form (`/`, also `/submit`).** The customers' page: no login, and it never calls `/api/auth/me`. Name, email, subject and a message with a live character count, checked against the gateway's limits before sending (the gateway's own field errors also appear next to the fields). It posts to `POST /public/tickets` (see below) with one `Idempotency-Key` per form (a retry of the same message makes one ticket; a changed message gets a new key) and answers with the reference (large, with a Copy button) and "Send another message". Messages for a failed check (403), too many sends (429, minutes rounded up), a busy day (503), the form being switched off (404) and network trouble are fixed phrases; nothing about the AI is ever shown. A hidden `website` field is the honeypot. **Turnstile:** the Cloudflare script loads on this page only, with the site key from `web/.env` (`cp web/.env.example web/.env`; it holds Cloudflare's always-pass **test** site key `1x00000000000000000000AA`, which needs the test secret `1x0000000000000000000000000000000AA` and `PUBLIC_FORM_ENABLED=true` in `gateway/.env`, and `ALLOWED_ORIGINS=http://localhost:5173`). Send stays disabled until the widget gives a token, and the widget is reset after every failed send because a token works once.
 
 **The review queue (`/queue`).** Tabs **Pending, Approved, Edited, Rejected and Auto-handled** (tickets the AI handled without needing review, status `triaged`), each with its count; the tab is in the URL (`?tab=pending`). The left column lists the tab's tickets newest first (reference, status, subject, why it is waiting, `category · urgency · age`) with **Load more**; the right panel shows the selected ticket (`?ticket=TKT-...`, so a link opens it): customer, message, why it is here, classification (confidence as a percentage), the knowledge-base articles with distance, and the draft reply. For a pending ticket: **Approve draft** (disabled, with the reason, when there is no draft), **Edit** (the reply becomes a textarea prefilled with the draft; **Save edited reply**), **Reject**, and an optional note. After a review the lists and counts refresh, a short confirmation is shown, and the newest pending ticket opens (or the empty state). If someone else reviewed it first the panel says "Already reviewed by <name>". Lists and counts refetch every 30 seconds and when the window regains focus. Everything a customer or the model wrote is shown as plain text (no HTML, no markdown, no links).
 

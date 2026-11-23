@@ -199,6 +199,8 @@ describe('reviewing', () => {
     await waitFor(() => expect(within(detail()).queryByRole('button', { name: 'Approve draft' })).not.toBeInTheDocument());
     expect(within(detail()).getByText(/Reviewed by Grace Hopper/)).toBeInTheDocument();
     expect(await screen.findByRole('tab', { name: /Pending\s*0/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Approved\s*1/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: new RegExp(t.subject) })).not.toBeInTheDocument(); // gone from the pending list
   });
 
   it('a server error shows a plain message and keeps the ticket open for another try', async () => {
@@ -236,6 +238,36 @@ describe('reviewed tickets', () => {
 });
 
 describe('refreshing', () => {
+  it('a ticket someone else rejected: opening it (list says Pending, the ticket says Rejected) updates the list and the counts', async () => {
+    const t = makeTicket({ subject: 'Taken by another reviewer' });
+    const other = makeTicket({ subject: 'Still waiting' });
+    const { gateway } = start([t, other]);
+    await screen.findByText('Taken by another reviewer'); // the list loaded: Pending
+    expect(await screen.findByRole('tab', { name: /Pending\s*2/ })).toBeInTheDocument();
+    // in the other window the ticket was rejected: only the server knows, this window's list and counts are stale
+    Object.assign(gateway.state.tickets[0]!, { status: 'rejected', reviewed_by: { id: 'user:2', name: 'Grace Hopper' }, reviewed_at: new Date().toISOString() });
+
+    await userEvent.setup().click(screen.getByRole('button', { name: /Taken by another reviewer/ }));
+    expect(await within(await screen.findByRole('article')).findByText('Decision: Rejected')).toBeInTheDocument();
+    // the list and the counts caught up without a reload
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Taken by another reviewer/ })).not.toBeInTheDocument());
+    expect(await screen.findByRole('tab', { name: /Pending\s*1/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Rejected\s*1/ })).toBeInTheDocument();
+  });
+
+  it('window focus: the open ticket changed under us (Pending -> Rejected), and the list and counts follow', async () => {
+    const t = makeTicket({ subject: 'Watch me' });
+    const { gateway } = start([t, makeTicket({ subject: 'Other' })], `/queue?ticket=${t.reference}`);
+    expect(await within(await screen.findByRole('article')).findByRole('button', { name: 'Approve draft' })).toBeInTheDocument();
+    Object.assign(gateway.state.tickets[0]!, { status: 'rejected', reviewed_by: { id: 'user:2', name: 'Grace Hopper' }, reviewed_at: new Date().toISOString() });
+
+    window.dispatchEvent(new Event('focus')); // clicking back into this window (no visibilitychange for a side-by-side window)
+
+    expect(await within(screen.getByRole('article')).findByText('Decision: Rejected')).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: /Rejected\s*1/ })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Watch me/ })).not.toBeInTheDocument());
+  });
+
   it('the counts refetch when the window gets focus again', async () => {
     const { gateway } = start([makeTicket()]);
     expect(await screen.findByRole('tab', { name: /Pending\s*1/ })).toBeInTheDocument();
