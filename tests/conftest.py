@@ -1,11 +1,26 @@
 import os
+import tempfile
 
 import pytest
 
-# Set dummy keys before any app module is imported, so importing the graph
-# modules never needs real credentials and tests never hit the network.
-os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
-os.environ.setdefault("VOYAGE_API_KEY", "test-key")
+# Tests must behave the same on every machine and in CI, so nothing from a developer's machine may reach them:
+#  - FORCED fake keys (not setdefault): a real key exported in someone's shell can never be used by a test, and any test that
+#    would make a real model call fails loudly (the fake key is refused) instead of spending money.
+#  - tracing is switched off, so no test sends anything to LangSmith.
+#  - the settings object is built from an EMPTY working directory, so a developer's local .env (a different threshold, a
+#    review key, a database URL ...) is never read. (Settings reads ".env" from the current directory.)
+os.environ["ANTHROPIC_API_KEY"] = "test-key"
+os.environ["VOYAGE_API_KEY"] = "test-key"
+os.environ["LANGSMITH_API_KEY"] = ""
+os.environ["LANGSMITH_TRACING"] = "false"
+
+_cwd = os.getcwd()
+with tempfile.TemporaryDirectory() as _empty:
+    os.chdir(_empty)
+    try:
+        import app.config  # noqa: E402,F401  (builds `settings` now, with no .env in sight)
+    finally:
+        os.chdir(_cwd)
 
 
 @pytest.fixture(autouse=True)
