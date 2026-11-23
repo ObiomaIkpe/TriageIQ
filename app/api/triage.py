@@ -4,10 +4,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 
+from app import usage as usage_tracking
 from app.api.deps import get_graph
 from app.models import GraphState, TicketIn, TriageResult
 from app.tickets.reference import new_reference
 from app.tickets.store import (
+    attach_usage,
     get_ticket,
     is_reference_collision,
     is_ticket_id_collision,
@@ -163,8 +165,25 @@ def _triage_idempotent(ticket: TicketIn, ticket_id: str, graph) -> TriageResult:
         return existing
 
 
+def _record_usage(ticket_id: str, collector: usage_tracking.UsageCollector) -> None:
+    """Store what this ticket's model calls used. Never fails the request: it is bookkeeping."""
+    if collector.is_empty():
+        return
+    try:
+        attach_usage(ticket_id, collector.summary())
+    except Exception:
+        logger.exception("Could not store the usage of ticket %s", ticket_id)
+
+
 @router.post("", response_model=TriageResult)
 def triage_ticket(ticket: TicketIn, graph=Depends(get_graph)) -> TriageResult:
+    with usage_tracking.collect() as collector:
+        result = _triage(ticket, graph)
+        _record_usage(result.ticket_id, collector)
+    return result
+
+
+def _triage(ticket: TicketIn, graph) -> TriageResult:
     if ticket.ticket_id is not None:
         ticket_id = str(ticket.ticket_id)
         with ticket_lock(ticket_id):

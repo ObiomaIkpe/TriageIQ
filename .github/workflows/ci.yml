@@ -3,7 +3,7 @@
 # Four jobs run in parallel and are independent of each other: python, gateway, web, docker-build.
 # (The names of these jobs are the "checks" that branch protection on main should require.)
 #
-# No secrets are used anywhere. No model-provider key is set to a real value: the keys below are obviously fake, so a test
+# No secrets of ours are used anywhere (publish-images signs in to ghcr.io with the automatic GITHUB_TOKEN). No model-provider key is set to a real value: the keys below are obviously fake, so a test
 # that tried to call a model would fail loudly instead of spending money.
 name: CI
 
@@ -12,14 +12,16 @@ on:
   push:
     branches: [main]
 
-# Nothing but reading the repository. (No job writes, comments, pushes or publishes.)
+# Nothing but reading the repository, for every job. The ONE job that writes (publish-images, on pushes to main only) asks for
+# packages: write itself, and nobody else has it.
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request cancels the run that is still going.
+# A newer push to the same branch or pull request cancels the run that is still going. Runs on main are NEVER cancelled: one
+# of them may be publishing images, and a half-published set of images is worse than waiting for it to finish.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   python:
@@ -206,13 +208,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      # Build only: nothing is pushed (publishing images is a later step, M6c). The cache is GitHub's own.
+      # Build only: nothing is pushed here (publishing is the publish-images job, after every check passed). The cache is GitHub's own.
       - name: Build the app image (Python)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
           push: false
+          load: true
+          tags: triageiq-app:ci
           cache-from: type=gha,scope=app
           cache-to: type=gha,scope=app,mode=max
 
@@ -222,5 +226,135 @@ jobs:
           context: gateway
           file: gateway/Dockerfile
           push: false
+          load: true
+          tags: triageiq-gateway:ci
           cache-from: type=gha,scope=gateway
           cache-to: type=gha,scope=gateway,mode=max
+
+      # load: true keeps each image on this runner so the next steps can inspect and run it. The web site key is Cloudflare's public TEST key.
+      - name: Build the web image (static site)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: web
+          file: web/Dockerfile
+          push: false
+          load: true
+          tags: triageiq-web:ci
+          build-args: |
+            VITE_TURNSTILE_SITE_KEY=1x00000000000000000000AA
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+      # The production deployment, tested on throwaway containers (nothing is started from the compose file itself).
+      - name: Deploy folder is in step with db/ and the compose file is sound
+        run: |
+          deploy/tests/test-compose.sh
+          deploy/tests/test-make-secrets.sh
+      - name: No env file, key or secret inside any of the three images
+        run: deploy/tests/test-image-contents.sh triageiq-app:ci triageiq-gateway:ci triageiq-web:ci
+      - name: Web image (non-root, SPA fallback, caching, security headers)
+        run: deploy/tests/test-web-image.sh triageiq-web:ci
+      - name: Database roles (fresh volume and existing volume)
+        run: deploy/tests/test-roles.sh
+      - name: Backup and restore, with row counts compared
+        run: deploy/tests/test-backup-restore.sh
+
+  # Publishes the three images to GitHub's container registry. Only on a push to main (a merged pull request), and only after
+  # all four checks above passed. The ONLY job with permission to write packages. Pull requests never get here.
+  publish-images:
+    name: publish-images
+    needs: [python, gateway, web, docker-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Image names must be lower case, tags are sha-<7 characters of the commit> and main. Only github context values that
+      # GitHub itself controls go into the shell, and through the environment, never pasted into the script text.
+      - name: Work out the image names and tags
+        id: names
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.sha }}
+        run: |
+          echo "prefix=ghcr.io/${OWNER,,}/triageiq" >> "$GITHUB_OUTPUT"
+          echo "short=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # The Turnstile SITE key is public (it is in every page that shows the widget): a repository VARIABLE, not a secret.
+      # An image built without it would show a broken form, so stop here instead.
+      - name: The Turnstile site key variable is set
+        env:
+          SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
+        run: |
+          if [ -z "$SITE_KEY" ]; then
+            echo "::error::The repository variable VITE_TURNSTILE_SITE_KEY is not set (Settings > Secrets and variables > Actions > Variables). The web image would have no Turnstile site key."
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Sign in to ghcr.io
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The source label ties each package to this repository (its permissions and README then follow the repository).
+      - name: Push the app image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.names.outputs.prefix }}-app:${{ steps.names.outputs.short }}
+            ${{ steps.names.outputs.prefix }}-app:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=app
+
+      - name: Push the gateway image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: gateway
+          file: gateway/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.names.outputs.prefix }}-gateway:${{ steps.names.outputs.short }}
+            ${{ steps.names.outputs.prefix }}-gateway:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=gateway
+
+      - name: Push the web image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: web
+          file: web/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          build-args: |
+            VITE_TURNSTILE_SITE_KEY=${{ vars.VITE_TURNSTILE_SITE_KEY }}
+          tags: |
+            ${{ steps.names.outputs.prefix }}-web:${{ steps.names.outputs.short }}
+            ${{ steps.names.outputs.prefix }}-web:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # No cache-from, on purpose: this image carries the site key, so it is always built from scratch.

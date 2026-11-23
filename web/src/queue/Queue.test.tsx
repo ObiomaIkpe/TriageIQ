@@ -215,6 +215,29 @@ describe('reviewing', () => {
   });
 });
 
+describe('AI cost line', () => {
+  it('shows the estimated cost and tokens in the panel', async () => {
+    const t = makeTicket({ ai_cost_usd: 0.01234, ai_usage: { total_tokens: 4210, estimated_cost_usd: 0.01234 } });
+    start([t], `/queue?ticket=${t.reference}`);
+    const panel = await screen.findByRole('article');
+    expect(within(panel).getByText('AI cost (estimate): $0.0123 · 4,210 tokens')).toBeInTheDocument();
+  });
+
+  it('shows nothing for a ticket from before cost tracking', async () => {
+    const t = makeTicket({ ai_cost_usd: null, ai_usage: null });
+    start([t], `/queue?ticket=${t.reference}`);
+    const panel = await screen.findByRole('article');
+    expect(within(panel).queryByText(/AI cost/)).not.toBeInTheDocument();
+  });
+
+  it('shows tokens alone when the model had no price', async () => {
+    const t = makeTicket({ ai_cost_usd: null, ai_usage: { total_tokens: 99, estimated_cost_usd: null } });
+    start([t], `/queue?ticket=${t.reference}`);
+    const panel = await screen.findByRole('article');
+    expect(within(panel).getByText('AI cost (estimate): 99 tokens')).toBeInTheDocument();
+  });
+});
+
 describe('reviewed tickets', () => {
   it('show the decision, the final reply, the note and "Reviewed by <name>, <time>"', async () => {
     const t = makeTicket({

@@ -39,8 +39,10 @@ export const bodyErrorHandler: ErrorRequestHandler = (error, _request, response,
 export function configureApp(app: NestExpressApplication): void {
   // Behind a proxy you control (TRUST_PROXY=true) the client IP comes from X-Forwarded-For; otherwise it is
   // the socket address. Login failure limits use it, so trusting a header nobody controls would let a caller
-  // pick its own IP: this is off unless asked for.
-  if (app.get(ConfigService).get<boolean>('TRUST_PROXY') === true) app.set('trust proxy', true);
+  // pick its own IP: this is off unless asked for. "true" trusts exactly ONE hop (the reverse proxy, Caddy in
+  // production): the client is the LAST address in X-Forwarded-For, the one that proxy appended. Anything a caller
+  // put before it is ignored. (Express's `true` would trust every hop and believe the first, spoofable, entry.)
+  if (app.get(ConfigService).get<boolean>('TRUST_PROXY') === true) app.set('trust proxy', 1);
   // First, so every response (errors and 401s included) carries the security headers.
   // helmet's defaults also remove X-Powered-By.
   app.use(helmet());

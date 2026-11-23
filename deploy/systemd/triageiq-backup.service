@@ -1,0 +1,16 @@
+# Nightly database backup (see deploy/README.md, "Backups"). Installed by hand:
+#   sudo cp triageiq-backup.service triageiq-backup.timer /etc/systemd/system/
+# Edit WorkingDirectory/ExecStart if deploy/ is not in /opt/triageiq/deploy.
+[Unit]
+Description=TriageIQ database backup (pg_dump of both databases)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/triageiq/deploy
+ExecStart=/opt/triageiq/deploy/backup.sh
+# Runs as root: it writes /var/backups and talks to Docker. The script itself makes every file chmod 600 and every folder chmod 700.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min

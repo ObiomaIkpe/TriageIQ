@@ -41,6 +41,10 @@ class TicketRow(Base):
     # Who wrote in (public form only). Never part of what the model sees.
     customer_name: Mapped[Optional[str]] = mapped_column(Text)
     customer_email: Mapped[Optional[str]] = mapped_column(Text)
+    # What the model calls for this ticket used, and an ESTIMATED cost (app/usage.py). NULL for tickets
+    # saved before this existed, and when no call was counted.
+    ai_usage: Mapped[Optional[dict]] = mapped_column(JSONB)
+    ai_cost_usd: Mapped[Optional[float]] = mapped_column(Double)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -9,12 +9,14 @@ from fastapi.responses import JSONResponse
 from app.api.review import router as review_router
 from app.api.tickets import router as tickets_router
 from app.api.triage import router as triage_router
+from app.config import settings
 from app.errors import register_error_handlers
 from app.graph.build import build_triage_graph
 from app.graph.checkpointer import create_checkpointer
 from app.kb.bootstrap import init_schema_with_retry
 from app.kb.store import check_database
 from app.migrations import run_migrations
+from app.production_guard import check_production
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,8 @@ def _open_graph(holder: dict) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # With APP_ENV=production, refuse development-only settings BEFORE touching the database (a clear message, then exit).
+    check_production(settings)
     # Both steps run in a thread because they may sleep while waiting for
     # Postgres. First apply any pending Alembic migrations ...
     await asyncio.to_thread(init_schema_with_retry, run_migrations)

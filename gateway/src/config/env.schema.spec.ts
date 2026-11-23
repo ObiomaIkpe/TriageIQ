@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { afterEach, vi } from 'vitest';
 import { configModuleOptions } from './config.options.js';
 import { ConfigValidationError, validateEnv } from './env.schema.js';
+import { isPlaceholder } from './production-guard.js';
 
 const HASH = 'a'.repeat(64);
 const CLIENTS = [{ name: 'alice', role: 'submitter', key_sha256: HASH }];
@@ -374,3 +375,74 @@ describe('validateEnv: the mail settings', () => {
   });
 });
 
+
+describe('production guard (NODE_ENV=production)', () => {
+  const PROD_OK = {
+    ...VALID,
+    NODE_ENV: 'production',
+    COOKIE_SECURE: 'true',
+    ALLOWED_ORIGINS: 'https://triageiq.example.com',
+    GATEWAY_DATABASE_URL: 'postgresql://gateway:Zk3pQ9@db:5432/gateway',
+    TRIAGE_REVIEW_API_KEY: 'k9f3-real-key',
+  };
+  /** The one thing each case changes from a good production setup. */
+  const BAD: [string, Record<string, string>, string][] = [
+    ['COOKIE_SECURE=false', { COOKIE_SECURE: 'false' }, 'COOKIE_SECURE must be true'],
+    ['COOKIE_SECURE left out would default to true, so an explicit false is the only way', { COOKIE_SECURE: 'FALSE' }, 'COOKIE_SECURE must be true'],
+    ['an http:// origin', { ALLOWED_ORIGINS: 'https://triageiq.example.com,http://localhost:5173' }, 'ALLOWED_ORIGINS must contain only https://'],
+    ['Cloudflare test secret (passes)', { TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA' }, 'TURNSTILE_SECRET_KEY is one of Cloudflare'],
+    ['Cloudflare test secret (fails)', { TURNSTILE_SECRET_KEY: '2x0000000000000000000000000000000AA' }, 'TURNSTILE_SECRET_KEY is one of Cloudflare'],
+    ['Cloudflare test secret (spent)', { TURNSTILE_SECRET_KEY: '3x0000000000000000000000000000000AA' }, 'TURNSTILE_SECRET_KEY is one of Cloudflare'],
+    ['mailpit with mail enabled', { MAIL_ENABLED: 'true', SMTP_HOST: 'mailpit', SMTP_PORT: '1025', MAIL_FROM: 'a@example.com' }, 'SMTP_HOST is mailpit'],
+    ['a placeholder review key', { TRIAGE_REVIEW_API_KEY: 'replace-with-the-value-of-REVIEW_API_KEY' }, 'TRIAGE_REVIEW_API_KEY still has its .example placeholder'],
+    ['a placeholder database password', { GATEWAY_DATABASE_URL: 'postgresql://gateway:replace-with-GATEWAY_DB_PASSWORD@db:5432/gateway' }, 'GATEWAY_DATABASE_URL still has its .example placeholder'],
+    ['a REPLACE_ME database password', { GATEWAY_DATABASE_URL: 'postgresql://gateway:REPLACE_ME_GATEWAY_DB_PASSWORD@db:5432/gateway' }, 'GATEWAY_DATABASE_URL still has its .example placeholder'],
+    ['the example client', { GATEWAY_CLIENTS: JSON.stringify([{ name: 'example-submitter', role: 'submitter', key_sha256: '0'.repeat(64) }]) }, 'GATEWAY_CLIENTS still has the .example placeholder client'],
+    ['a placeholder SMTP password', { SMTP_USER: 'u', SMTP_PASS: 'REPLACE_ME_SMTP_PASSWORD' }, 'SMTP_PASS still has its .example placeholder'],
+  ];
+
+  it('accepts a good production configuration', () => {
+    expect(() => validateEnv(PROD_OK)).not.toThrow();
+  });
+
+  it.each(BAD)('refuses %s', (_label, change, message) => {
+    expect(failure({ ...PROD_OK, ...change }).message).toContain(message);
+  });
+
+  it('names every problem at once', () => {
+    const error = failure({ ...PROD_OK, COOKIE_SECURE: 'false', ALLOWED_ORIGINS: 'http://a.example.com' });
+    expect(error.problems).toEqual(expect.arrayContaining([expect.stringContaining('COOKIE_SECURE'), expect.stringContaining('ALLOWED_ORIGINS')]));
+  });
+
+  it('never puts a secret value into the message', () => {
+    const error = failure({ ...PROD_OK, TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA', GATEWAY_DATABASE_URL: `postgresql://gateway:replace-with-${SECRET}@db/gateway` });
+    expect(error.message).not.toContain('1x0000000000000000000000000000000AA');
+    expect(error.message).not.toContain(SECRET);
+  });
+
+  it('a real secret that merely contains the word "replace" is not refused', () => {
+    expect(() => validateEnv({ ...PROD_OK, TRIAGE_REVIEW_API_KEY: 'a-key-to-replace-later-0123' })).not.toThrow();
+  });
+
+  it.each([['development'], [''], ['test']])('is silent for NODE_ENV=%s (the dev settings stay allowed)', (env) => {
+    const dev = { ...PROD_OK, NODE_ENV: env, COOKIE_SECURE: 'false', ALLOWED_ORIGINS: 'http://localhost:5173', TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA' };
+    expect(() => validateEnv(dev)).not.toThrow();
+  });
+
+  it('every placeholder in gateway/.env.example and deploy/env/gateway.env.example is caught', () => {
+    for (const file of ['../../.env.example', '../../../deploy/env/gateway.env.example']) {
+      let text: string;
+      try {
+        text = readFileSync(new URL(file, import.meta.url), 'utf8');
+      } catch {
+        continue; // the deploy folder may not be in this checkout (e.g. the gateway image's build context)
+      }
+      for (const name of ['TRIAGE_REVIEW_API_KEY', 'GATEWAY_DATABASE_URL']) {
+        const match = new RegExp(`^${name}=(.*)$`, 'm').exec(text);
+        if (!match) continue;
+        const value = match[1].trim().replace(/^['"]|['"]$/g, '');
+        expect(isPlaceholder(value), `${file}: ${name}`).toBe(true);
+      }
+    }
+  });
+});

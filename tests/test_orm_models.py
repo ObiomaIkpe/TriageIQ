@@ -44,6 +44,7 @@ def test_tickets_columns_match_the_migrations():
         "final_reply", "review_note", "reviewed_at",
         "reviewed_by_id", "reviewed_by_name",
         "customer_name", "customer_email",
+        "ai_usage", "ai_cost_usd",
         "created_at", "updated_at",
     ]
 
@@ -56,6 +57,7 @@ def test_tickets_nullable_columns_are_only_the_optional_ones():
         "final_reply", "review_note", "reviewed_at",
         "reviewed_by_id", "reviewed_by_name",
         "customer_name", "customer_email",
+        "ai_usage", "ai_cost_usd",
     }
 
 

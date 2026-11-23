@@ -2,6 +2,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.config import settings
+from app.usage import usage_callback
 from app.models import ClassificationResult, GraphState
 
 _prompt = ChatPromptTemplate.from_messages([
@@ -38,7 +39,8 @@ _llm = ChatAnthropic(model=settings.model_id,
                     temperature=0, 
                     timeout=settings.llm_timeout_seconds,
                     max_tokens=settings.llm_max_tokens,
-                    max_retries=settings.llm_max_retries)
+                    max_retries=settings.llm_max_retries,
+    callbacks=[usage_callback])
 
 _chain = _prompt | _llm.with_structured_output(ClassificationResult)
 

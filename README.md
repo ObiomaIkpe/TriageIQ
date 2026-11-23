@@ -217,14 +217,14 @@ You need Docker (the native engine on Linux is recommended, see Troubleshooting)
 
 | File | Read by | What goes in it |
 |---|---|---|
-| `.env` (root; copy `.env.example`) | the Python app (`env_file: .env`), and compose itself for the database service | `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, and `REVIEW_API_KEY` (uncomment it and give it a long random value: **empty disables review**). Compose overrides `DATABASE_URL`. **Also add `GATEWAY_DB_PASSWORD=<a long random password>`** (the password of the gateway's database role; compose will not start without it; it is not in `.env.example` because that file lists only the Python app's own settings) |
+| `.env` (root; copy `.env.example`) | the Python app (`env_file: .env`), and compose itself for the database service | `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, and `REVIEW_API_KEY` (uncomment it and give it a long random value: **empty disables review**). Compose overrides `DATABASE_URL`. **Also add `GATEWAY_DB_PASSWORD=<a long random password>` and `TRIAGEIQ_APP_DB_PASSWORD=<another one, letters and digits only>`** (the passwords of the gateway's and of the Python service's own database roles; compose will not start without them; it is not in `.env.example` because that file lists only the Python app's own settings) |
 | `gateway/.env` (copy `gateway/.env.example`) | the gateway (`env_file: gateway/.env`) | `GATEWAY_CLIENTS` (the hashed client keys), `TRIAGE_REVIEW_API_KEY` (**the same value as `REVIEW_API_KEY`**), `GATEWAY_DATABASE_URL` (**the same password as `GATEWAY_DB_PASSWORD`**, URL-encoded), optionally `RATE_LIMIT_PER_MINUTE` |
 
 Both files are git-ignored, and the root `.dockerignore` and `gateway/.dockerignore` keep them out of the images.
 
 ```bash
 # 1. The two env files
-cp .env.example .env                  # fill in ANTHROPIC_API_KEY, VOYAGE_API_KEY, REVIEW_API_KEY, and add GATEWAY_DB_PASSWORD=...
+cp .env.example .env                  # fill in ANTHROPIC_API_KEY, VOYAGE_API_KEY, REVIEW_API_KEY, and add GATEWAY_DB_PASSWORD=... and TRIAGEIQ_APP_DB_PASSWORD=...
 cp gateway/.env.example gateway/.env  # fill in TRIAGE_REVIEW_API_KEY (= REVIEW_API_KEY) and GATEWAY_DATABASE_URL (password = GATEWAY_DB_PASSWORD)
 
 # 2. Client keys: one submitter, one reviewer (and a second submitter if you want the ownership check).
@@ -240,7 +240,7 @@ cd ..
 
 # 3. Start everything and load the knowledge base. On a NEW database volume the db container creates the
 #    gateway role and database by itself; then `gateway-migrate` creates the tables, then the gateway starts.
-#    On an EXISTING volume run scripts/create_gateway_db.sh once first (see "Reviewer accounts").
+#    On an EXISTING volume run scripts/create_gateway_db.sh and scripts/create_app_role.sh once first (see "Reviewer accounts" and "The Python service's database role").
 docker compose up --build -d
 docker compose exec app python -m app.kb.ingest     # seeds 5 sample FAQ articles
 ```
@@ -307,18 +307,23 @@ TEST_DATABASE_URL=postgresql://triageiq:triageiq@localhost:5433/triageiq_test py
 
 Changing the schema: edit the models, run `alembic revision --autogenerate -m "describe the change"`, review the generated file, and commit it. `alembic check` reports drift between the models and the database.
 
+### Cost per ticket (M6b)
+
+Every Claude call (classifier, KB grader, drafter, critic) and every Voyage embedding call made for a ticket is counted: input and output tokens per model, and an **estimated** cost in US dollars from the price table in `app/config.py` (`PRICES_USD_PER_MTOK`, with its source URLs and the date checked). The summary is stored on the ticket (`ai_usage`, `ai_cost_usd`; migration 0005), returned on reviewer reads (`GET /tickets...`, never in the submitter's answer) and shown in the ticket panel as "AI cost (estimate): $0.0123 · 4,210 tokens". `python -m app.tools.cost_report --last 50` prints the average, median and maximum. It is an estimate: only successful calls of the run that produced the saved ticket are counted, prompt caching is not modelled (the app does not use it), a model missing from the price table is counted in tokens but gets no cost, and the providers' invoices are the truth.
+
 ### Continuous integration
 
-Every pull request and every push to `main` runs all the suites on GitHub's servers (`.github/workflows/ci.yml`). Four jobs run in parallel and do not wait for each other:
+Every pull request and every push to `main` runs all the suites on GitHub's servers (`.github/workflows/ci.yml`). Four jobs run in parallel and do not wait for each other, and a fifth publishes images once they have all passed:
 
 | Job | What it runs |
 |---|---|
 | `python` | Python 3.12, `pip install -r requirements.txt`, the default suite with no database, then the integration suite against a `pgvector/pgvector:pg16` service container (a skipped integration test fails the job) |
 | `gateway` | Node 24, `npm ci`, lint, build, unit tests, then the e2e tests with `redis:8.10.3-alpine` and `pgvector/pgvector:pg16` service containers, so **nothing is skipped** (a skipped e2e test fails the job) |
 | `web` | Node 24, `npm ci`, lint, typecheck, tests, build |
-| `docker-build` | builds the app and gateway images (nothing is pushed) |
+| `docker-build` | builds the app, gateway and web images (nothing is pushed), checks that none contains an env file, key or secret, and runs the deployment tests on throwaway containers: the compose file, `make-secrets.sh`, the web image's headers and caching, the database roles (fresh and existing volume), and backup then restore with row counts compared (`deploy/tests/`) |
+| `publish-images` | **only on a push to `main`, after the four checks above passed**: pushes `triageiq-app`, `-gateway` and `-web` to `ghcr.io` with tags `sha-<7 chars>` and `main`. The only job with `packages: write`. The web image's Turnstile site key comes from the repository **variable** `VITE_TURNSTILE_SITE_KEY` (a public value, not a secret). Not a pull-request check: do not add it to branch protection |
 
-The service images are the same ones `docker-compose.yml` uses. CI uses **no secrets** and no real API key: the model-provider keys are set to obviously fake values, and the Anthropic URL points at an address that refuses connections, so a test that tried to call a model would fail loudly rather than spend money. The workflow can only read the repository (`permissions: contents: read`), every third-party action is pinned to a full commit SHA, and a newer push to the same branch cancels the run that is still going. To run the same things locally, use the commands in Development above and "Gateway (M3)" / "The reviewer web UI". The tests do not read your `.env` files: the Python test setup builds its settings from the code defaults and the environment only.
+The service images are the same ones `docker-compose.yml` uses. CI uses **no secrets of its own** (the publish job signs in to ghcr.io with the automatic `GITHUB_TOKEN`) and no real API key: the model-provider keys are set to obviously fake values, and the Anthropic URL points at an address that refuses connections, so a test that tried to call a model would fail loudly rather than spend money. The workflow can only read the repository (`permissions: contents: read`), every third-party action is pinned to a full commit SHA, and a newer push to the same branch or pull request cancels the run that is still going (runs on `main` are never cancelled, so a publish is not cut in half). To run the same things locally, use the commands in Development above and "Gateway (M3)" / "The reviewer web UI". The tests do not read your `.env` files: the Python test setup builds its settings from the code defaults and the environment only.
 
 ## Evals
 
@@ -452,6 +457,15 @@ docker compose exec gateway node dist/scripts/reviewers.js list
 ```
 
 Passwords are **never** command-line arguments (they would land in shell history; `--password` is refused). `create` and `set-password` ask for the password with no echo, twice to confirm; when input is not a terminal (a pipe, a script) they read one line from it instead: `echo "$PASSWORD" | docker compose exec -T gateway node dist/scripts/reviewers.js create ...`. A duplicate or unknown email is a clear error with exit code 1; `disable` and `enable` are idempotent; `list` shows email, name, role, disabled yes/no and creation time, never a hash. `set-password` stamps `password_changed_at` and `disable` sets `disabled_at`; both also **end all of that reviewer's sessions** in Redis (the command prints how many; see "Reviewer login").
+
+### The Python service's database role (M6b)
+
+The Python service no longer runs as the Postgres superuser. `db/app-db.sql` creates the role **`triageiq_app`**: it can log in, **owns the `triageiq` database and every object in it** (so Alembic can migrate), and is not a superuser (no creating roles or databases). Only it can connect to `triageiq`; **it cannot connect to the `gateway` database, and the `gateway` role cannot connect to `triageiq`** (`REVOKE ... FROM PUBLIC`). The pgvector extension is created by the superuser in that script, before the app starts. Compose gives the app `DATABASE_URL=postgresql://triageiq_app:<TRIAGEIQ_APP_DB_PASSWORD>@db:5432/triageiq`.
+
+- **Fresh volume:** `db/init/20-app-db.sh` runs once, after the gateway script.
+- **Existing volume** (your laptop): add `TRIAGEIQ_APP_DB_PASSWORD=<letters and digits>` to the root `.env`, `docker compose up -d db` (recreates only the db container so it sees the variable), run `scripts/create_app_role.sh`, then `docker compose up -d` (the app picks up the new `DATABASE_URL`). The script moves the ownership of the existing tables, sequences, views, types and functions with `ALTER ... OWNER` (never `REASSIGN OWNED`: that would try to take the system databases too), leaves extension objects alone, touches no row, and is safe to run twice. It was rehearsed on a restored copy of this project's real dev data (`deploy/tests/dev-backup-proof.sh`).
+- The superuser (`triageiq` here) stays for administration and for the backups; the app never uses it. `db/` is copied to `deploy/db/` for the server: run `deploy/sync-db-sql.sh` after changing it (CI fails if they differ).
+- **The dev gateway runs with `NODE_ENV: development`** (set in `docker-compose.yml`). The gateway image defaults to `production`, which makes it refuse development settings (see "Production guard" under Security).
 
 ### Reviewer login: session cookies (M4.1b)
 
@@ -826,6 +840,12 @@ docker stop gw-redis-test
 | Reviewer passwords | Hashed with Argon2id (parameters stored inside each hash, so they can be raised later and old hashes still verify); never stored or logged in clear; never a command-line argument; the CLI never prints a hash. The accounts live in the gateway's own database, whose role cannot reach Python's data |
 | Ticket text | Not written to logs: the worker, passthrough and dead-letter log lines carry only ids, counts, statuses and short fixed phrases |
 
+### Production guard (M6b)
+
+With `NODE_ENV=production` (the gateway image's default) the **gateway refuses to start**, naming the setting and never its value, if: `COOKIE_SECURE` is false; `ALLOWED_ORIGINS` has any `http://` origin; `TURNSTILE_SECRET_KEY` is one of Cloudflare's three documented test secrets; `SMTP_HOST` is `mailpit` while `MAIL_ENABLED=true`; or a secret (`TRIAGE_REVIEW_API_KEY`, the password in `GATEWAY_DATABASE_URL`, `TURNSTILE_SECRET_KEY`, `SMTP_USER`/`SMTP_PASS`, a `GATEWAY_CLIENTS` entry) still holds its `.example` placeholder. The Python service does the same with `APP_ENV=production` (missing or placeholder `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `REVIEW_API_KEY`; a `DATABASE_URL` that uses `postgres`, `triageiq` or a development password). Development is unaffected: the dev compose file sets `NODE_ENV: development`, and `APP_ENV` defaults to `development`.
+
+**`TRUST_PROXY=true` now trusts exactly ONE proxy hop** (Express `trust proxy` = 1), not every hop. The client address is the last entry of `X-Forwarded-For`, the one the proxy (Caddy) appended; anything a caller put before it is ignored. It is only for a deployment with exactly one reverse proxy in front of the gateway.
+
 ## Troubleshooting
 
 - **Every ticket fails; Python logs show a 401 from Anthropic.** The `ANTHROPIC_API_KEY` is expired or wrong. The Python service answers `500` (a bad key is not something a retry fixes), so the gateway fails each job at once with `triage service error (500)` and the jobs land in the dead-letter list. Put a valid key in the root `.env`, **recreate** the app so it reads it (`docker compose up -d --force-recreate app`; a plain restart keeps the old environment), then replay the dead letters: `GET /dead-letters` with the reviewer key, and `POST /dead-letters/<job_id>/retry` for each.
@@ -873,6 +893,9 @@ gateway/               NestJS gateway: config, auth/roles/rate limit, intake, wo
                        reviewer accounts (src/users, src/database, migrations/, src/scripts/reviewers.ts)
 scripts/e2e_smoke.py   end-to-end smoke test through the gateway (stdlib only; spends model calls)
 scripts/create_gateway_db.sh  creates the gateway's database and role in an existing Postgres volume
+scripts/create_app_role.sh    creates the Python service's least-privilege role (triageiq_app) in an existing volume
+deploy/                       the production deployment: compose file, env examples, backup/restore, systemd, runbook (deploy/README.md)
+web/Dockerfile, web/nginx/    the web UI as a static site in a non-root nginx image
 db/                    gateway-db.sql (idempotent role and database setup) and init/ (runs it on a new volume)
 docker-compose.yml     the stack; docker-compose.debug.yml publishes the Python app on 127.0.0.1:8000
 evals/                 labelled tickets, deterministic scoring, and the eval runner

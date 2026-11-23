@@ -41,3 +41,17 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# --- Model prices, used ONLY for the per-ticket cost ESTIMATE (app/usage.py) ---------------------
+# US dollars per million tokens, as published on the day below. Prices change: when they do, edit
+# this table (and PRICES_AS_OF). An unlisted model is counted in tokens but gets no cost.
+# Sources (checked 2026-11-23):
+#   Anthropic: https://platform.claude.com/docs/en/about-claude/pricing  (claude-sonnet-4-6: $3 in / $15 out)
+#   Voyage:    https://docs.voyageai.com/docs/pricing                    (voyage-3: $0.06, no free tokens)
+# Cache-read and cache-write token prices are not modelled: the app does not use prompt caching.
+PRICES_AS_OF = "2026-11-23"
+PRICES_USD_PER_MTOK: dict[str, dict[str, float]] = {
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    "voyage-3": {"input": 0.06, "output": 0.0},
+}

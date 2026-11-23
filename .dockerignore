@@ -11,3 +11,13 @@ venv/
 tests/
 *.sql
 gateway/
+# Nothing but app/, alembic/, alembic.ini and requirements.txt is copied by the Dockerfile; the rest need not even be sent.
+# The three patterns below keep an env file out of the build context wherever it sits (deploy/env/*.env, gateway/.env, web/.env).
+**/.env
+**/.env.*
+**/*.env
+deploy/
+web/
+db/
+scripts/
+evals/

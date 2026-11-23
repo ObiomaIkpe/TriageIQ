@@ -1,0 +1,188 @@
+# TriageIQ production stack. STANDALONE: the server needs only this deploy/ folder, not the source code.
+#
+#   cd deploy && cp .env.example .env && cp env/*.example (see README) && ./make-secrets.sh
+#   docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
+#
+# NOTHING is published on the host: no ports at all. The only way in is the shared "edge" Docker network, which only `gateway`
+# and `web` join: a separate Caddy stack on that network terminates HTTPS and forwards
+#   https://triageiq.bamstoneopus.com/api/*  ->  triageiq-gateway:3000   (the /api prefix stripped)
+#   everything else                           ->  triageiq-web:8080
+# (deploy/README.md has the Caddy lines). db and redis are on an INTERNAL network: no route in or out of the host.
+#
+# Memory plan for a 4 GB host (limits, not reservations; measured idle on the laptop: app 173 MB, gateway 87 MB, db 96 MB, redis 12 MB):
+#   db 512m + redis 128m + app 512m + gateway 384m + web 64m = 1600 MB if every service sits at its limit,
+#   gateway-migrate 256m exists only for a few seconds at start. That leaves about 2.4 GB for Ubuntu, the edge Caddy (~50 MB)
+#   and another small app. A service that goes over its limit is killed and restarted by Docker, it does not take the host down.
+# NOT "triageiq": on a laptop that also runs the development stack (project "triageiq"), the same name would make this file
+# take over its containers and volumes. The server has only this stack, so the name is free there.
+name: triageiq-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    env_file:
+      - ${ENV_DIR:-./env}/db.env
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=60"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs once on a fresh volume: creates the gateway and triageiq_app roles and databases, and the pgvector extension.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./db/gateway-db.sql:/gateway-db.sql:ro
+      - ./db/app-db.sql:/app-db.sql:ro
+    mem_limit: 512m
+    shm_size: 128m
+    healthcheck:
+      # Over TCP on purpose (see the dev compose file): during first-start init the server listens only on the unix socket.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [backend]
+    logging: *logging
+
+  redis:
+    image: redis:8.10.3-alpine
+    restart: unless-stopped
+    # BullMQ needs noeviction: a full Redis must refuse writes, never drop queued jobs. appendonly keeps the queue over restarts.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+    logging: *logging
+
+  app:
+    image: ghcr.io/${GHCR_OWNER:-obiomaikpe}/triageiq-app:${TAG:?Set TAG in deploy/.env (sha-<commit> or main)}
+    restart: unless-stopped
+    env_file:
+      - ${ENV_DIR:-./env}/app.env
+    mem_limit: 512m
+    <<: *hardening
+    healthcheck:
+      # /ready: Postgres answers and the triage graph is built. (The slim image has no curl, so Python does the request.)
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      db:
+        condition: service_healthy
+    # backend: db. egress: the Anthropic and Voyage APIs (the only outbound traffic this service needs).
+    networks: [backend, egress]
+    logging: *logging
+
+  # One-shot: applies the gateway's database migrations, then exits. The gateway starts only after it finished successfully.
+  gateway-migrate:
+    image: ghcr.io/${GHCR_OWNER:-obiomaikpe}/triageiq-gateway:${TAG:?Set TAG in deploy/.env (sha-<commit> or main)}
+    command: ["node", "dist/database/migrate.js"]
+    restart: "no"
+    env_file:
+      - ${ENV_DIR:-./env}/gateway.env
+    environment:
+      NODE_ENV: production
+    mem_limit: 256m
+    <<: *hardening
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [backend]
+    logging: *logging
+
+  gateway:
+    image: ghcr.io/${GHCR_OWNER:-obiomaikpe}/triageiq-gateway:${TAG:?Set TAG in deploy/.env (sha-<commit> or main)}
+    restart: unless-stopped
+    # Must stay longer than TRIAGE_TIMEOUT_MS, so a running job can finish before the container is killed.
+    stop_grace_period: 130s
+    env_file:
+      - ${ENV_DIR:-./env}/gateway.env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      REDIS_URL: redis://redis:6379
+      TRIAGE_SERVICE_URL: http://app:8000
+      WORKER_CONCURRENCY: "2"
+      TRIAGE_TIMEOUT_MS: "120000"
+      # Keep V8's heap below the container limit, so a leak ends in a clean Node error and not in a kill.
+      NODE_OPTIONS: "--max-old-space-size=256"
+    mem_limit: 384m
+    <<: *hardening
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+      gateway-migrate:
+        condition: service_completed_successfully
+    # backend: db, redis, app. egress: Cloudflare Turnstile verification and (when enabled) the SMTP provider.
+    # edge: the shared network the edge Caddy reaches us on. The alias is what the Caddyfile names: the service name "gateway"
+    # is also an alias on edge, and other apps on that network may have a "gateway" of their own, so never use the bare name there.
+    networks:
+      backend: {}
+      egress: {}
+      edge:
+        aliases: [triageiq-gateway]
+    logging: *logging
+
+  web:
+    image: ghcr.io/${GHCR_OWNER:-obiomaikpe}/triageiq-web:${TAG:?Set TAG in deploy/.env (sha-<commit> or main)}
+    restart: unless-stopped
+    mem_limit: 64m
+    <<: *hardening
+    read_only: true
+    tmpfs: [/tmp]
+    # The image has its own HEALTHCHECK (wget on /healthz); it is repeated here so the compose file says what it relies on.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      edge:
+        aliases: [triageiq-web]
+    logging: *logging
+
+networks:
+  # No route to or from the outside world: only db, redis, app, gateway-migrate and gateway are on it.
+  backend:
+    internal: true
+  # Ordinary outbound access, nothing published: app and gateway only.
+  egress: {}
+  # Created once by the edge stack (docker network create edge); we only join it.
+  edge:
+    external: true
+    name: edge
+
+volumes:
+  pgdata:
+  redisdata:
