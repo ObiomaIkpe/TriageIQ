@@ -1,9 +1,10 @@
 from collections.abc import Iterator
+from datetime import datetime
 from contextlib import contextmanager
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -241,12 +242,37 @@ def record_review(
 
 
 def list_tickets(
-    status: Optional[TicketStatus] = None, limit: int = 50
+    status: Optional[TicketStatus] = None,
+    limit: int = 50,
+    before: Optional[tuple[datetime, UUID]] = None,
 ) -> list[TicketRecord]:
-    """Newest first. The status filter is only added when a status is given."""
-    query = select(TicketRow).order_by(TicketRow.created_at.desc()).limit(limit)
+    """Newest first, ties broken by id so the order is total (no ticket is skipped or repeated).
+
+    The status filter is only added when a status is given. `before` is a keyset cursor, the
+    (created_at, id) of the last ticket of the previous page: only strictly older tickets come
+    back, so a ticket arriving while someone pages cannot shift a later page (offsets would).
+    """
+    query = (
+        select(TicketRow)
+        .order_by(TicketRow.created_at.desc(), TicketRow.id.desc())
+        .limit(limit)
+    )
     if status is not None:
         query = query.where(TicketRow.status == status.value)
+    if before is not None:
+        query = query.where(tuple_(TicketRow.created_at, TicketRow.id) < tuple_(*before))
 
     with get_session() as session:
         return [_to_record(row) for row in session.scalars(query)]
+
+
+def count_tickets_by_status() -> dict[str, int]:
+    """How many tickets have each status, every status present (0 when none). One GROUP BY query."""
+    with get_session() as session:
+        rows = session.execute(
+            select(TicketRow.status, func.count()).group_by(TicketRow.status)
+        ).all()
+    counts = {status.value: 0 for status in TicketStatus}
+    for status, number in rows:
+        counts[status] = number
+    return counts

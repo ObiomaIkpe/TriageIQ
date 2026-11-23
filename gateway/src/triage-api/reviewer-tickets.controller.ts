@@ -16,6 +16,7 @@ import { CurrentPrincipal, Roles } from '../auth/auth.decorators.js';
 import { reviewerFor, type Principal } from '../auth/principal.js';
 import { JsonContentGuard } from '../tickets/json-content.guard.js';
 import {
+  isCountsPayload,
   isReference,
   isTicketPayload,
   isUuid,
@@ -28,7 +29,7 @@ import { TriageClient, type TriageAnswer } from './triage-client.js';
 /**
  * The Python service's read and review endpoints, offered to reviewers through the gateway.
  * Only reviewers may call them (a submitter gets 403). POST /tickets, the intake route, lives in
- * TicketsController; these four paths do not overlap with it, and the reference route is
+ * TicketsController; these paths do not overlap with it, and the reference route is
  * declared before the :id route so a reference can never be read as an id.
  */
 @Roles('reviewer')
@@ -57,6 +58,22 @@ export class ReviewerTicketsController {
         client: principal.label,
       }),
     );
+  }
+
+  /** Declared before :id, so "counts" is never read as a ticket id. */
+  @Get('counts')
+  async counts(@Res() response: Response, @CurrentPrincipal() principal: Principal) {
+    const answer = await this.triage.call({
+      method: 'GET',
+      path: '/tickets/counts',
+      kind: 'read',
+      route: 'GET /tickets/counts',
+      client: principal.label,
+    });
+    if (answer.status >= 200 && answer.status < 300 && !isCountsPayload(answer.body)) {
+      throw new BadGatewayException({ detail: MSG_ERROR });
+    }
+    response.status(answer.status).json(answer.body);
   }
 
   @Get('reference/:reference')

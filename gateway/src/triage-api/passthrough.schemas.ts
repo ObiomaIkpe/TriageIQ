@@ -11,8 +11,12 @@ export const REFERENCE_PATTERN = /^TKT-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$/;
 export const isUuid = (value: string) => z.uuid().safeParse(value).success;
 export const isReference = (value: string) => REFERENCE_PATTERN.test(value);
 
+/** "<created_at ISO>|<ticket id>": the keyset cursor Python gives back as the last ticket's fields (see app/api/tickets.py). */
+export const CURSOR_PATTERN = /^\d{4}-\d{2}-\d{2}T[0-9:.]{8,16}(Z|[+-]\d{2}:\d{2})\|[0-9a-fA-F-]{36}$/;
+
 const listQuery = z.object({
   status: z.enum(TICKET_STATUSES).optional(),
+  cursor: z.string().max(100).regex(CURSOR_PATTERN).optional(),
   limit: z
     .string()
     .regex(/^\d{1,4}$/)
@@ -28,15 +32,16 @@ export type ListQueryResult =
 const QUERY_HINTS: Record<string, string> = {
   status: `must be one of ${TICKET_STATUSES.join(', ')}`,
   limit: `must be a whole number from 1 to ${LIMIT_MAX}`,
+  cursor: 'must be the created_at and ticket_id of the last ticket you have, joined by |',
 };
 
 /**
- * Checks the query of GET /tickets. Only `status` and `limit` (the two Python supports) are
+ * Checks the query of GET /tickets. Only `status`, `limit` and `cursor` (what Python supports) are
  * read; every other parameter is dropped, not forwarded. Problems name the field and a fixed
  * hint, never the value. A parameter left out stays out, so Python's defaults apply.
  */
 export function parseListQuery(query: Record<string, unknown>): ListQueryResult {
-  const result = listQuery.safeParse({ status: query.status, limit: query.limit });
+  const result = listQuery.safeParse({ status: query.status, limit: query.limit, cursor: query.cursor });
   if (!result.success) {
     const fields = new Set(result.error.issues.map((issue) => String(issue.path[0])));
     return {
@@ -47,6 +52,7 @@ export function parseListQuery(query: Record<string, unknown>): ListQueryResult 
   const params: Record<string, string> = {};
   if (typeof query.status === 'string') params.status = query.status;
   if (typeof query.limit === 'string') params.limit = String(result.data.limit);
+  if (typeof query.cursor === 'string') params.cursor = query.cursor;
   return { ok: true, params };
 }
 
@@ -112,4 +118,14 @@ export function isTicketPayload(body: unknown): boolean {
   return Array.isArray(body)
     ? body.every((item) => ticketRecordSchema.safeParse(item).success)
     : ticketRecordSchema.safeParse(body).success;
+}
+
+/** GET /tickets/counts: every ticket status mapped to a non-negative whole number, and nothing else. */
+export function isCountsPayload(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return false;
+  const entries = Object.entries(body);
+  return (
+    entries.length === TICKET_STATUSES.length &&
+    TICKET_STATUSES.every((status) => Number.isInteger((body as Record<string, unknown>)[status]) && (body as Record<string, number>)[status] >= 0)
+  );
 }

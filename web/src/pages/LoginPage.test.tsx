@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { answers, ADA } from '../test/gateway.js';
+import { queueGateway } from '../test/queueGateway.js';
 import { renderApp } from '../test/render.js';
 import { server } from '../test/server.js';
 
@@ -26,7 +27,7 @@ describe('login page', () => {
   });
 
   it('success: goes to /queue and shows the display name exactly (Unicode)', async () => {
-    server.use(answers.loggedOut(), answers.loginOk());
+    server.use(answers.loggedOut(), answers.loginOk(), ...queueGateway([]).handlers);
     renderApp('/login');
     await fillAndSubmit();
     expect(await screen.findByText('TriageIQ · Review queue')).toBeInTheDocument();
@@ -38,6 +39,7 @@ describe('login page', () => {
     let body: unknown;
     server.use(
       answers.loggedOut(),
+      ...queueGateway([]).handlers,
       http.post('/api/auth/login', async ({ request }) => {
         body = await request.json();
         return HttpResponse.json(ADA);
@@ -98,6 +100,7 @@ describe('login page', () => {
     const gate = new Promise<void>((resolve) => (release = resolve));
     server.use(
       answers.loggedOut(),
+      ...queueGateway([]).handlers,
       http.post('/api/auth/login', async () => {
         calls += 1;
         await gate;
@@ -115,7 +118,7 @@ describe('login page', () => {
   });
 
   it('a user who is already logged in is redirected from /login to /queue', async () => {
-    server.use(answers.loggedIn());
+    server.use(answers.loggedIn(), ...queueGateway([]).handlers);
     renderApp('/login');
     expect(await screen.findByText('TriageIQ · Review queue')).toBeInTheDocument();
     expect(where()).toBe('/queue');
