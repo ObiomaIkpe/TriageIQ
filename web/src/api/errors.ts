@@ -23,6 +23,18 @@ export class ForbiddenError extends ApiError {
   }
 }
 
+/** 400 with the gateway's field errors ({field, problem}). The problems are the gateway's fixed phrases, never a submitted value. */
+export interface FieldProblem {
+  field: string;
+  problem: string;
+}
+
+export class ValidationError extends ApiError {
+  constructor(readonly fieldErrors: FieldProblem[]) {
+    super('Validation failed', 400);
+  }
+}
+
 /** 409: the ticket is not in the state the call needs (for a review: someone already reviewed it). */
 export class ConflictError extends ApiError {
   constructor() {

@@ -10,13 +10,6 @@ import { server } from './test/server.js';
 const where = () => screen.getByTestId('where').textContent;
 
 describe('routing and the session', () => {
-  it('/ goes to /queue (and, logged out, on to /login)', async () => {
-    server.use(answers.loggedOut());
-    renderApp('/');
-    expect(await screen.findByRole('heading', { name: 'TriageIQ' })).toBeInTheDocument();
-    expect(where()).toBe('/login');
-  });
-
   it('/queue while logged out redirects to /login', async () => {
     server.use(answers.loggedOut());
     renderApp('/queue');

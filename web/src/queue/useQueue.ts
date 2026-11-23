@@ -1,5 +1,6 @@
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { cursorAfter, fetchCounts, fetchTicket, fetchTickets, PAGE_SIZE, type TicketStatus } from '../api/tickets.js';
+import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
+import { cursorAfter, fetchCounts, fetchTicket, fetchTickets, PAGE_SIZE, type Ticket, type TicketStatus } from '../api/tickets.js';
 
 /** The list and the counts refetch every 30 s and when the window gets focus again. */
 export const REFRESH_MS = 30_000;
@@ -27,11 +28,38 @@ export function useTicketList(status: TicketStatus) {
   });
 }
 
+/**
+ * The open ticket. Whenever what we now know about its status differs from what the lists show (or from what we knew a
+ * moment ago), the ticket lists and the counts are refreshed: a ticket someone else reviewed must not stay "Pending" in
+ * the list and in the tab counts while its panel says "Rejected". This covers every way the status can change under us:
+ * a refetch (timer or focus), our own review, and a 409 (all of them update this query's data).
+ */
 export function useTicket(reference: string | null) {
-  return useQuery({
+  const queryClient = useQueryClient();
+  const query = useQuery({
     queryKey: keys.detail(reference ?? ''),
     queryFn: () => fetchTicket(reference as string),
     enabled: reference !== null,
     ...refresh,
   });
+
+  const known = useRef<{ id: string; status: TicketStatus } | null>(null);
+  const ticket = query.data;
+  useEffect(() => {
+    if (!ticket) return;
+    const before = known.current;
+    const changedUnderUs = before !== null && before.id === ticket.ticket_id && before.status !== ticket.status;
+    known.current = { id: ticket.ticket_id, status: ticket.status };
+    if (changedUnderUs || listsDisagree(queryClient.getQueriesData<InfiniteData<Ticket[]>>({ queryKey: ['tickets', 'list'] }), ticket)) {
+      void queryClient.invalidateQueries({ queryKey: ['tickets', 'list'] });
+      void queryClient.invalidateQueries({ queryKey: keys.counts });
+    }
+  }, [ticket, queryClient]);
+
+  return query;
+}
+
+/** True if some cached list holds this ticket under a different status than the ticket itself now has. */
+function listsDisagree(lists: [unknown, InfiniteData<Ticket[]> | undefined][], ticket: Ticket): boolean {
+  return lists.some(([, data]) => data?.pages.some((page) => page.some((t) => t.ticket_id === ticket.ticket_id && t.status !== ticket.status)));
 }
