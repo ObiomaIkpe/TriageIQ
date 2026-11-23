@@ -1,0 +1,62 @@
+# The shared EDGE stack: ONE Caddy that terminates HTTPS for every app on this server. Its own compose project ("edge").
+# It is the ONLY thing on the host that publishes ports (80, 443 tcp, and 443 udp for HTTP/3). Every app runs in its own compose
+# project, publishes nothing, and joins the external Docker network "edge", where this Caddy reaches it by the app's service name.
+#
+#   cd /opt/edge && cp .env.example .env && nano .env      (ACME_EMAIL)
+#   docker compose up -d
+#
+# Adding an app = one new file in sites/ and a reload (see sites/README.md). Nothing in this file changes.
+#
+# The Docker-vs-UFW gotcha: ports published by Docker are opened by Docker's own iptables rules, which are evaluated BEFORE
+# UFW's, so `ufw deny` does not hide a published port. Here that cannot bite: this file is the only place any port is
+# published, and it publishes exactly the three that UFW allows anyway (the app stacks publish none).
+name: edge
+
+services:
+  caddy:
+    # Exact version, never "latest": a release at least two weeks old when it was chosen (v2.11.9 came out on 2026-11-05).
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      # Let's Encrypt writes to this address about expiring certificates it could not renew.
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in /opt/edge/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites:/etc/caddy/sites:ro
+      # Certificates, account keys and the access logs live in /data: losing it means asking Let's Encrypt again (rate limits!).
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      # Caddy's admin API listens on 127.0.0.1:2019 inside the container only (never published).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [edge]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  edge:
+    external: true
+    # EDGE_NETWORK exists so a laptop test can use a throwaway name; on the server it is "edge".
+    name: ${EDGE_NETWORK:-edge}
+
+volumes:
+  caddy_data:
+  caddy_config:

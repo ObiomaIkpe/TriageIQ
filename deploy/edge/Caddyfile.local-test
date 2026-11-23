@@ -1,0 +1,6 @@
+# The same as Caddyfile, for a laptop: certificates come from Caddy's own local CA (`local_certs`), nothing is requested from the internet.
+{
+	local_certs
+}
+
+import sites/*.caddy

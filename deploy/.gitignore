@@ -2,3 +2,4 @@
 env/*.env
 env.local-test/
 .env
+.deploy-state

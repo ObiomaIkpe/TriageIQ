@@ -23,15 +23,15 @@ raw = open(PROD_FILE).read()
 S, N = prod["services"], prod["networks"]
 def check(label, cond): print(("OK " if cond else "FAIL ") + label)
 
-check("the six services exist and no others (no Mailpit)", set(S) == {"db", "redis", "app", "gateway-migrate", "gateway", "web"})
+check("the six services exist and no others (no Mailpit)", set(S) == {"db", "redis", "app", "gateway-migrate", "triageiq-gateway", "triageiq-web"})
 check("NO service publishes a host port", all(not s.get("ports") for s in S.values()))
-check("only gateway and web are on the edge network", {n for n, s in S.items() if "edge" in s["networks"]} == {"gateway", "web"})
+check("only gateway and web are on the edge network", {n for n, s in S.items() if "edge" in s["networks"]} == {"triageiq-gateway", "triageiq-web"})
 check("db and redis are on the internal network only", all(list(S[n]["networks"]) == ["backend"] for n in ("db", "redis")))
 check("the backend network is internal (no route out)", N["backend"].get("internal") is True)
 check("the edge network is external and named edge", N["edge"].get("external") is True and N["edge"]["name"] == "edge")
-check("the edge aliases are unique to this app", S["gateway"]["networks"]["edge"]["aliases"] == ["triageiq-gateway"] and S["web"]["networks"]["edge"]["aliases"] == ["triageiq-web"])
-check("only app and gateway have outbound (egress) access", {n for n, s in S.items() if "egress" in s["networks"]} == {"app", "gateway"})
-for n in ("db", "redis", "app", "gateway", "web"):
+check("on edge the only names are triageiq-gateway and triageiq-web: the services are NAMED that, with no extra alias (so no bare gateway/web)", all(not (S[n]["networks"]["edge"] or {}).get("aliases") for n in ("triageiq-gateway", "triageiq-web")) and "gateway" not in S and "web" not in S)
+check("only app and gateway have outbound (egress) access", {n for n, s in S.items() if "egress" in s["networks"]} == {"app", "triageiq-gateway"})
+for n in ("db", "redis", "app", "triageiq-gateway", "triageiq-web"):
     check(f"{n}: restart unless-stopped", S[n].get("restart") == "unless-stopped")
 check("gateway-migrate runs once (restart no)", S["gateway-migrate"].get("restart") == "no")
 total = 0
@@ -40,30 +40,29 @@ for n, s in S.items():
     check(f"{n}: has a memory limit ({mem})", bool(mem))
     if n != "gateway-migrate": total += int(mem)
 check(f"the running services' limits add up to under 2 GB ({total // 2**20} MB)", total <= 2 * 2**30)
-for n in ("db", "redis", "app", "gateway", "web"):
+for n in ("db", "redis", "app", "triageiq-gateway", "triageiq-web"):
     check(f"{n}: has a healthcheck", "healthcheck" in S[n])
 for n, s in S.items():
     log = s.get("logging", {})
     check(f"{n}: json-file logging, max-size 10m, max-file 3", log.get("driver") == "json-file" and log.get("options") == {"max-size": "10m", "max-file": "3"})
-check("gateway keeps stop_grace_period 130s", S["gateway"].get("stop_grace_period") == "2m10s")
-for n in ("app", "gateway-migrate", "gateway", "web"):
+check("gateway keeps stop_grace_period 130s", S["triageiq-gateway"].get("stop_grace_period") == "2m10s")
+for n in ("app", "gateway-migrate", "triageiq-gateway", "triageiq-web"):
     check(f"{n}: image is ghcr.io/<owner>/triageiq-*:<TAG>", S[n]["image"].startswith("ghcr.io/someone/triageiq-") and S[n]["image"].endswith(":sha-abc1234"))
-check("gateway waits for redis, a healthy app and the finished migration", S["gateway"]["depends_on"]["redis"]["condition"] == "service_healthy" and S["gateway"]["depends_on"]["app"]["condition"] == "service_healthy" and S["gateway"]["depends_on"]["gateway-migrate"]["condition"] == "service_completed_successfully")
-check("the gateway runs with NODE_ENV=production", S["gateway"]["environment"]["NODE_ENV"] == "production")
+check("gateway waits for redis, a healthy app and the finished migration", S["triageiq-gateway"]["depends_on"]["redis"]["condition"] == "service_healthy" and S["triageiq-gateway"]["depends_on"]["app"]["condition"] == "service_healthy" and S["triageiq-gateway"]["depends_on"]["gateway-migrate"]["condition"] == "service_completed_successfully")
+check("the gateway runs with NODE_ENV=production", S["triageiq-gateway"]["environment"]["NODE_ENV"] == "production")
 refs = re.findall(r"^\s+- \$\{ENV_DIR:-\./env\}/(\w+)\.env\s*$", raw, re.M)
 check(f"secrets come only from env files: the compose file names exactly db.env, app.env, gateway.env (x2) {refs}", sorted(refs) == ["app", "db", "gateway", "gateway"])
-owner = {"db": "db", "app": "app", "gateway": "gateway", "gateway-migrate": "gateway"}
+owner = {"db": "db", "app": "app", "triageiq-gateway": "gateway", "gateway-migrate": "gateway"}
 inline = [f"{n}.{k}" for n, s in S.items() for k in s.get("environment", {}) if n in owner and k not in file_keys[owner[n]] and any(w in k for w in ("PASSWORD", "SECRET", "API_KEY", "_PASS", "TOKEN"))]
 check(f"no secret-looking variable is written in the compose file itself {inline}", not inline)
-check("web, gateway and the migration run with a read-only filesystem", all(S[n].get("read_only") is True for n in ("web", "gateway", "gateway-migrate")))
-check("no-new-privileges and all capabilities dropped (app, gateway, web)", all("no-new-privileges:true" in S[n].get("security_opt", []) and S[n].get("cap_drop") == ["ALL"] for n in ("app", "gateway", "web")))
+check("web, gateway and the migration run with a read-only filesystem", all(S[n].get("read_only") is True for n in ("triageiq-web", "triageiq-gateway", "gateway-migrate")))
+check("no-new-privileges and all capabilities dropped (app, gateway, web)", all("no-new-privileges:true" in S[n].get("security_opt", []) and S[n].get("cap_drop") == ["ALL"] for n in ("app", "triageiq-gateway", "triageiq-web")))
 
 T = test["services"]
-check("local-test: web and gateway are published on 127.0.0.1 ONLY", all(p["host_ip"] == "127.0.0.1" for n in ("web", "gateway") for p in T[n]["ports"]))
-check("local-test: the edge-sim is published on 127.0.0.1 only", all(p["host_ip"] == "127.0.0.1" for p in T["edge-sim"]["ports"]))
-check("local-test: nothing else is published (db, redis, app)", all(not T[n].get("ports") for n in ("db", "redis", "app", "gateway-migrate")))
-check("local-test: the edge network is created, not external", not test["networks"]["edge"].get("external"))
-check("local-test: images are built locally and never pulled", all(T[n].get("pull_policy") == "never" and "build" in T[n] for n in ("app", "gateway", "gateway-migrate", "web")))
+check("local-test: web and gateway are published on 127.0.0.1 ONLY", all(p["host_ip"] == "127.0.0.1" for n in ("triageiq-web", "triageiq-gateway") for p in T[n]["ports"]))
+check("local-test: nothing else is published (db, redis, app, gateway-migrate)", all(not T[n].get("ports") for n in ("db", "redis", "app", "gateway-migrate")))
+check("local-test: the edge network is still external (the laptop test creates it)", test["networks"]["edge"].get("external") is True)
+check("local-test: images are built locally and never pulled", all(T[n].get("pull_policy") == "never" and "build" in T[n] for n in ("app", "triageiq-gateway", "gateway-migrate", "triageiq-web")))
 PY
 [ -f "$TMP/failed" ] && FAILURES=$((FAILURES + $(wc -l < "$TMP/failed")))
 

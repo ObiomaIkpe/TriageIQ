@@ -1,0 +1,65 @@
+# TriageIQ, behind the edge Caddy. The host comes from TRIAGEIQ_HOST (unset on the server, so it is the real one; the laptop test sets it).
+#   /api/*      -> the gateway, with the /api prefix removed   (/api/auth/me -> triageiq-gateway:3000/auth/me)
+#   everything  -> the static web UI
+# The upstream names are the service names of the TriageIQ compose project on the "edge" network. They are deliberately prefixed:
+# other apps may have a service called "gateway" or "web", and the network would answer with either.
+{$TRIAGEIQ_HOST:triageiq.bamstoneopus.com} {
+	encode zstd gzip
+
+	# One HSTS header for the whole site (the gateway also sends one on /api; a header set here replaces it, it does not add a second).
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	# Access log: JSON, in the /data volume, rotated (10 MiB, 5 files, 30 days). The API key a client sends (X-Api-Key), the
+	# session cookie and the Authorization header are REMOVED from it: a log must never hold a credential.
+	log {
+		output file /data/logs/triageiq-access.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 720h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Api-Key delete
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				request>headers>Proxy-Authorization delete
+				resp_headers>Set-Cookie delete
+			}
+		}
+	}
+
+	# The gateway counts failed logins and public submissions per client address, and it trusts EXACTLY ONE proxy hop (TRUST_PROXY=true):
+	# the last X-Forwarded-For entry, the one written here. So this line REPLACES whatever the caller sent with the address Caddy
+	# actually saw (a caller cannot pick its own address), and the scheme is stated, not guessed.
+	# Body limits follow the gateway's own (100 KB in general, 16 KB on /public): a little above, so the gateway still answers
+	# its own, clearer error for a body that is merely too big, and Caddy cuts off anything absurd before it reaches it.
+	handle /api/public/* {
+		request_body {
+			max_size 24KB
+		}
+		uri strip_prefix /api
+		reverse_proxy triageiq-gateway:3000 {
+			header_up X-Forwarded-For {http.request.remote.host}
+			header_up X-Forwarded-Proto {http.request.scheme}
+		}
+	}
+
+	handle /api/* {
+		request_body {
+			max_size 128KB
+		}
+		uri strip_prefix /api
+		reverse_proxy triageiq-gateway:3000 {
+			header_up X-Forwarded-For {http.request.remote.host}
+			header_up X-Forwarded-Proto {http.request.scheme}
+		}
+	}
+
+	handle {
+		reverse_proxy triageiq-web:8080
+	}
+}
