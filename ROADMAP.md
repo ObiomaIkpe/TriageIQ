@@ -211,6 +211,12 @@ Baseline already in place:
 5. **M5: proof.** G1-G4; A8; H8; L1-L3.
 6. **M6: polish and ship.** H10, K1-K2, L4-L9, J5-J6, remaining items.
 
+### M6 progress
+
+- [x] **M6a. Continuous integration.** `.github/workflows/ci.yml` runs on every pull request and every push to `main`: four parallel jobs (`python`, `gateway`, `web`, `docker-build`), read-only permissions, actions pinned to commit SHAs, no secrets, fake model-provider keys, service containers for Postgres (pgvector) and Redis (the compose images), and a guard that fails a job if any integration or e2e test was skipped.
+- [ ] **Manual step (GitHub settings, you):** turn on branch protection for `main` and require the four checks (`python`, `gateway`, `web`, `docker-build`) to pass before merging. Steps: repository **Settings** > **Branches** > **Add branch ruleset** (or **Add classic branch protection rule**) for `main` > tick **Require status checks to pass before merging** (and **Require branches to be up to date**) > search for and add `python`, `gateway`, `web` and `docker-build` (they only appear in the search after the workflow has run once) > **Create**. Also consider **Require a pull request before merging**.
+- [ ] M6b onward: deployment, publishing images (M6c), the production checklist below.
+
 ### M6 production checklist (things the web UI needs when it is deployed)
 
 - **Content-Security-Policy must allow Cloudflare Turnstile:** `script-src https://challenges.cloudflare.com` and `frame-src https://challenges.cloudflare.com` (the widget is an iframe; also `connect-src` if the browser console shows blocked calls). Without it the public form shows "Verification couldn't load" and cannot be sent.

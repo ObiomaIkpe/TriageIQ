@@ -1,5 +1,7 @@
 # TriageIQ
 
+[![CI](https://github.com/ObiomaIkpe/TriageIQ/actions/workflows/ci.yml/badge.svg)](https://github.com/ObiomaIkpe/TriageIQ/actions/workflows/ci.yml)
+
 LangGraph-powered support ticket triage: it classifies a ticket, routes it to a team, drafts a reply grounded in a knowledge base, reviews its own draft, and flags anything a human should check before it goes out.
 
 Built with FastAPI, LangGraph, Claude, Voyage AI embeddings, Postgres with pgvector, SQLAlchemy 2.0 and Alembic, behind a NestJS gateway (BullMQ on Redis) that does authentication, rate limiting, queueing, retries and idempotency. **Clients only ever talk to the gateway**; the Python service is not reachable from outside the compose network.
@@ -304,6 +306,19 @@ TEST_DATABASE_URL=postgresql://triageiq:triageiq@localhost:5433/triageiq_test py
 ```
 
 Changing the schema: edit the models, run `alembic revision --autogenerate -m "describe the change"`, review the generated file, and commit it. `alembic check` reports drift between the models and the database.
+
+### Continuous integration
+
+Every pull request and every push to `main` runs all the suites on GitHub's servers (`.github/workflows/ci.yml`). Four jobs run in parallel and do not wait for each other:
+
+| Job | What it runs |
+|---|---|
+| `python` | Python 3.12, `pip install -r requirements.txt`, the default suite with no database, then the integration suite against a `pgvector/pgvector:pg16` service container (a skipped integration test fails the job) |
+| `gateway` | Node 24, `npm ci`, lint, build, unit tests, then the e2e tests with `redis:8.10.3-alpine` and `pgvector/pgvector:pg16` service containers, so **nothing is skipped** (a skipped e2e test fails the job) |
+| `web` | Node 24, `npm ci`, lint, typecheck, tests, build |
+| `docker-build` | builds the app and gateway images (nothing is pushed) |
+
+The service images are the same ones `docker-compose.yml` uses. CI uses **no secrets** and no real API key: the model-provider keys are set to obviously fake values, and the Anthropic URL points at an address that refuses connections, so a test that tried to call a model would fail loudly rather than spend money. The workflow can only read the repository (`permissions: contents: read`), every third-party action is pinned to a full commit SHA, and a newer push to the same branch cancels the run that is still going. To run the same things locally, use the commands in Development above and "Gateway (M3)" / "The reviewer web UI". The tests do not read your `.env` files: the Python test setup builds its settings from the code defaults and the environment only.
 
 ## Evals
 

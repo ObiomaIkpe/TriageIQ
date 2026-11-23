@@ -524,3 +524,18 @@ Not done in M4.3a: the queue list, the ticket page and review actions (M4.3b), t
 
 Not done: HTML mail, templates, inbound mail, a verification email, a real provider (M6).
 
+## Continuous integration (M6a)
+
+- **What runs.** `.github/workflows/ci.yml`: `python`, `gateway`, `web` and `docker-build` in parallel, on every pull request and every push to `main`. They are the names branch protection should require. A newer push to the same branch or pull request cancels the older run (`concurrency`).
+- **Least privilege.** The workflow asks for `contents: read` and nothing else, checkout does not keep the token (`persist-credentials: false`), and no secret is read anywhere. Every third-party action is pinned to a full commit SHA with its version in a comment, so a moved tag cannot change what runs. A pinned SHA never updates by itself: bump them deliberately (or with Dependabot later).
+- **No model calls, loudly.** The provider keys are fake (`ci-fake-key-not-a-real-key`), LangSmith tracing is off, and `ANTHROPIC_BASE_URL` points at `127.0.0.1:9`, which refuses connections. No test needs a real key or network access to a model provider: the Python suite passes with the network switched off entirely (checked with `docker run --network none`). The tests' own setup (`tests/conftest.py`) also forces the fake keys, so a real key exported in a developer's shell is never used either.
+- **Nothing may be skipped where infrastructure is provided.** The integration tests and the gateway e2e tests skip themselves when their database or Redis is not configured, which is right on a laptop and dangerous in CI (a green run that tested nothing). The two jobs therefore read the test output and fail if it contains a skip. The check itself was tested: with no services given, the e2e run reports `120 skipped` and the guard trips.
+- **Machine dependencies found and fixed** (each by running the suites in a clean export of the repository, with no `.env`, no `venv` and no `node_modules`):
+  1. **The Python tests read the developer's `.env`.** `Settings` reads `.env` from the working directory, and a local `LOW_CONFIDENCE_THRESHOLD`, model id or similar changed test results (a planted hostile `.env` made about 30 tests fail). `tests/conftest.py` now builds the settings from an empty directory and forces the fake keys and tracing off; `tests/test_settings_ignore_dotenv.py` proves the live settings equal the code defaults.
+  2. **Fake keys were `setdefault`**, so a real exported key would have won. Now forced.
+  3. **A timing flake in the web tests** (one failure in one clean run, not reproducible in 9 further runs or at half a CPU): Testing Library waits 1 s by default for something to appear, which a busy shared runner can exceed. The wait is now 5 s and the per-test timeout 15 s.
+  The gateway tests and the web tests were already independent of local `.env` files (they state every setting they use), which was checked again with planted hostile `gateway/.env` and `web/.env` files, and of the time zone and locale (runs under `TZ=Pacific/Kiritimati` and `LC_ALL=C`).
+- **Services on `localhost`.** On a GitHub runner the service containers answer on `localhost:6379` and `localhost:5432`. That differs from a laptop, where nothing may listen on 6379, so the e2e suites and the integration suite were also run with Redis and Postgres on `localhost` (in a shared network namespace with no internet access): all pass.
+- **docker-build only builds.** The app and gateway images are built (with GitHub's own layer cache) and not pushed; publishing images is M6c. `web` has no image yet.
+- **Not in scope:** coverage tooling, a version matrix, caching beyond the package managers, deployment.
+
