@@ -50,6 +50,16 @@ export function stubAuthEnv(rateLimitPerMinute = '10000') {
   vi.stubEnv('TURNSTILE_EXPECTED_ACTION', '');
   vi.stubEnv('PUBLIC_MAX_PER_IP_PER_HOUR', '5');
   vi.stubEnv('PUBLIC_DAILY_CAP', '200');
+  // Mail is off unless a test turns it on; its other settings are stated so a local gateway/.env cannot leak in.
+  vi.stubEnv('MAIL_ENABLED', 'false');
+  vi.stubEnv('SMTP_HOST', '');
+  vi.stubEnv('SMTP_PORT', '587');
+  vi.stubEnv('SMTP_SECURE', 'false');
+  vi.stubEnv('SMTP_USER', '');
+  vi.stubEnv('SMTP_PASS', '');
+  vi.stubEnv('MAIL_FROM', '');
+  vi.stubEnv('MAIL_REPLY_TO', '');
+  vi.stubEnv('MAIL_MAX_PER_RECIPIENT_PER_DAY', '3');
   vi.stubEnv('GATEWAY_CLIENTS', JSON.stringify(TEST_REGISTRY));
   vi.stubEnv('RATE_LIMIT_PER_MINUTE', rateLimitPerMinute);
 }

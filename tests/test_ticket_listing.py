@@ -44,3 +44,10 @@ def test_counts_is_its_own_route_not_a_ticket_id(monkeypatch):
     response = client.get("/tickets/counts")
     assert response.status_code == 200  # not a 422 from "counts" being read as a UUID
     assert response.json()["pending_review"] == 2
+
+
+def test_reviewed_since_is_parsed_and_passed_to_the_store(monkeypatch):
+    seen = []
+    monkeypatch.setattr(tickets_api, "list_tickets", lambda status, limit, reviewed_since: seen.append(reviewed_since) or [])
+    assert client.get("/tickets", params={"status": "approved", "reviewed_since": "2026-11-16T10:00:00Z"}).status_code == 200
+    assert seen[0].isoformat() == "2026-11-16T10:00:00+00:00"

@@ -55,9 +55,9 @@ describe.skipIf(!URL_)('gateway database (real Postgres)', () => {
   describe('the migration runner', () => {
     it("applies the repository's migrations to an empty database and records them", async () => {
       const result = await migrate(pool, DEFAULT_MIGRATIONS_DIR);
-      expect(result.applied).toEqual(['001_create_users.sql', '002_ticket_references.sql']);
-      expect(await tables()).toEqual(['schema_migrations', 'ticket_references', 'users']);
-      expect(await recorded()).toEqual(['001_create_users.sql', '002_ticket_references.sql']);
+      expect(result.applied).toEqual(['001_create_users.sql', '002_ticket_references.sql', '003_reply_deliveries.sql']);
+      expect(await tables()).toEqual(['reply_deliveries', 'schema_migrations', 'ticket_references', 'users']);
+      expect(await recorded()).toEqual(['001_create_users.sql', '002_ticket_references.sql', '003_reply_deliveries.sql']);
       const { rows } = await pool.query<{ checksum: string }>('SELECT checksum FROM schema_migrations');
       expect(rows[0].checksum).toMatch(/^[0-9a-f]{64}$/);
     });
@@ -66,7 +66,7 @@ describe.skipIf(!URL_)('gateway database (real Postgres)', () => {
       await migrate(pool, DEFAULT_MIGRATIONS_DIR);
       const before = await pool.query('SELECT name, checksum, applied_at FROM schema_migrations');
       const again = await migrate(pool, DEFAULT_MIGRATIONS_DIR);
-      expect(again).toEqual({ applied: [], alreadyApplied: ['001_create_users.sql', '002_ticket_references.sql'] });
+      expect(again).toEqual({ applied: [], alreadyApplied: ['001_create_users.sql', '002_ticket_references.sql', '003_reply_deliveries.sql'] });
       expect((await pool.query('SELECT name, checksum, applied_at FROM schema_migrations')).rows).toEqual(before.rows);
     });
 

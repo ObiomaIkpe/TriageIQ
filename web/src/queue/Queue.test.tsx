@@ -7,6 +7,7 @@ import { makeTicket, queueGateway } from '../test/queueGateway.js';
 import { renderApp } from '../test/render.js';
 import { server } from '../test/server.js';
 import { relativeTime } from '../lib/time.js';
+import { deliveryPolling } from './useQueue.js';
 
 const where = () => screen.getByTestId('where').textContent;
 
@@ -291,3 +292,119 @@ describe('relativeTime', () => {
     expect(relativeTime(iso, now)).toBe(expected);
   });
 });
+
+describe('auto-handled tickets: Approve and send', () => {
+  const auto = (over = {}) => makeTicket({ status: 'triaged', needs_human_review: false, review_reason: null, customer_email: 'ada@example.com', ...over });
+
+  it('shows the draft and an "Approve and send" button with the optional note', async () => {
+    const t = auto({ suggested_reply: 'Auto draft' });
+    start([t], `/queue?tab=auto&ticket=${t.reference}`);
+    const panel = await screen.findByRole('article');
+    expect(within(panel).getByText('Auto draft')).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Approve and send' })).toBeEnabled();
+    expect(within(panel).getByLabelText('Review note (optional)')).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument(); // approve only
+  });
+
+  it('with no draft there is no button', async () => {
+    const t = auto({ suggested_reply: null });
+    start([t], `/queue?tab=auto&ticket=${t.reference}`);
+    await screen.findByRole('article');
+    expect(screen.queryByRole('button', { name: 'Approve and send' })).not.toBeInTheDocument();
+  });
+
+  it('clicking it sends action=approve (with the note), moves the ticket to Approved, refreshes the list and counts, and shows "Sending…"', async () => {
+    const t = auto({ subject: 'One click' });
+    const { gateway } = start([t, auto({ subject: 'Another auto' })], `/queue?tab=auto&ticket=${t.reference}`);
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText('Review note (optional)'), 'ok to send');
+    await user.click(screen.getByRole('button', { name: 'Approve and send' }));
+
+    await waitFor(() => expect(reviewCalls(gateway)).toHaveLength(1));
+    expect(reviewCalls(gateway)[0]?.body).toEqual({ action: 'approve', note: 'ok to send' });
+    expect(await screen.findByRole('tab', { name: /Approved\s*1/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /Auto-handled\s*1/ })).toBeInTheDocument(); // the other one is still there
+    expect(await within(await screen.findByRole('article')).findByText('Decision: Approved')).toBeInTheDocument();
+    expect(await screen.findByText('Sending…')).toBeInTheDocument();
+  });
+});
+
+describe('delivery status of an approved reply', () => {
+  const approved = (over = {}) => makeTicket({ status: 'approved', final_reply: 'Sent text', reviewed_by: { id: 'user:1', name: 'Grace' }, reviewed_at: '2026-11-23T10:00:00.000Z', customer_email: 'ada@example.com', ...over });
+  const withDelivery = (t: ReturnType<typeof makeTicket>, d: object) => {
+    const g = start([t], `/queue?tab=approved&ticket=${t.reference}`);
+    g.gateway.state.deliveries.set(t.ticket_id, { status: 'queued', attempts: 0, sent_at: null, error: null, ...d });
+    return g;
+  };
+
+  it('sent: "Reply sent <time>"', async () => {
+    const t = approved();
+    withDelivery(t, { status: 'sent', attempts: 1, sent_at: '2026-11-23T10:05:00.000Z' });
+    expect(await screen.findByText(/^Reply sent /)).toBeInTheDocument();
+  });
+
+  it('skipped_no_email: "No customer email, so no reply was sent."', async () => {
+    const t = approved({ customer_email: null });
+    withDelivery(t, { status: 'skipped_no_email' });
+    expect(await screen.findByText('No customer email, so no reply was sent.')).toBeInTheDocument();
+  });
+
+  it('none (mail off, or an old approval): nothing is shown', async () => {
+    const t = approved();
+    start([t], `/queue?tab=approved&ticket=${t.reference}`);
+    await screen.findByText('Decision: Approved');
+    await waitFor(() => expect(screen.queryByText(/Sending|Reply sent|No customer email|failed/i)).not.toBeInTheDocument());
+  });
+
+  it('queued: "Sending…", asked again until it is final, then "Reply sent"', async () => {
+    deliveryPolling.ms = 40;
+    try {
+      const t = approved();
+      const { gateway } = withDelivery(t, { status: 'queued' });
+      expect(await screen.findByText('Sending…')).toBeInTheDocument();
+      gateway.state.deliveries.set(t.ticket_id, { status: 'sent', attempts: 1, sent_at: '2026-11-23T10:05:00.000Z', error: null });
+      expect(await screen.findByText(/^Reply sent /)).toBeInTheDocument();
+      const asked = gateway.state.calls.filter((c) => c.path.endsWith('/delivery')).length;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(gateway.state.calls.filter((c) => c.path.endsWith('/delivery')).length).toBe(asked); // polling stopped when final
+    } finally {
+      deliveryPolling.ms = 5_000;
+    }
+  });
+
+  it('failed: "Sending failed" with the reason and a "Retry sending" button that requeues it', async () => {
+    deliveryPolling.ms = 40;
+    try {
+      const t = approved();
+      const { gateway } = withDelivery(t, { status: 'failed', attempts: 8, error: 'mail server unreachable' });
+      expect(await screen.findByText('Sending failed')).toBeInTheDocument();
+      expect(screen.getByText('mail server unreachable')).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Retry sending' }));
+      expect(await screen.findByText('Sending…')).toBeInTheDocument();
+      expect(gateway.state.calls.filter((c) => c.method === 'POST' && c.path.endsWith('/delivery/retry'))).toHaveLength(1);
+      expect(screen.queryByRole('button', { name: 'Retry sending' })).not.toBeInTheDocument();
+    } finally {
+      deliveryPolling.ms = 5_000;
+    }
+  });
+
+  it('rejected: no delivery section at all, and the delivery is never even asked for', async () => {
+    const t = makeTicket({ status: 'rejected', reviewed_by: { id: 'user:1', name: 'Grace' }, reviewed_at: '2026-11-23T10:00:00.000Z', customer_email: 'ada@example.com' });
+    const { gateway } = start([t], `/queue?tab=rejected&ticket=${t.reference}`);
+    await screen.findByText('Decision: Rejected');
+    expect(screen.queryByText(/Sending|Reply sent|Sending failed/)).not.toBeInTheDocument();
+    expect(gateway.state.calls.some((c) => c.path.endsWith('/delivery'))).toBe(false);
+  });
+
+  it('a pending ticket approved in the queue shows "Sending…" after the next ticket opens', async () => {
+    const first = makeTicket({ subject: 'First', customer_email: 'ada@example.com', minutesAgo: 1 });
+    start([first], `/queue?ticket=${first.reference}`);
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Approve draft' }));
+    await screen.findByText(/The queue is clear/);
+    // looking at it again under Approved: the delivery is queued
+    await userEvent.setup().click(screen.getByRole('tab', { name: /Approved/ }));
+    await userEvent.setup().click(await screen.findByRole('button', { name: /First/ }));
+    expect(await screen.findByText('Sending…')).toBeInTheDocument();
+  });
+});
+
