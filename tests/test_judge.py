@@ -60,8 +60,8 @@ def test_supported_sentence_with_a_quote_not_in_the_article_is_a_judge_error_and
     assert len(res.quote_errors) == 1 and res.sentences[0].final_label == "unsupported" and res.flagged == [1]
 
 
-def test_supported_sentence_with_an_empty_quote_is_an_error_too():
-    res = evaluate(RawAnswer(payload={"sentences": [{"sentence": 1, "label": "supported"}], "verdict": "grounded"}),
+def test_supported_sentence_with_a_quote_not_in_the_article_too():
+    res = evaluate(RawAnswer(payload={"sentences": [{"sentence": 1, "label": "supported", "quotes": ["not in it"]}], "verdict": "grounded"}),
                    [{"topic": "a", "content": "text"}], ["One."])
     assert res.verdict == "not_grounded" and len(res.quote_errors) == 1
 
@@ -184,3 +184,47 @@ def test_judge_model_defaults_to_the_drafting_model_and_can_differ():
 def test_nothing_in_app_imports_the_judge():
     root = Path(__file__).resolve().parent.parent / "app"
     assert not [p for p in root.rglob("*.py") if ("import evals" in (t := p.read_text(encoding="utf-8")) or "from evals" in t)]
+
+
+def test_a_sentence_made_of_two_passages_is_supported_with_two_quotes():
+    answer, arts, sents = fixture("stitched")
+    res = evaluate(RawAnswer(payload=answer), arts, sents)
+    assert res.verdict == "grounded" and res.quote_errors == [] and len(res.sentences[0].quotes) == 2
+
+
+def test_quotes_may_come_from_different_articles():
+    arts = [{"topic": "a", "content": "Reset emails expire after 30 minutes."}, {"topic": "b", "content": "Open it as soon as it arrives."}]
+    payload = {"sentences": [{"sentence": 1, "label": "supported",
+                              "quotes": ["Reset emails expire after 30 minutes.", "Open it as soon as it arrives."]}], "verdict": "grounded"}
+    assert evaluate(RawAnswer(payload=payload), arts, ["One."]).verdict == "grounded"
+
+
+def test_every_quote_must_be_found_one_missing_makes_the_sentence_unsupported_and_a_quote_error():
+    answer, arts, sents = fixture("stitched")
+    answer["sentences"][0]["quotes"].append("Lockout clears after a week.")
+    res = evaluate(RawAnswer(payload=answer), arts, sents)
+    assert res.verdict == "not_grounded" and res.flagged == [1] and len(res.quote_errors) == 1
+    assert res.sentences[0].missing_quotes == ["Lockout clears after a week."]
+
+
+def test_a_joined_quote_is_still_rejected_by_the_verifier():
+    answer, arts, sents = fixture("stitched")
+    answer["sentences"][0]["quotes"] = ["Accounts lock after 5 failed login attempts and Lockout clears automatically after 1 hour."]
+    assert evaluate(RawAnswer(payload=answer), arts, sents).verdict == "not_grounded"
+
+
+@pytest.mark.parametrize("quotes,fragment", [
+    ([], "supported sentence(s) [1] have no quote"),
+    (["", "  "], "supported sentence(s) [1] have no quote"),
+    (["a", "b", "c", "d"], "more than 3 quotes"),
+])
+def test_a_supported_sentence_needs_one_to_three_quotes_or_the_output_is_invalid(quotes, fragment):
+    payload = {"sentences": [{"sentence": 1, "label": "supported", "quotes": quotes}], "verdict": "grounded"}
+    res = evaluate(RawAnswer(payload=payload), [{"topic": "t", "content": "a b c d"}], ["One."])
+    assert res.verdict is None and fragment in res.error
+
+
+def test_not_supported_labels_need_no_quotes_and_the_prompt_allows_several_but_never_joined():
+    assert evaluate(RawAnswer(payload=_items(1)), [], ["One."]).verdict == "grounded"
+    assert "1 to 3 short passages" in SYSTEM_PROMPT and "Never join passages into one quote" in SYSTEM_PROMPT
+    assert "ONE short passage from ONE article" not in SYSTEM_PROMPT

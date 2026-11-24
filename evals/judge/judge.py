@@ -4,7 +4,7 @@ EVALS ONLY. Nothing in app/ imports this, and it is never called in the request 
 
 One model call per draft, temperature 0, answer forced through a tool whose input is validated with
 pydantic. The model labels each numbered sentence of the draft (the same numbers as the hand labels); two things are then decided by plain code, not by the model:
-  - the QUOTE CHECK: a sentence labelled "supported" must carry an evidence_quote that really appears
+  - the QUOTE CHECK: a sentence labelled "supported" must carry 1 to 3 quotes and every one must really appear
     in the article text. If it does not, the sentence is counted unsupported and reported as a judge error.
   - the VERDICT: not_grounded exactly when any sentence is unsupported (the model's own verdict is kept
     only to count how often it disagrees with its own sentences). The answer must cover every
@@ -25,8 +25,11 @@ class SentenceJudgement(BaseModel):
     """The judge's answer for ONE numbered sentence of the draft."""
     sentence: int
     label: Label
-    quote: str = ""
+    quotes: list[str] = []
     reason: str = ""
+
+
+MAX_QUOTES = 3
 
 
 class JudgeOutput(BaseModel):
@@ -61,10 +64,11 @@ reasons, promises, claims about what "our records" show, and statements about th
 sentence that goes beyond or differs from the article (the article says 30 minutes, the draft says 24 \
 hours) is unsupported.
 
-quote: for a supported sentence, copy ONE short passage from ONE article exactly, character for \
-character, that covers the WHOLE sentence. Never paraphrase it, never join passages, never quote the \
-ticket or the draft. If no single passage covers the whole sentence, it is not supported. Leave quote \
-empty for the other labels. reason: one short phrase saying why.
+quotes: for a supported sentence, a list of 1 to 3 short passages, each copied exactly, character for \
+character, from ONE article (the passages may come from different articles). Together they must cover \
+the WHOLE sentence. Never join passages into one quote: when a sentence combines two passages, give \
+them as separate quotes. Never paraphrase, and never quote the ticket or the draft. Leave quotes empty \
+for the other labels. reason: one short phrase saying why.
 
 verdict: not_grounded if ANY sentence is unsupported, otherwise grounded.
 
@@ -116,10 +120,11 @@ class JudgedSentence:
     number: int
     text: str                  # the sentence as the splitter produced it (what I label)
     label: str                 # the model's label
-    quote: str
+    quotes: list[str]
     reason: str
     final_label: str           # after the quote check: a supported sentence with no real quote is "unsupported"
-    quote_error: bool = False  # True when the model said supported but the quote is not in any article
+    quote_error: bool = False  # True when the model said supported but a quote is not in any article
+    missing_quotes: list[str] = field(default_factory=list)  # the quotes that were not found
 
 
 @dataclass
@@ -192,6 +197,18 @@ def check_coverage(items: list[SentenceJudgement], count: int) -> Optional[str]:
     return "; ".join(problems) or None
 
 
+def check_quotes(items: list[SentenceJudgement]) -> Optional[str]:
+    """None unless a supported sentence has no quote or more than MAX_QUOTES (an invalid answer)."""
+    empty = [i.sentence for i in items if i.label == "supported" and not [q for q in i.quotes if q.strip()]]
+    many = [i.sentence for i in items if len(i.quotes) > MAX_QUOTES]
+    problems = []
+    if empty:
+        problems.append(f"supported sentence(s) {sorted(empty)} have no quote")
+    if many:
+        problems.append(f"sentence(s) {sorted(many)} have more than {MAX_QUOTES} quotes")
+    return "; ".join(problems) or None
+
+
 def evaluate(answer: RawAnswer, articles: list[dict], sentences: list[str]) -> JudgeResult:
     """Validate a backend answer against the draft's sentences, run the quote check, decide the verdict."""
     base = dict(input_tokens=answer.input_tokens, output_tokens=answer.output_tokens, model=answer.model)
@@ -203,7 +220,7 @@ def evaluate(answer: RawAnswer, articles: list[dict], sentences: list[str]) -> J
         first = exc.errors()[0]
         loc = ".".join(str(x) for x in first["loc"])
         return JudgeResult(verdict=None, error=f"invalid judge output at {loc}: {first['msg']}", **base)
-    problem = check_coverage(parsed.sentences, len(sentences))
+    problem = check_coverage(parsed.sentences, len(sentences)) or check_quotes(parsed.sentences)
     if problem:
         return JudgeResult(verdict=None, error=f"invalid judge output: {problem}", **base)
 
@@ -211,10 +228,14 @@ def evaluate(answer: RawAnswer, articles: list[dict], sentences: list[str]) -> J
     judged_sentences: list[JudgedSentence] = []
     for n, text in enumerate(sentences, start=1):
         item = by_number[n]
-        final, bad_quote = item.label, False
-        if item.label == "supported" and not quote_in_articles(item.quote, articles):
-            final, bad_quote = "unsupported", True
-        judged_sentences.append(JudgedSentence(n, text, item.label, item.quote, item.reason, final, bad_quote))
+        final, missing = item.label, []
+        if item.label == "supported":
+            # EVERY quote must be found; one that is not makes the whole sentence unsupported.
+            missing = [q for q in item.quotes if not quote_in_articles(q, articles)]
+            if missing:
+                final = "unsupported"
+        judged_sentences.append(JudgedSentence(n, text, item.label, item.quotes, item.reason, final,
+                                               bool(missing), missing))
     verdict = "not_grounded" if any(c.final_label == "unsupported" for c in judged_sentences) else "grounded"
     return JudgeResult(verdict=verdict, sentences=judged_sentences, model_verdict=parsed.verdict, **base)
 

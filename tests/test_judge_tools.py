@@ -249,7 +249,7 @@ class ScriptedJudge:
                 items.append({"sentence": n, "label": "unsupported", "reason": "not in the article"})
                 bad = True
             else:
-                items.append({"sentence": n, "label": "supported", "quote": "Lockout clears automatically after 1 hour."})
+                items.append({"sentence": n, "label": "supported", "quotes": ["Lockout clears automatically after 1 hour."]})
         return RawAnswer(payload={"sentences": items, "verdict": "not_grounded" if bad else "grounded"},
                          input_tokens=1000, output_tokens=100, model="fake-judge")
 
@@ -319,7 +319,7 @@ def test_validate_reports_quote_errors_and_failed_calls_without_hiding_them(tmp_
     class Odd(ScriptedJudge):
         def complete(self, system, user):
             if "Lockout clears after 1 hour." in user.split("DRAFT REPLY START")[1]:      # G1
-                return RawAnswer(payload={"sentences": [{"sentence": 1, "label": "supported", "quote": "made up"}],
+                return RawAnswer(payload={"sentences": [{"sentence": 1, "label": "supported", "quotes": ["made up"]}],
                                           "verdict": "grounded"}, model="fake-judge")
             if "advice one" in user:
                 return RawAnswer(error="TimeoutError: slow", model="fake-judge")
@@ -448,3 +448,21 @@ def test_an_answer_that_skips_a_sentence_is_listed_as_an_invalid_output_not_fixe
     md, js, m = validate.validate(frozen, "tune", 1, Skips(), labels_dir=ldir, out_dir=tmp_path / "r")
     assert m["failed_calls"] == 3 and m["valid"] == 0
     assert "invalid judge output: missing sentence(s) [1]" in md.read_text()
+
+
+def test_split_all_runs_every_labelled_draft_and_the_report_says_the_test_split_is_used_up(tmp_path):
+    frozen, ldir = prepared(tmp_path, {"G1": True, "G2": True, "N1": False, "N2": False})
+    judge = ScriptedJudge()
+    md, js, m = validate.validate(frozen, "all", 1, judge, labels_dir=ldir, out_dir=tmp_path / "r")
+    assert judge.calls == 4 and m["tickets"] == 4              # tune AND test tickets together
+    text = md.read_text()
+    assert "split: all (dev). The test split was run once on 2026-11-24 and is no longer held out." in text
+    assert md.name.startswith("judge-all-")
+    md2, _, _ = validate.validate(frozen, "tune", 1, ScriptedJudge(), labels_dir=ldir, out_dir=tmp_path / "r2")
+    assert "no longer held out" not in md2.read_text()
+
+
+def test_split_all_refuses_if_any_judged_draft_is_unlabelled(tmp_path):
+    frozen, ldir = prepared(tmp_path, {"G1": True, "N1": False, "N2": False})          # G2 unlabelled
+    with pytest.raises(validate.Refused, match="G2"):
+        validate.validate(frozen, "all", 1, ScriptedJudge(), labels_dir=ldir, out_dir=tmp_path / "r")

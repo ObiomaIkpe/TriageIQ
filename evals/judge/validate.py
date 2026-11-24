@@ -22,6 +22,9 @@ from evals.judge.judge import AuthFailed, JudgeResult, judge_draft
 DEFAULT_OUT = "evals/results"
 
 
+ALL_SPLIT_NOTE = "split: all (dev). The test split was run once on 2026-11-24 and is no longer held out."
+
+
 class Refused(Exception):
     """Validation cannot start (missing split, tickets or labels). The message says what to do."""
 
@@ -36,8 +39,8 @@ def select_split(frozen_path, split_name: str, labels_dir=LABELS_DIR) -> tuple[l
     if not sp.exists():
         raise Refused(f"No split file {sp}. Freeze the drafts first.")
     split = json.loads(sp.read_text(encoding="utf-8"))
-    ids = split[split_name]
     by_id = {r["id"]: r for r in judged(load_frozen(frozen_path))}
+    ids = sorted(by_id) if split_name == "all" else split[split_name]
     unknown = [i for i in ids if i not in by_id]
     if unknown:
         raise Refused(f"The split lists tickets that are not judged drafts in the frozen file: {', '.join(unknown)}")
@@ -146,7 +149,10 @@ def disagreements(rows: list[dict], labels: dict, results: dict[str, list[JudgeR
 
 
 def render_markdown(meta: dict, m: dict, diffs: list[dict]) -> str:
-    L = [f"# Judge validation: {meta['split']} split", "",
+    L = [f"# Judge validation: {meta['split']} split", ""]
+    if meta["split"] == "all":
+        L += [ALL_SPLIT_NOTE, ""]
+    L += [
          f"- Judge model: `{', '.join(m['models']) or meta['judge_model']}`",
          f"- Frozen drafts: `{meta['frozen']}` (commit `{meta['frozen_commit']}`, drafter `{meta['drafter_model']}`)",
          f"- Eval code commit: `{meta['git_commit']}`",
@@ -197,7 +203,7 @@ def render_markdown(meta: dict, m: dict, diffs: list[dict]) -> str:
             for c in res.sentences:
                 star = "*" if c.number in mine else " "
                 flag = " **[QUOTE NOT FOUND, counted unsupported]**" if c.quote_error else ""
-                quote = f' quote: "{c.quote}"' if c.quote else ""
+                quote = "".join(f' quote: "{q}"' for q in c.quotes)
                 reason = f" ({c.reason})" if c.reason else ""
                 L.append(f"- {star}[{c.number}] {c.label}{flag}{reason}: {c.text}{quote}")
         else:
@@ -236,7 +242,7 @@ def validate(frozen_path, split_name: str, runs: int, backend, labels_dir=LABELS
 
 def main(argv=None, *, backend=None) -> int:
     parser = argparse.ArgumentParser(description="Validate the judge against my labels.")
-    parser.add_argument("--split", choices=("tune", "test"), required=True)
+    parser.add_argument("--split", choices=("tune", "test", "all"), required=True)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--frozen", default=None, help="default: the latest frozen file")
     parser.add_argument("--out", default=DEFAULT_OUT)

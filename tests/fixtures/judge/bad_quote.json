@@ -6,8 +6,10 @@
    {
     "sentence": 1,
     "label": "supported",
-    "quote": "Lockout clears automatically after 2 hours.",
-    "reason": "stated"
+    "reason": "stated",
+    "quotes": [
+     "Lockout clears automatically after 2 hours."
+    ]
    }
   ],
   "verdict": "grounded"

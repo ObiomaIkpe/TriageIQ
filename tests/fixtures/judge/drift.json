@@ -6,14 +6,16 @@
    {
     "sentence": 1,
     "label": "supported",
-    "quote": "Lockout clears automatically after 1 hour.",
-    "reason": "stated"
+    "reason": "stated",
+    "quotes": [
+     "Lockout clears automatically after 1 hour."
+    ]
    },
    {
     "sentence": 2,
     "label": "unsupported",
-    "quote": "",
-    "reason": "the article gives no way to end a lockout sooner"
+    "reason": "the article gives no way to end a lockout sooner",
+    "quotes": []
    }
   ],
   "verdict": "not_grounded"

@@ -6,26 +6,30 @@
    {
     "sentence": 1,
     "label": "not_a_claim",
-    "quote": "",
-    "reason": "greeting"
+    "reason": "greeting",
+    "quotes": []
    },
    {
     "sentence": 2,
     "label": "supported",
-    "quote": "Accounts lock after 5 failed login attempts within 15 minutes.",
-    "reason": "stated"
+    "reason": "stated",
+    "quotes": [
+     "Accounts lock after 5 failed login attempts within 15 minutes."
+    ]
    },
    {
     "sentence": 3,
     "label": "supported",
-    "quote": "Lockout clears automatically after 1 hour.",
-    "reason": "stated"
+    "reason": "stated",
+    "quotes": [
+     "Lockout clears automatically after 1 hour."
+    ]
    },
    {
     "sentence": 4,
     "label": "not_a_claim",
-    "quote": "",
-    "reason": "contact line"
+    "reason": "contact line",
+    "quotes": []
    }
   ],
   "verdict": "grounded"

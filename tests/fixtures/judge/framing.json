@@ -6,8 +6,8 @@
    {
     "sentence": 1,
     "label": "unsupported",
-    "quote": "",
-    "reason": "the article does not mention our records"
+    "reason": "the article does not mention our records",
+    "quotes": []
    }
   ],
   "verdict": "not_grounded"
