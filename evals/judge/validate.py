@@ -6,7 +6,7 @@ Runs the judge on every judged draft of the split N times (REAL Claude calls, on
 run) and compares each verdict with my label. It REFUSES to run unless every ticket of the split is
 labelled. Report (markdown + json) goes to evals/results/judge-<split>-<timestamp>.*; the FALSE PASS
 rate (the judge said "grounded" where I said not: the dangerous error) is shown first, then every
-disagreement with the judge's claims and my note.
+disagreement with the judge's per-sentence labels next to my flagged sentences and my note.
 """
 from __future__ import annotations
 
@@ -16,9 +16,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from evals.judge.common import (
-    LABELS_DIR, judged, labels_path, latest_frozen, load_frozen, load_labels, split_path, split_sentences,
-)
+from evals.judge.common import LABELS_DIR, judged, labels_path, latest_frozen, load_frozen, load_labels, split_path
 from evals.judge.judge import AuthFailed, JudgeResult, judge_draft
 
 DEFAULT_OUT = "evals/results"
@@ -63,6 +61,18 @@ def run_judge(backend, rows: list[dict], runs: int, progress=None) -> dict[str, 
     return results
 
 
+def sentence_match(mine: list[int], judge: list[int]) -> str:
+    """For a draft I labelled not grounded: did the judge flag the same sentence numbers?
+    exact = the same set; overlap = some in common but not the same; none = nothing in common;
+    not_marked = I marked no sentence numbers, so there is nothing to compare."""
+    if not mine:
+        return "not_marked"
+    a, b = set(mine), set(judge)
+    if a == b:
+        return "exact"
+    return "overlap" if a & b else "none"
+
+
 def _rate(num: int, den: int):
     return None if den == 0 else num / den
 
@@ -74,6 +84,7 @@ def compute(rows: list[dict], labels: dict, results: dict[str, list[JudgeResult]
     cost: float | None = 0.0
     models = set()
     unstable, false_pass_tickets = [], []
+    sentence_level = {"exact": 0, "overlap": 0, "none": 0, "not_marked": 0}
     from app.usage import cost_usd
 
     for row in rows:
@@ -92,6 +103,8 @@ def compute(rows: list[dict], labels: dict, results: dict[str, list[JudgeResult]
                 continue
             verdicts.append(res.verdict)
             matrix[truth][res.verdict] += 1
+            if truth == "not_grounded":
+                sentence_level[sentence_match(labels[row["id"]]["unsupported_sentences"], res.flagged)] += 1
         if len(set(verdicts)) > 1:
             unstable.append(row["id"])
         if truth == "not_grounded" and "grounded" in verdicts:
@@ -107,7 +120,7 @@ def compute(rows: list[dict], labels: dict, results: dict[str, list[JudgeResult]
         "false_pass_rate": _rate(matrix["not_grounded"]["grounded"], n_not),
         "false_fail": matrix["grounded"]["not_grounded"], "false_fail_of": n_ok,
         "false_fail_rate": _rate(matrix["grounded"]["not_grounded"], n_ok),
-        "false_pass_tickets": false_pass_tickets,
+        "false_pass_tickets": false_pass_tickets, "sentence_level": sentence_level,
         "unstable_tickets": unstable, "consistent": len(rows) - len(unstable), "tickets": len(rows),
         "failed_calls": failed, "quote_errors": quote_errors, "verdict_mismatches": mismatches,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost,
@@ -149,11 +162,19 @@ def render_markdown(meta: dict, m: dict, diffs: list[dict]) -> str:
           "| I said \\ judge said | grounded | not_grounded |", "|---|---|---|"]
     for t in ("grounded", "not_grounded"):
         L.append(f"| {t} | {m['matrix'][t]['grounded']} | {m['matrix'][t]['not_grounded']} |")
+    sl = m["sentence_level"]
+    total = sum(sl.values())
+    L += ["", "## Sentence level (drafts I labelled NOT grounded, every run)", "",
+          f"- Judge flagged exactly the sentences I flagged: {sl['exact']}/{total}",
+          f"- Overlap (some of the same sentences, not identical): {sl['overlap']}/{total}",
+          f"- None of my sentences flagged: {sl['none']}/{total}",
+          f"- I marked no sentence numbers (not comparable): {sl['not_marked']}/{total}",
+          "(judgements with no verdict are left out)"]
     L += ["", "## Consistency, quote errors, cost", "",
           f"- Same verdict in every run: {m['consistent']}/{m['tickets']} tickets" +
           (f" (unstable: {', '.join(m['unstable_tickets'])})" if m["unstable_tickets"] else ""),
           f"- Quote verifier errors (judge said supported, the quote is not in the article; counted unsupported): {m['quote_errors']}",
-          f"- Judge verdict contradicted its own claims (claims win): {m['verdict_mismatches']}",
+          f"- Judge verdict contradicted its own sentences (sentences win): {m['verdict_mismatches']}",
           f"- Judge calls that failed or did not validate (no verdict, left out of the numbers above): {m['failed_calls']}",
           f"- Tokens: {m['input_tokens']:,} in, {m['output_tokens']:,} out; cost (estimate): " +
           ("unknown (model has no price)" if m["cost_usd"] is None else f"${m['cost_usd']:.4f}"),
@@ -167,15 +188,20 @@ def render_markdown(meta: dict, m: dict, diffs: list[dict]) -> str:
         L += [f"### {kind}: {d['id']} (run {d['run']}): I said {d['truth']}, judge said {d['judge'] or 'nothing'}", ""]
         if res.error:
             L += [f"Judge error: {res.error}", ""]
-        sentences = split_sentences(row["draft"])
-        mine = [f"[{n}] {sentences[n - 1]}" for n in lab["unsupported_sentences"] if n <= len(sentences)]
+        mine = set(lab["unsupported_sentences"])
         L += ["My note: " + (lab.get("note") or "(none)"),
-              "My unsupported sentences: " + (" | ".join(mine) if mine else "(none marked)"), "",
-              "Draft:", "", *(f"> {s}" for s in row["draft"].splitlines()), "", "Judge's claims:", ""]
-        for c in res.claims:
-            flag = f" **[QUOTE NOT FOUND, counted unsupported]**" if c.quote_error else ""
-            quote = f' quote: "{c.evidence_quote}"' if c.evidence_quote else ""
-            L.append(f"- {c.label}{flag}: {c.text}{quote}")
+              "My unsupported sentence numbers: " + (", ".join(str(n) for n in sorted(mine)) or "(none marked)"),
+              "Judge flagged (unsupported): " + (", ".join(str(n) for n in res.flagged) or "(none)"), "",
+              "Sentence by sentence (judge's label; * = I flagged it):", ""]
+        if res.sentences:
+            for c in res.sentences:
+                star = "*" if c.number in mine else " "
+                flag = " **[QUOTE NOT FOUND, counted unsupported]**" if c.quote_error else ""
+                quote = f' quote: "{c.quote}"' if c.quote else ""
+                reason = f" ({c.reason})" if c.reason else ""
+                L.append(f"- {star}[{c.number}] {c.label}{flag}{reason}: {c.text}{quote}")
+        else:
+            L.append("- (no usable judge answer)")
         L.append("")
     return "\n".join(L) + "\n"
 

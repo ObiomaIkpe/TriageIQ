@@ -228,22 +228,29 @@ def test_label_is_blind_wraps_to_80_columns_and_skips_tickets_without_a_draft(tm
 
 
 # --- validate --------------------------------------------------------------------------------------
+def _sentences_of(user):
+    block = user.split("DRAFT REPLY START (numbered sentences)\n")[1].split("\nDRAFT REPLY END")[0]
+    return block.splitlines()
+
+
 class ScriptedJudge:
-    """Judges by reading the draft: 'INVENTED' in it -> an unsupported claim; per-run flips via `flip`."""
+    """Reads the numbered draft: any sentence containing INVENTED is unsupported, the rest are supported."""
     model = "fake-judge"
 
-    def __init__(self, flip=()):
-        self.flip, self.calls = set(flip), 0
+    def __init__(self):
+        self.calls = 0
 
     def complete(self, system, user):
         self.calls += 1
-        draft = user.split("DRAFT REPLY START\n")[1]
-        bad = "INVENTED" in draft
-        if (self.calls, ) and any(f in draft for f in self.flip) and self.calls > 6:
-            bad = not bad
-        claims = [{"text": "c", "label": "unsupported" if bad else "supported",
-                   "evidence_quote": "" if bad else "Lockout clears automatically after 1 hour."}]
-        return RawAnswer(payload={"claims": claims, "verdict": "not_grounded" if bad else "grounded"},
+        items, bad = [], False
+        for line in _sentences_of(user):
+            n = int(line[1:line.index("]")])
+            if "INVENTED" in line:
+                items.append({"sentence": n, "label": "unsupported", "reason": "not in the article"})
+                bad = True
+            else:
+                items.append({"sentence": n, "label": "supported", "quote": "Lockout clears automatically after 1 hour."})
+        return RawAnswer(payload={"sentences": items, "verdict": "not_grounded" if bad else "grounded"},
                          input_tokens=1000, output_tokens=100, model="fake-judge")
 
 
@@ -295,7 +302,8 @@ def test_validate_counts_a_false_pass_and_inconsistency(tmp_path):
         def complete(self, system, user):
             calls["n"] += 1
             if "INVENTED advice one" in user and calls["n"] > 3:   # N1 passes from the second run on
-                return RawAnswer(payload={"claims": [], "verdict": "grounded"}, model="fake-judge")
+                return RawAnswer(payload={"sentences": [{"sentence": 1, "label": "not_a_claim"}], "verdict": "grounded"},
+                                 model="fake-judge")
             return super().complete(system, user)
 
     md, js, m = validate.validate(frozen, "tune", 3, Flaky(), labels_dir=ldir, out_dir=tmp_path / "r")
@@ -311,7 +319,7 @@ def test_validate_reports_quote_errors_and_failed_calls_without_hiding_them(tmp_
     class Odd(ScriptedJudge):
         def complete(self, system, user):
             if "Lockout clears after 1 hour." in user.split("DRAFT REPLY START")[1]:      # G1
-                return RawAnswer(payload={"claims": [{"text": "c", "label": "supported", "evidence_quote": "made up"}],
+                return RawAnswer(payload={"sentences": [{"sentence": 1, "label": "supported", "quote": "made up"}],
                                           "verdict": "grounded"}, model="fake-judge")
             if "advice one" in user:
                 return RawAnswer(error="TimeoutError: slow", model="fake-judge")
@@ -397,3 +405,46 @@ def test_validate_stops_at_the_first_authentication_error(tmp_path):
     assert Denied.calls == 1
     assert judge_mod.is_auth_error(TypeError("Anthropic authentication failed: no API key"))
     assert not judge_mod.is_auth_error(RuntimeError("authentication"))
+
+
+def test_validate_reports_sentence_level_agreement_and_the_judge_label_next_to_my_numbers(tmp_path):
+    spec = {"G1": ("Fine one.", False), "X1": ("Hi.\nINVENTED one.\nOk two.\nINVENTED three.", False),
+            "X2": ("INVENTED a.\nOk b.", False), "X3": ("Ok a.\nOk b.", False), "X4": ("INVENTED a.\nINVENTED b.\nOk c.", False)}
+    frozen = make_frozen(tmp_path, spec)
+    split.save_split(frozen, {"tune": list(spec), "test": []}, basis="test")
+    ldir = tmp_path / "labels"
+    mine = {"G1": (True, []), "X1": (False, [2, 3]), "X2": (False, [1]), "X3": (False, [2]), "X4": (False, [])}
+    common.write_jsonl(common.labels_path(frozen, ldir), [
+        {"id": i, "grounded": g, "unsupported_sentences": n, "note": f"note {i}"} for i, (g, n) in mine.items()])
+    md, js, m = validate.validate(frozen, "tune", 1, ScriptedJudge(), labels_dir=ldir, out_dir=tmp_path / "r")
+    # X1: judge flags 2,4 vs mine 2,3 -> overlap; X2: 1 vs 1 -> exact; X3: judge flags nothing -> none (and a FALSE PASS);
+    # X4: I marked no numbers -> not comparable
+    assert m["sentence_level"] == {"exact": 1, "overlap": 1, "none": 1, "not_marked": 1}
+    assert m["false_pass_tickets"] == ["X3"]
+    text = md.read_text()
+    assert "## Sentence level" in text and "exactly the sentences I flagged: 1/4" in text
+    assert text.index("FALSE PASS (judge") < text.index("## Sentence level")
+    block = text.split("### FALSE PASS: X3")[1].split("###")[0]
+    assert "My unsupported sentence numbers: 2" in block and "Judge flagged (unsupported): (none)" in block
+    assert "- *[2] supported" in block and "-  [1] supported" in block            # * marks the sentence I flagged
+
+
+def test_sentence_match_cases():
+    assert validate.sentence_match([2, 3], [3, 2]) == "exact"
+    assert validate.sentence_match([2, 3], [3, 4]) == "overlap"
+    assert validate.sentence_match([2], []) == "none"
+    assert validate.sentence_match([], [1]) == "not_marked"
+
+
+def test_an_answer_that_skips_a_sentence_is_listed_as_an_invalid_output_not_fixed(tmp_path):
+    frozen, ldir = prepared(tmp_path, {"G1": True, "N1": False, "N2": False})
+
+    class Skips(ScriptedJudge):
+        def complete(self, system, user):
+            ans = super().complete(system, user)
+            ans.payload["sentences"] = []                 # covers no sentence at all
+            return ans
+
+    md, js, m = validate.validate(frozen, "tune", 1, Skips(), labels_dir=ldir, out_dir=tmp_path / "r")
+    assert m["failed_calls"] == 3 and m["valid"] == 0
+    assert "invalid judge output: missing sentence(s) [1]" in md.read_text()

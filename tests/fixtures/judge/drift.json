@@ -1,16 +1,19 @@
 {
  "article": "Accounts lock after 5 failed login attempts within 15 minutes. Lockout clears automatically after 1 hour.",
+ "draft": "Lockout clears automatically after 1 hour. You can use Forgot password to reset it sooner.",
  "answer": {
-  "claims": [
+  "sentences": [
    {
-    "text": "The lockout clears after 1 hour",
+    "sentence": 1,
     "label": "supported",
-    "evidence_quote": "Lockout clears automatically after 1 hour."
+    "quote": "Lockout clears automatically after 1 hour.",
+    "reason": "stated"
    },
    {
-    "text": "You can use Forgot password to reset it sooner",
+    "sentence": 2,
     "label": "unsupported",
-    "evidence_quote": ""
+    "quote": "",
+    "reason": "the article gives no way to end a lockout sooner"
    }
   ],
   "verdict": "not_grounded"
