@@ -9,6 +9,8 @@ export interface SessionRecord {
   user_id: string;
   created_at: string; // ISO time
   last_seen_at: string; // ISO time
+  /** A shorter absolute lifetime for this one session (the demo's 1 hour). Missing: the configured SESSION_ABSOLUTE_HOURS. */
+  absolute_seconds?: number;
 }
 
 /** Where sessions live. Redis in production; tests use an in-memory one. */

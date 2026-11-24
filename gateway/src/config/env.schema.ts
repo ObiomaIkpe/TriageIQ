@@ -57,6 +57,17 @@ export interface AppConfig {
   MAIL_REPLY_TO: string;
   /** Reply emails one recipient may receive per UTC day (a guard against using us to mail someone repeatedly). */
   MAIL_MAX_PER_RECIPIENT_PER_DAY: number;
+  /**
+   * The demo room: "Try it as a reviewer" with example tickets, no real data and no real email. Off by default: with false every
+   * demo route answers 404 and no demo user is created.
+   */
+  DEMO_MODE: boolean;
+  /** Test tickets demo visitors may submit per UTC day, across everyone (each one is a real, paid model run). */
+  DEMO_DAILY_CAP: number;
+  /** "Try it" logins allowed per client IP per hour. */
+  DEMO_LOGIN_MAX_PER_IP_PER_HOUR: number;
+  /** Test tickets one client IP may submit per hour. */
+  DEMO_SUBMIT_MAX_PER_IP_PER_HOUR: number;
 }
 
 interface Setting {
@@ -263,6 +274,22 @@ const SETTINGS: Record<keyof AppConfig, Setting> = {
     hint: 'must be a whole number from 1 to 1000',
     default: 3,
   },
+  DEMO_MODE: { schema: booleanSetting, hint: 'must be true or false', default: false },
+  DEMO_DAILY_CAP: {
+    schema: z.coerce.number().int().min(1).max(10000),
+    hint: 'must be a whole number from 1 to 10000',
+    default: 20,
+  },
+  DEMO_LOGIN_MAX_PER_IP_PER_HOUR: {
+    schema: z.coerce.number().int().min(1).max(10000),
+    hint: 'must be a whole number from 1 to 10000',
+    default: 30,
+  },
+  DEMO_SUBMIT_MAX_PER_IP_PER_HOUR: {
+    schema: z.coerce.number().int().min(1).max(10000),
+    hint: 'must be a whole number from 1 to 10000',
+    default: 5,
+  },
 };
 
 const NAMES = Object.keys(SETTINGS) as (keyof AppConfig)[];
@@ -327,6 +354,10 @@ export function validateEnv(raw: Record<string, unknown>): AppConfig {
   // Fail fast: an open public form with no way to check the bot test would let anyone spend the budget.
   if (values.PUBLIC_FORM_ENABLED === true && values.TURNSTILE_SECRET_KEY === '') {
     problems.push('TURNSTILE_SECRET_KEY is missing (required when PUBLIC_FORM_ENABLED is true)');
+  }
+  // The demo's "Submit a test ticket" is a paid model run too, guarded by the same bot check: without a secret it could only ever refuse.
+  if (values.PUBLIC_FORM_ENABLED !== true && values.DEMO_MODE === true && values.TURNSTILE_SECRET_KEY === '') {
+    problems.push('TURNSTILE_SECRET_KEY is missing (required when DEMO_MODE is true)');
   }
   // Mail: with MAIL_ENABLED the server and the sender must be named (fail fast, not at the first reply), and a login is both or neither.
   const blank = (name: string) => raw[name] === undefined || (typeof raw[name] === 'string' && (raw[name] as string).trim() === '');

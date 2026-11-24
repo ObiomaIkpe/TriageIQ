@@ -13,9 +13,9 @@ const ticket = (n: number, over: Record<string, unknown> = {}) => ({
 function setup(python: Record<string, Record<string, unknown>[]>) {
   const deliveries = new MemoryDeliveries();
   const queue = new FakeReplyQueue();
-  const calls: { query: Record<string, string> }[] = [];
+  const calls: { query: Record<string, string>; scope?: string }[] = [];
   const triage = {
-    call: async (call: { query: Record<string, string> }) => {
+    call: async (call: { query: Record<string, string>; scope?: string }) => {
       calls.push(call);
       return { status: 200, body: python[call.query.status!] ?? [] };
     },
@@ -40,6 +40,20 @@ describe('the sweep', () => {
       ['approved', '2026-11-16T12:00:00.000Z'],
       ['edited', '2026-11-16T12:00:00.000Z'],
     ]);
+  });
+
+  it('the sweep reads the REAL side of the wall only, so a demo ticket is never found by it', async () => {
+    const t = setup({});
+    await t.sweeper.run(new Date('2026-11-23T12:00:00Z'));
+    expect(t.calls.map((c) => c.scope)).toEqual(['real', 'real']);
+  });
+
+  it('and if Python ever listed a demo ticket, the sweep still makes no row and no job for it', async () => {
+    const t = setup({ approved: [ticket(1, { is_demo: true })] });
+    const result = await t.sweeper.run();
+    expect(result).toMatchObject({ checked: 1, repaired: 0 });
+    expect(t.deliveries.rows.size).toBe(0);
+    expect(t.queue.adds).toEqual([]);
   });
 
   it('a ticket that already has a delivery row is left alone (running the sweep twice makes one job)', async () => {

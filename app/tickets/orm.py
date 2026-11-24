@@ -45,6 +45,8 @@ class TicketRow(Base):
     # saved before this existed, and when no call was counted.
     ai_usage: Mapped[Optional[dict]] = mapped_column(JSONB)
     ai_cost_usd: Mapped[Optional[float]] = mapped_column(Double)
+    # A DEMO ticket (example data and what demo visitors submit). Real reads never see it, and the demo reset deletes only these.
+    is_demo: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -55,6 +57,7 @@ class TicketRow(Base):
     __table_args__ = (
         # The name matches the index the raw-SQL setup created.
         Index("tickets_status_created_idx", "status", "created_at"),
+        Index("tickets_demo_status_created_idx", "is_demo", "status", "created_at"),
         UniqueConstraint("reference", name="tickets_reference_key"),
         # A review is saved with its author or not at all: the two columns are both set or both NULL.
         CheckConstraint(

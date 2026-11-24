@@ -28,7 +28,7 @@ describe('reviewer recording through the gateway (fake Python)', () => {
     python = recordingPython(() => answer);
     world = await startLoginApp(python.fetchFn);
   }
-  const reviewCalls = () => python.calls.filter((c) => c.url.endsWith('/review'));
+  const reviewCalls = () => python.calls.filter((c) => c.url.includes('/review'));
 
   describe('who the reviewer is', () => {
     it('a logged-in reviewer (cookie): {id: "user:<uuid>", name: <display_name>}', async () => {

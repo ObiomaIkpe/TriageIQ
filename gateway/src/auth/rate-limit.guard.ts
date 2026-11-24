@@ -15,6 +15,7 @@ import { IDEMPOTENCY_REDIS, type KeyValueClient } from '../idempotency/idempoten
 import { waitUntilReady } from '../idempotency/redis-ready.js';
 import { TriageQueueService } from '../queue/triage-queue.service.js';
 import { QueueUnavailableError } from '../queue/with-timeout.js';
+import { DEMO_RATE_PREFIX } from '../demo/demo.constants.js';
 import { type AuthedRequest, IS_PUBLIC } from './auth.decorators.js';
 
 /** Injection token for the window length in seconds. Only tests change it. */
@@ -65,8 +66,15 @@ export class RateLimitGuard implements CanActivate {
       return true;
     }
     const http = context.switchToHttp();
-    const principal = http.getRequest<AuthedRequest>().principal;
+    const request = http.getRequest<AuthedRequest>();
+    const principal = request.principal;
     if (!principal) return true; // the auth guard has already refused anything without a principal
+    // Everyone in the demo room is the SAME user, so a bucket per principal would be one bucket for all visitors (one noisy visitor would
+    // lock the others out). The demo principal is counted per client IP instead. (`request.ip` is the address the proxy hop reports.)
+    const bucket =
+      principal.kind === 'user' && principal.role === 'demo'
+        ? `${DEMO_RATE_PREFIX}${request.ip ?? request.socket.remoteAddress ?? 'unknown'}`
+        : principal.id; // "client:<name>" or "user:<uuid>": never shared
 
     let hit: { count: number; secondsLeft: number };
     try {
@@ -76,7 +84,7 @@ export class RateLimitGuard implements CanActivate {
         const reply = (await this.redis.eval(
           RATE_LIMIT_SCRIPT,
           1,
-          RATE_LIMIT_KEY_PREFIX + principal.id, // "client:<name>" or "user:<uuid>": never shared
+          RATE_LIMIT_KEY_PREFIX + bucket,
           String(this.windowSeconds),
         )) as [number, number];
         return { count: Number(reply[0]), secondsLeft: Number(reply[1]) };

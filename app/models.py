@@ -38,6 +38,8 @@ class TicketIn(BaseModel):
     # the graph is run with a copy of the ticket that has these removed (see app/api/triage.py).
     customer_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     customer_email: Optional[str] = Field(default=None, min_length=1, max_length=254)
+    # Set only by the gateway, for a ticket a demo visitor submitted. Saved on the row; never given to the model.
+    is_demo: bool = False
 
 
 class ClassificationResult(BaseModel):
@@ -99,6 +101,8 @@ class TicketRecord(TriageResult):
     # None for tickets saved before this existed.
     ai_usage: Optional[dict] = None
     ai_cost_usd: Optional[float] = None
+    # True for a demo ticket. Reviewer reads only: the answer to a submitter (TriageResult) does not carry it.
+    is_demo: bool = False
 
 
 class ReviewDecision(BaseModel):

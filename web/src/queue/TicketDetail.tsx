@@ -188,9 +188,11 @@ function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: Props[
             onClick={() => review.mutate({ action: 'approve', ...cleanNote })}
             className="rounded bg-accent px-3 py-1.5 font-medium text-on-accent hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
           >
-            Approve and send
+            {ticket.is_demo ? 'Approve' : 'Approve and send'}
           </button>
-          <p className="mt-2 text-muted">The draft above is emailed to the customer only after you approve it.</p>
+          <p className="mt-2 text-muted">
+            {ticket.is_demo ? 'Demo: nothing is emailed. You will see the email that would have been sent.' : 'The draft above is emailed to the customer only after you approve it.'}
+          </p>
         </section>
       ) : null}
 
@@ -261,10 +263,36 @@ function TicketView({ ticket, onReviewed }: { ticket: Ticket; onReviewed: Props[
             {ticket.reviewed_by ? `Reviewed by ${ticket.reviewed_by.name}` : 'Reviewer unknown'}
             {ticket.reviewed_at ? `, ${exactTime(ticket.reviewed_at)}` : ''}
           </p>
-          {ticket.status === 'approved' || ticket.status === 'edited' ? <DeliveryStatus ticketId={ticket.ticket_id} /> : null}
+          {ticket.is_demo && (ticket.status === 'approved' || ticket.status === 'edited') ? <DemoEmailNotice preview={ticket.email_preview ?? null} /> : null}
+          {!ticket.is_demo && (ticket.status === 'approved' || ticket.status === 'edited') ? <DeliveryStatus ticketId={ticket.ticket_id} /> : null}
         </Section>
       )}
     </article>
+  );
+}
+
+/** Demo tickets are never emailed: say so, and show the email exactly as a real send would have made it. */
+function DemoEmailNotice({ preview }: { preview: NonNullable<Ticket['email_preview']> | null }) {
+  return (
+    <div role="status" aria-live="polite" className="mt-3 rounded border border-line bg-page p-2">
+      <p className="font-medium">Demo: this reply would have been emailed to the customer</p>
+      {preview ? (
+        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+          {preview.to ? (
+            <>
+              <dt className="text-muted">To</dt>
+              <dd className="break-words">{preview.to}</dd>
+            </>
+          ) : null}
+          <dt className="text-muted">Subject</dt>
+          <dd className="break-words">{preview.subject}</dd>
+          <dt className="text-muted">Message</dt>
+          <dd>
+            <Plain text={preview.body} />
+          </dd>
+        </dl>
+      ) : null}
+    </div>
   );
 }
 

@@ -107,6 +107,8 @@ export interface TriagePayload {
   /** Public form only. Python stores them for reviewers and never gives them to the model. */
   customer_name?: string;
   customer_email?: string;
+  /** A ticket a demo visitor submitted: Python saves it as a demo ticket (hidden from real reviewers, never emailed). */
+  is_demo?: boolean;
 }
 
 /**

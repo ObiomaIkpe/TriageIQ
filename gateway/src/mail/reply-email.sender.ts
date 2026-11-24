@@ -5,6 +5,7 @@ import type { AppConfig } from '../config/env.schema.js';
 import { TriageClient } from '../triage-api/triage-client.js';
 import { RetryableTriageError } from '../worker/triage.errors.js';
 import {
+  ERR_DEMO,
   ERR_LIMIT,
   ERR_NOT_APPROVED,
   ERR_RECIPIENT,
@@ -36,6 +37,7 @@ interface TicketForSend {
   subject: string;
   final_reply: string | null;
   customer_email: string | null;
+  is_demo: boolean;
 }
 
 const utcDay = () => new Date().toISOString().slice(0, 10);
@@ -78,6 +80,9 @@ export class ReplyEmailSender {
     // 1. The ticket as it is NOW (the reviewer may have been the only one to see it, but the database is the truth).
     const ticket = await this.readTicket(ticketId);
     if (ticket === 'unreadable') return this.fail(info, row.reference, attempt, ERR_TRIAGE_DOWN, true, last);
+    // SECOND GUARD of the demo rule (the first is in the trigger): this worker asks Python for the REAL side of the wall only, so a demo
+    // ticket is not even found; and if one ever were handed over, it is refused here, never sent.
+    if (typeof ticket !== 'string' && ticket.is_demo) return this.fail(info, row.reference, attempt, ERR_DEMO, false, last);
     if (ticket === 'missing' || !['approved', 'edited'].includes(ticket.status) || (ticket.final_reply ?? '').trim() === '') {
       return this.fail(info, row.reference, attempt, ERR_NOT_APPROVED, false, last);
     }
@@ -117,7 +122,7 @@ export class ReplyEmailSender {
 
   private async readTicket(ticketId: string): Promise<TicketForSend | 'missing' | 'unreadable'> {
     try {
-      const answer = await this.triage.call({ method: 'GET', path: `/tickets/${ticketId}`, kind: 'read', route: 'reply-email GET /tickets/:id', client: 'reply-email' });
+      const answer = await this.triage.call({ method: 'GET', path: `/tickets/${ticketId}`, kind: 'read', scope: 'real', route: 'reply-email GET /tickets/:id', client: 'reply-email' });
       if (answer.status === 404) return 'missing';
       const body = answer.body as Partial<TicketForSend> | undefined;
       if (answer.status !== 200 || !body || typeof body.status !== 'string' || typeof body.subject !== 'string' || typeof body.reference !== 'string') return 'unreadable';
@@ -127,6 +132,7 @@ export class ReplyEmailSender {
         subject: body.subject,
         final_reply: typeof body.final_reply === 'string' ? body.final_reply : null,
         customer_email: typeof body.customer_email === 'string' ? body.customer_email : null,
+        is_demo: (body as { is_demo?: unknown }).is_demo === true,
       };
     } catch {
       return 'unreadable'; // the Python service could not be reached (the client already logged it)

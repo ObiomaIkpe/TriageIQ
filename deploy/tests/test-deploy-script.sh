@@ -78,6 +78,9 @@ cp "$W/env-good/"*.env "$D/env/"
 sed -i 's/^#\? *TURNSTILE_SECRET_KEY=.*/TURNSTILE_SECRET_KEY=/' "$D/env/gateway.env"
 expect_failure "form enabled but no Turnstile secret is refused" run sha-1a2b3c4
 cp "$W/env-good/"*.env "$D/env/"
+sed -i 's/^DEMO_MODE=.*/DEMO_MODE=true/' "$D/env/gateway.env"; sed -i 's/^TURNSTILE_SECRET_KEY=.*/TURNSTILE_SECRET_KEY=/; s/^PUBLIC_FORM_ENABLED=.*/PUBLIC_FORM_ENABLED=false/' "$D/env/gateway.env"
+expect_failure "demo mode without a Turnstile secret is refused" run sha-1a2b3c4
+cp "$W/env-good/"*.env "$D/env/"
 for bad in latest v1 sha-123 sha-ZZZZZZZ sha-1a2b3c4d "sha-1a2b3c4;ls"; do
   expect_failure "tag '$bad' is refused" run "$bad"
 done

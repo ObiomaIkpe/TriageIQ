@@ -199,14 +199,14 @@ describe('reply email routes (fake Python, in-memory delivery table)', () => {
     beforeEach(() => start());
     it('GET /tickets/:id still reads the ticket from Python; /delivery does not', async () => {
       await api(app, 'ops').get(`/tickets/${ID}`).expect(200);
-      expect(calls.map((c) => c.url)).toEqual([expect.stringMatching(new RegExp(`/tickets/${ID}$`))]);
+      expect(calls.map((c) => c.url)).toEqual([expect.stringMatching(new RegExp(`/tickets/${ID}(\\?scope=real)?$`))]);
       calls.length = 0;
       await api(app, 'ops').get(`/tickets/${ID}/delivery`).expect(200);
       expect(calls).toEqual([]);
     });
     it('POST /tickets/:id/review still reviews; /delivery/retry is its own route', async () => {
       await review().expect(200);
-      expect(calls.at(-1)?.url).toMatch(/\/review$/);
+      expect(calls.at(-1)?.url).toMatch(/\/review(\?scope=real)?$/);
       deliveries.rows.get(ID)!.status = 'failed';
       calls.length = 0;
       await api(app, 'ops').post(`/tickets/${ID}/delivery/retry`).expect(201);

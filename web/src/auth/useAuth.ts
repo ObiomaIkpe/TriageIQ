@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
-import { fetchMe, login, logout, type Me } from '../api/auth.js';
+import { demoLogin, fetchDemoEnabled, fetchMe, login, logout, type Me } from '../api/auth.js';
 import { ApiError, UnauthorizedError } from '../api/errors.js';
 
 export const ME_KEY = ['me'] as const;
@@ -46,3 +46,23 @@ export function useLogout() {
     },
   });
 }
+
+/** Whether the login page offers "Try it as a reviewer". Asked once; the gateway answers 404 when the demo is off. */
+export function useDemoEnabled() {
+  return useQuery({ queryKey: ['demo-enabled'], queryFn: fetchDemoEnabled, retry: false, staleTime: 5 * 60_000 });
+}
+
+export function useDemoLogin() {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  return useMutation<Me, ApiError>({
+    mutationFn: demoLogin,
+    onSuccess: (me) => {
+      queryClient.setQueryData(ME_KEY, me);
+      void navigate('/queue', { replace: true });
+    },
+  });
+}
+
+/** True when the logged-in user is the shared demo visitor. */
+export const isDemo = (me: Me | null | undefined): boolean => me?.user.role === 'demo';

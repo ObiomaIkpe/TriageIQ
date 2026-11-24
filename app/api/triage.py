@@ -89,7 +89,7 @@ def _graph_ticket(ticket: TicketIn) -> TicketIn:
     The customer's name and email are for the reviewer only: they are removed here so they can
     never reach a prompt or be stored in the graph state. The reference is bookkeeping, not content.
     """
-    return ticket.model_copy(update={"customer_name": None, "customer_email": None, "reference": None})
+    return ticket.model_copy(update={"customer_name": None, "customer_email": None, "reference": None, "is_demo": False})
 
 
 def _run_graph(ticket: TicketIn, ticket_id: str, graph) -> dict:

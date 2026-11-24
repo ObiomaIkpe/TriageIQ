@@ -42,7 +42,7 @@ export class TriageProcessor extends WorkerHost implements OnApplicationBootstra
     const attempt = job.attemptsMade + 1;
     const started = Date.now();
 
-    const { subject, body, customer_id, reference, customer_name, customer_email } = job.data;
+    const { subject, body, customer_id, reference, customer_name, customer_email, demo } = job.data;
     const outcome = await callTriage(
       this.fetchFn,
       this.config.get('TRIAGE_SERVICE_URL', { infer: true }),
@@ -56,6 +56,7 @@ export class TriageProcessor extends WorkerHost implements OnApplicationBootstra
         ...(reference === undefined ? {} : { reference }),
         ...(customer_name === undefined ? {} : { customer_name }),
         ...(customer_email === undefined ? {} : { customer_email }),
+        ...(demo === true ? { is_demo: true } : {}),
       },
       this.config.get('TRIAGE_TIMEOUT_MS', { infer: true }),
     );

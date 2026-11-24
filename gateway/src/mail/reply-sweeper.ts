@@ -72,11 +72,11 @@ export class ReplySweeper {
   private async readPage(status: string, since: string, cursor?: string): Promise<(ApprovedTicket & { created_at: string })[]> {
     const query: Record<string, string> = { status, reviewed_since: since, limit: String(PAGE) };
     if (cursor) query.cursor = cursor;
-    const answer = await this.triage.call({ method: 'GET', path: '/tickets', query, kind: 'read', route: 'reply-sweep GET /tickets', client: 'reply-sweep' });
+    const answer = await this.triage.call({ method: 'GET', path: '/tickets', query, kind: 'read', scope: 'real', route: 'reply-sweep GET /tickets', client: 'reply-sweep' });
     if (!Array.isArray(answer.body)) throw new Error('unexpected answer');
     return answer.body.filter(
       (t): t is ApprovedTicket & { created_at: string } =>
         typeof t === 'object' && t !== null && typeof t.ticket_id === 'string' && typeof t.reference === 'string' && typeof t.status === 'string' && typeof t.created_at === 'string',
-    ).map((t) => ({ ticket_id: t.ticket_id, reference: t.reference, status: t.status, customer_email: typeof t.customer_email === 'string' ? t.customer_email : null, created_at: t.created_at }));
+    ).map((t) => ({ ticket_id: t.ticket_id, reference: t.reference, status: t.status, customer_email: typeof t.customer_email === 'string' ? t.customer_email : null, is_demo: t.is_demo === true, created_at: t.created_at }));
   }
 }

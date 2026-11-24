@@ -35,6 +35,16 @@ export interface Ticket {
   /** What the model calls for this ticket used, and an ESTIMATED cost (US dollars). Missing or null on tickets from before cost tracking. */
   ai_usage?: { total_tokens?: number; estimated_cost_usd?: number | null } | null;
   ai_cost_usd?: number | null;
+  /** True for a demo ticket (the example data of "Try it as a reviewer"). Only a demo visitor ever receives one. */
+  is_demo?: boolean;
+  /** Demo tickets only, once decided: the email that WOULD have been sent (nothing ever is). Exactly the subject and text of a real send. */
+  email_preview?: EmailPreview | null;
+}
+
+export interface EmailPreview {
+  to: string | null;
+  subject: string;
+  body: string;
 }
 
 /** "AI cost (estimate): $0.0123 · 4,210 tokens", or null when the ticket has no usage recorded. */

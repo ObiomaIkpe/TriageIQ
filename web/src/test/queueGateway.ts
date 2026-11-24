@@ -47,6 +47,11 @@ export function queueGateway(initial: Ticket[]) {
     /** The email delivery of each ticket id (absent: none). A review of a ticket with an email makes it queued, like the gateway. */
     deliveries: new Map<string, Delivery>(),
   };
+  /** What the gateway adds for a DEMO visitor: the email that would have been sent, built from the decided ticket. */
+  const present = (t: Ticket): Ticket =>
+    t.is_demo && (t.status === 'approved' || t.status === 'edited') && t.final_reply
+      ? { ...t, email_preview: { to: t.customer_email, subject: `Re: ${t.subject} [${t.reference}]`, body: `${t.final_reply}\n\n--\nReference: ${t.reference}\n` } }
+      : t;
   const newestFirst = () => [...state.tickets].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.ticket_id.localeCompare(a.ticket_id));
   const counts = (): Counts => Object.fromEntries(STATUSES.map((s) => [s, state.tickets.filter((t) => t.status === s).length])) as Counts;
 
@@ -82,7 +87,8 @@ export function queueGateway(initial: Ticket[]) {
     }),
     http.get('/api/tickets/reference/:reference', ({ params }) => {
       const ticket = state.tickets.find((t) => t.reference === params.reference);
-      return ticket ? HttpResponse.json(ticket) : HttpResponse.json({ detail: 'Ticket not found' }, { status: 404 });
+      state.calls.push({ method: 'GET', path: `/tickets/reference/${String(params.reference)}`, search: '' });
+      return ticket ? HttpResponse.json(present(ticket)) : HttpResponse.json({ detail: 'Ticket not found' }, { status: 404 });
     }),
     http.post('/api/tickets/:id/review', async ({ params, request }) => {
       const body = (await request.json()) as { action: 'approve' | 'edit' | 'reject'; edited_reply?: string; note?: string };
@@ -106,7 +112,7 @@ export function queueGateway(initial: Ticket[]) {
       if (body.action !== 'reject' && ticket.customer_email) {
         state.deliveries.set(ticket.ticket_id, { status: 'queued', attempts: 0, sent_at: null, error: null });
       }
-      return HttpResponse.json(ticket);
+      return HttpResponse.json(present(ticket));
     }),
   ];
   return { state, handlers, pageSize: PAGE_SIZE };

@@ -1,6 +1,7 @@
 import { Navigate, Outlet } from 'react-router';
 import { Loading } from '../pages/Loading.js';
-import { useMe } from './useAuth.js';
+import { DemoBanner } from './DemoBanner.js';
+import { isDemo, useMe } from './useAuth.js';
 
 /** Routes inside need a session. While it is being checked nothing else is shown (no flash of the login page). */
 export function RequireAuth() {
@@ -8,7 +9,12 @@ export function RequireAuth() {
   if (me.isPending) return <Loading />;
   if (me.isError) return <FailedCheck onRetry={() => void me.refetch()} />;
   if (me.data === null) return <Navigate to="/login" replace />;
-  return <Outlet />;
+  return (
+    <>
+      {isDemo(me.data) ? <DemoBanner /> : null}
+      <Outlet />
+    </>
+  );
 }
 
 function FailedCheck({ onRetry }: { onRetry: () => void }) {

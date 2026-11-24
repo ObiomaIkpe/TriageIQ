@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { Navigate, useLocation } from 'react-router';
 import { RateLimitedError, UnauthorizedError } from '../api/errors.js';
 import { SESSION_ENDED_MESSAGE } from '../auth/SessionWatcher.js';
-import { useLogin, useMe } from '../auth/useAuth.js';
+import { useDemoEnabled, useDemoLogin, useLogin, useMe } from '../auth/useAuth.js';
 import { Loading } from './Loading.js';
 
 /** Minutes to wait, rounded UP (61 seconds is 2 minutes), at least 1. */
@@ -23,6 +23,8 @@ function messageFor(error: Error): string {
 export function LoginPage() {
   const me = useMe();
   const login = useLogin();
+  const demoEnabled = useDemoEnabled();
+  const demo = useDemoLogin();
   const location = useLocation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -32,7 +34,8 @@ export function LoginPage() {
 
   const sessionEnded = (location.state as { sessionEnded?: boolean } | null)?.sessionEnded === true;
   // The newest outcome wins: after a failed attempt its message replaces the "session ended" notice.
-  const message = login.error ? messageFor(login.error) : sessionEnded ? SESSION_ENDED_MESSAGE : '';
+  const demoMessage = demo.error ? (demo.error instanceof RateLimitedError ? 'Too many demo visits from your network. Try again later.' : 'The demo is not available right now. Please try again.') : '';
+  const message = demoMessage || (login.error ? messageFor(login.error) : sessionEnded ? SESSION_ENDED_MESSAGE : '');
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -76,7 +79,7 @@ export function LoginPage() {
         />
 
         {/* Always in the page, so a screen reader announces the text when it appears. */}
-        <p aria-live="polite" className={`mb-3 min-h-5 ${login.error ? 'text-danger' : 'text-ink'}`}>
+        <p aria-live="polite" className={`mb-3 min-h-5 ${login.error || demo.error ? 'text-danger' : 'text-ink'}`}>
           {message}
         </p>
 
@@ -87,6 +90,21 @@ export function LoginPage() {
         >
           Log in
         </button>
+
+        {/* Only when the gateway has the demo switched on (it answers 404 otherwise). Not a password login: a one-hour visit on example data. */}
+        {demoEnabled.data === true ? (
+          <div className="mt-4 border-t border-line pt-4">
+            <button
+              type="button"
+              disabled={demo.isPending || login.isPending}
+              onClick={() => demo.mutate()}
+              className="w-full rounded border border-line bg-card px-3 py-2 font-medium hover:bg-page focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
+            >
+              Try it as a reviewer (demo)
+            </button>
+            <p className="mt-2 text-muted">Explore with example tickets. No account needed. Nothing is emailed.</p>
+          </div>
+        ) : null}
       </form>
     </main>
   );

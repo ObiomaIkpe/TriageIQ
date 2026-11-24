@@ -13,7 +13,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { CurrentPrincipal } from '../auth/auth.decorators.js';
+import { CurrentPrincipal, Roles } from '../auth/auth.decorators.js';
 import type { Principal } from '../auth/principal.js';
 import { IDEMPOTENCY_HEADER, parseIdempotencyKey } from '../idempotency/idempotency-key.js';
 import { IdempotencyConflictError, IdempotencyService } from '../idempotency/idempotency.service.js';
@@ -26,6 +26,8 @@ import { parseTicket } from './ticket.schema.js';
 
 export const INTAKE_UNAVAILABLE = 'Ticket intake is temporarily unavailable; please retry';
 
+// The demo visitor (a session) must never create a REAL ticket: it submits through POST /demo/tickets, which makes demo tickets.
+@Roles('submitter', 'reviewer')
 @Controller('tickets')
 export class TicketsController {
   constructor(

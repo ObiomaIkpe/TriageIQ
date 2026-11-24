@@ -1,7 +1,7 @@
 from collections.abc import Iterator
 from datetime import datetime
 from contextlib import contextmanager
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from sqlalchemy import func, select, text, tuple_, update
@@ -34,6 +34,18 @@ TICKET_LOCK_TIMEOUT = "150s"
 # After the first attempt fails on a reference collision, try this many more times.
 MAX_REFERENCE_RETRIES = 3
 
+# Which side of the wall a read is for. "real" is every ticket that is not a demo ticket; "demo" only demo tickets.
+# None (the default of every function below) means "either": only internal code that already holds a ticket id from its
+# own trusted source (the triage endpoint answering a repeat) uses it. The HTTP read and review routes ALWAYS pass a scope.
+Scope = Literal["real", "demo"]
+
+
+def _in_scope(query, scope: Optional[Scope]):
+    if scope is None:
+        return query
+    return query.where(TicketRow.is_demo.is_(scope == "demo"))
+
+
 _STATUS_FOR_ACTION = {
     "approve": TicketStatus.approved,
     "edit": TicketStatus.edited,
@@ -64,6 +76,7 @@ def _to_row(ticket: TicketIn, result: TriageResult) -> TicketRow:
         kb_sources=[m.model_dump(mode="json") for m in result.kb_sources],
         needs_human_review=result.needs_human_review,
         review_reason=result.review_reason,
+        is_demo=ticket.is_demo,
     )
 
 
@@ -96,6 +109,7 @@ def _to_record(row: TicketRow) -> TicketRecord:
         ),
         ai_usage=row.ai_usage,
         ai_cost_usd=row.ai_cost_usd,
+        is_demo=bool(row.is_demo),
     )
 
 
@@ -191,28 +205,32 @@ def attach_usage(ticket_id: str, usage: dict) -> None:
         )
 
 
-def get_ticket(ticket_id: str) -> Optional[TicketRecord]:
+def get_ticket(ticket_id: str, scope: Optional[Scope] = None) -> Optional[TicketRecord]:
+    """One ticket, or None. A ticket outside `scope` is None too: the caller answers 404, so its existence is not revealed."""
     with get_session() as session:
-        row = session.get(TicketRow, UUID(ticket_id))
+        if scope is None:
+            row = session.get(TicketRow, UUID(ticket_id))
+        else:
+            row = session.scalars(_in_scope(select(TicketRow).where(TicketRow.id == UUID(ticket_id)), scope)).one_or_none()
         return _to_record(row) if row is not None else None
 
 
-def get_ticket_by_reference(reference: str) -> Optional[TicketRecord]:
+def get_ticket_by_reference(reference: str, scope: Optional[Scope] = None) -> Optional[TicketRecord]:
     with get_session() as session:
         row = session.scalars(
-            select(TicketRow).where(TicketRow.reference == reference)
+            _in_scope(select(TicketRow).where(TicketRow.reference == reference), scope)
         ).one_or_none()
         return _to_record(row) if row is not None else None
 
 
-def get_ticket_for_update(session: Session, ticket_id: str) -> Optional[TicketRecord]:
+def get_ticket_for_update(session: Session, ticket_id: str, scope: Optional[Scope] = None) -> Optional[TicketRecord]:
     """Read one ticket and lock its row until the session's transaction ends.
 
     A second transaction asking for the same row waits here, then sees whatever the
-    first one committed. The caller owns the transaction.
+    first one committed. The caller owns the transaction. A ticket outside `scope` is None (and is not locked).
     """
     row = session.scalars(
-        select(TicketRow).where(TicketRow.id == UUID(ticket_id)).with_for_update()
+        _in_scope(select(TicketRow).where(TicketRow.id == UUID(ticket_id)), scope).with_for_update()
     ).one_or_none()
     return _to_record(row) if row is not None else None
 
@@ -264,6 +282,7 @@ def list_tickets(
     limit: int = 50,
     before: Optional[tuple[datetime, UUID]] = None,
     reviewed_since: Optional[datetime] = None,
+    scope: Optional[Scope] = None,
 ) -> list[TicketRecord]:
     """Newest first, ties broken by id so the order is total (no ticket is skipped or repeated).
 
@@ -276,6 +295,7 @@ def list_tickets(
         .order_by(TicketRow.created_at.desc(), TicketRow.id.desc())
         .limit(limit)
     )
+    query = _in_scope(query, scope)
     if status is not None:
         query = query.where(TicketRow.status == status.value)
     if before is not None:
@@ -288,11 +308,11 @@ def list_tickets(
         return [_to_record(row) for row in session.scalars(query)]
 
 
-def count_tickets_by_status() -> dict[str, int]:
-    """How many tickets have each status, every status present (0 when none). One GROUP BY query."""
+def count_tickets_by_status(scope: Optional[Scope] = None) -> dict[str, int]:
+    """How many tickets have each status, every status present (0 when none). One GROUP BY query. Counted per scope."""
     with get_session() as session:
         rows = session.execute(
-            select(TicketRow.status, func.count()).group_by(TicketRow.status)
+            _in_scope(select(TicketRow.status, func.count()), scope).group_by(TicketRow.status)
         ).all()
     counts = {status.value: 0 for status in TicketStatus}
     for status, number in rows:

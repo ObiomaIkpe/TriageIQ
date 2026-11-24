@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { type AuthedRequest, IS_PUBLIC, ROLES_KEY } from './auth.decorators.js';
-import type { Role } from './auth.types.js';
+import type { PrincipalRole } from './auth.types.js';
 
 /**
  * Global guard, after the auth guard: a route marked @Roles(...) is only for those roles.
@@ -20,7 +20,7 @@ export class RolesGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const targets = [context.getHandler(), context.getClass()];
     if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, targets)) return true;
-    const roles = this.reflector.getAllAndOverride<Role[] | undefined>(ROLES_KEY, targets);
+    const roles = this.reflector.getAllAndOverride<PrincipalRole[] | undefined>(ROLES_KEY, targets);
     if (!roles || roles.length === 0) return true;
     const principal = context.switchToHttp().getRequest<AuthedRequest>().principal;
     if (!principal || !roles.includes(principal.role)) {

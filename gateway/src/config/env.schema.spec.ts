@@ -68,7 +68,24 @@ describe('validateEnv', () => {
       MAIL_FROM: '',
       MAIL_REPLY_TO: '',
       MAIL_MAX_PER_RECIPIENT_PER_DAY: 3,
+      DEMO_MODE: false,
+      DEMO_DAILY_CAP: 20,
+      DEMO_LOGIN_MAX_PER_IP_PER_HOUR: 30,
+      DEMO_SUBMIT_MAX_PER_IP_PER_HOUR: 5,
     });
+  });
+
+  it('DEMO_MODE needs the Turnstile secret too (visitors\' test tickets are guarded by the bot check)', () => {
+    expect(failure({ ...VALID, DEMO_MODE: 'true' }).problems).toEqual(['TURNSTILE_SECRET_KEY is missing (required when DEMO_MODE is true)']);
+    expect(validateEnv({ ...VALID, DEMO_MODE: 'true', TURNSTILE_SECRET_KEY: 'x' }).DEMO_MODE).toBe(true);
+  });
+
+  it('DEMO_MODE is off by default and takes only true or false; the demo limits are bounded', () => {
+    expect(validateEnv(VALID).DEMO_MODE).toBe(false);
+    expect(validateEnv({ ...VALID, DEMO_MODE: 'TRUE', TURNSTILE_SECRET_KEY: 'x' }).DEMO_MODE).toBe(true);
+    expect(failure({ ...VALID, DEMO_MODE: 'yes' }).message).toContain('DEMO_MODE is invalid (must be true or false)');
+    expect(failure({ ...VALID, DEMO_DAILY_CAP: '0' }).message).toContain('DEMO_DAILY_CAP is invalid');
+    expect(validateEnv({ ...VALID, DEMO_DAILY_CAP: '7' }).DEMO_DAILY_CAP).toBe(7);
   });
 
   it('accepts rediss:// and https:// URLs', () => {
@@ -167,6 +184,7 @@ describe('validateEnv', () => {
     expect(Object.keys(env).sort()).toEqual([
       'ALLOWED_ORIGINS',
       'COOKIE_SECURE',
+      'DEMO_MODE',
       'GATEWAY_CLIENTS',
       'GATEWAY_DATABASE_URL',
       'LOGIN_MAX_FAILURES_PER_EMAIL',

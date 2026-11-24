@@ -45,8 +45,17 @@ export class SessionService {
     };
   }
 
-  /** Always a NEW token (so a token an attacker planted before login is never the one that logs in). */
-  async create(userId: string): Promise<IssuedSession> {
+  /** The lifetimes that apply to one session: the configured ones, or a shorter absolute lifetime it was created with. */
+  private lifeOf(record: Pick<SessionRecord, 'absolute_seconds'>): Lifetimes {
+    const own = record.absolute_seconds;
+    return own === undefined ? this.life : { idleSeconds: this.life.idleSeconds, absoluteSeconds: Math.min(own, this.life.absoluteSeconds) };
+  }
+
+  /**
+   * Always a NEW token (so a token an attacker planted before login is never the one that logs in).
+   * `options.absoluteSeconds` gives THIS session a shorter absolute lifetime (the demo's 1 hour); it can never make it longer.
+   */
+  async create(userId: string, options: { absoluteSeconds?: number } = {}): Promise<IssuedSession> {
     const now = this.clock();
     const token = generateSessionToken();
     const hash = hashSessionToken(token);
@@ -54,13 +63,15 @@ export class SessionService {
       user_id: userId,
       created_at: new Date(now).toISOString(),
       last_seen_at: new Date(now).toISOString(),
+      ...(options.absoluteSeconds === undefined ? {} : { absolute_seconds: options.absoluteSeconds }),
     };
-    await this.store.create(hash, record, sessionTtlSeconds(now, now, this.life), this.life.absoluteSeconds);
+    const life = this.lifeOf(record);
+    await this.store.create(hash, record, sessionTtlSeconds(now, now, life), life.absoluteSeconds);
     return {
       token,
       hash,
-      expiresAt: new Date(expiresAtMs(now, now, this.life)),
-      maxAgeSeconds: this.life.absoluteSeconds,
+      expiresAt: new Date(expiresAtMs(now, now, life)),
+      maxAgeSeconds: life.absoluteSeconds,
     };
   }
 
@@ -75,9 +86,10 @@ export class SessionService {
     if (!record) return undefined;
 
     const now = this.clock();
+    const life = this.lifeOf(record);
     const createdAt = Date.parse(record.created_at);
     const lastSeen = Date.parse(record.last_seen_at);
-    if (Number.isNaN(createdAt) || Number.isNaN(lastSeen) || isPastAbsoluteLifetime(createdAt, now, this.life)) {
+    if (Number.isNaN(createdAt) || Number.isNaN(lastSeen) || isPastAbsoluteLifetime(createdAt, now, life)) {
       await this.store.delete(hash);
       return undefined;
     }
@@ -85,10 +97,10 @@ export class SessionService {
     let seen = lastSeen;
     if (isSlideDue(lastSeen, now)) {
       const slid: SessionRecord = { ...record, last_seen_at: new Date(now).toISOString() };
-      if (!(await this.store.touch(hash, slid, sessionTtlSeconds(createdAt, now, this.life)))) return undefined;
+      if (!(await this.store.touch(hash, slid, sessionTtlSeconds(createdAt, now, life)))) return undefined;
       seen = now;
     }
-    return { hash, record, expiresAt: new Date(expiresAtMs(createdAt, seen, this.life)) };
+    return { hash, record, expiresAt: new Date(expiresAtMs(createdAt, seen, life)) };
   }
 
   /** Ends the session for a token, if there is one. */

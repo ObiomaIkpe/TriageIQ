@@ -4,7 +4,7 @@ import { UnrecoverableError } from 'bullmq';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeMailer, MemoryDeliveries, MemoryRecipientCounter } from '../../test/mail-fakes.js';
 import { RetryableTriageError } from '../worker/triage.errors.js';
-import { ERR_BUSY, ERR_LIMIT, ERR_NOT_APPROVED, ERR_REFUSED, ERR_TRIAGE_DOWN, ERR_UNREACHABLE } from './mail.constants.js';
+import { ERR_BUSY, ERR_DEMO, ERR_LIMIT, ERR_NOT_APPROVED, ERR_REFUSED, ERR_TRIAGE_DOWN, ERR_UNREACHABLE } from './mail.constants.js';
 import { MailError } from './mailer.js';
 import { recipientKey } from './recipient-counter.js';
 import { ReplyEmailSender } from './reply-email.sender.js';
@@ -49,6 +49,21 @@ describe('ReplyEmailSender', () => {
     expect(t.mailer.sent).toEqual([{ to: ADDRESS, subject: `Re: ${SUBJECT} [TKT-ABC234]`, text: `${REPLY}\n\n--\nReference: TKT-ABC234\n`, messageId: `<${ID}@triageiq>` }]);
     expect(row(t)).toMatchObject({ status: 'sent', attempts: 1, last_error: null });
     expect(row(t).sent_at).toBeInstanceOf(Date);
+  });
+
+  it('SECOND GUARD: a demo ticket that somehow reached the worker is refused and never sent (the delivery is failed for good)', async () => {
+    const t = setup({ ticket: { is_demo: true } });
+    await expect(t.sender.send(attempt())).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(t.mailer.sent).toEqual([]);
+    expect(row(t)).toMatchObject({ status: 'failed', last_error: ERR_DEMO });
+  });
+
+  it('the worker reads the ticket from the REAL side of the wall only', async () => {
+    const calls: unknown[] = [];
+    const t = setup();
+    const sender = new ReplyEmailSender(new ConfigService({ MAIL_MAX_PER_RECIPIENT_PER_DAY: 3 }) as never, t.deliveries as never, { call: async (c: unknown) => (calls.push(c), { status: 404, body: {} }) } as never, t.mailer, t.counter);
+    await expect(sender.send(attempt())).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(calls).toEqual([expect.objectContaining({ scope: 'real', client: 'reply-email' })]);
   });
 
   it('an edited ticket is sent as well', async () => {
