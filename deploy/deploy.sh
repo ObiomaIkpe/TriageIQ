@@ -95,6 +95,9 @@ validate_env() {
   if [ -f "$ENV_DIR/gateway.env" ] && [ "$(get "$ENV_DIR/gateway.env" PUBLIC_FORM_ENABLED)" = true ] && [ -z "$(get "$ENV_DIR/gateway.env" TURNSTILE_SECRET_KEY)" ]; then
     echo "  empty or missing in gateway.env: TURNSTILE_SECRET_KEY (PUBLIC_FORM_ENABLED is true)" >&2; problems=$((problems + 1))
   fi
+  if [ -f "$ENV_DIR/gateway.env" ] && [ "$(get "$ENV_DIR/gateway.env" DEMO_MODE)" = true ] && [ -z "$(get "$ENV_DIR/gateway.env" TURNSTILE_SECRET_KEY)" ]; then
+    echo "  empty or missing in gateway.env: TURNSTILE_SECRET_KEY (DEMO_MODE is true: visitors' test tickets need the bot check)" >&2; problems=$((problems + 1))
+  fi
   # The two copies of the review key must agree, and the database URLs must carry the db.env passwords.
   if [ -f "$ENV_DIR/app.env" ] && [ -f "$ENV_DIR/gateway.env" ] && [ "$(get "$ENV_DIR/app.env" REVIEW_API_KEY)" != "$(get "$ENV_DIR/gateway.env" TRIAGE_REVIEW_API_KEY)" ]; then
     echo "  REVIEW_API_KEY (app.env) and TRIAGE_REVIEW_API_KEY (gateway.env) differ" >&2; problems=$((problems + 1))

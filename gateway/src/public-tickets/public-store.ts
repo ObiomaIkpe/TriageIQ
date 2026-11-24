@@ -45,9 +45,10 @@ return 1
 
 /** Where the public form's counters live. Redis in production; tests use an in-memory one. */
 export interface PublicStore {
-  hitIp(ip: string, windowSeconds: number): Promise<{ count: number; ttlSeconds: number }>;
-  reserveCap(day: string, cap: number): Promise<{ reserved: boolean; count: number }>;
-  releaseCap(day: string): Promise<void>;
+  /** `prefix` picks the counter family: the public form's by default; the demo room passes its own, so the two never share a counter. */
+  hitIp(ip: string, windowSeconds: number, prefix?: string): Promise<{ count: number; ttlSeconds: number }>;
+  reserveCap(day: string, cap: number, prefix?: string): Promise<{ reserved: boolean; count: number }>;
+  releaseCap(day: string, prefix?: string): Promise<void>;
 }
 
 @Injectable()
@@ -65,21 +66,21 @@ export class RedisPublicStore implements PublicStore {
     });
   }
 
-  async hitIp(ip: string, windowSeconds: number) {
+  async hitIp(ip: string, windowSeconds: number, prefix: string = PUBLIC_IP_PREFIX) {
     const reply = (await this.run(() =>
-      this.redis.eval(IP_HIT_SCRIPT, 1, PUBLIC_IP_PREFIX + ip, String(windowSeconds)),
+      this.redis.eval(IP_HIT_SCRIPT, 1, prefix + ip, String(windowSeconds)),
     )) as number[];
     return { count: Number(reply[0]), ttlSeconds: Number(reply[1]) };
   }
 
-  async reserveCap(day: string, cap: number) {
+  async reserveCap(day: string, cap: number, prefix: string = PUBLIC_CAP_PREFIX) {
     const reply = (await this.run(() =>
-      this.redis.eval(CAP_RESERVE_SCRIPT, 1, PUBLIC_CAP_PREFIX + day, String(cap), String(CAP_TTL_SECONDS)),
+      this.redis.eval(CAP_RESERVE_SCRIPT, 1, prefix + day, String(cap), String(CAP_TTL_SECONDS)),
     )) as number[];
     return { reserved: Number(reply[0]) === 1, count: Number(reply[1]) };
   }
 
-  async releaseCap(day: string) {
-    await this.run(() => this.redis.eval(CAP_RELEASE_SCRIPT, 1, PUBLIC_CAP_PREFIX + day));
+  async releaseCap(day: string, prefix: string = PUBLIC_CAP_PREFIX) {
+    await this.run(() => this.redis.eval(CAP_RELEASE_SCRIPT, 1, prefix + day));
   }
 }

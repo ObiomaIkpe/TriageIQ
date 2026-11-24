@@ -27,7 +27,8 @@ export interface UserPrincipal {
   userId: string;
   email: string;
   displayName: string;
-  role: 'reviewer';
+  /** 'demo' only for the shared demo user. */
+  role: 'reviewer' | 'demo';
   /** The session this request used (its token hash). Never the token. */
   sessionHash: string;
   expiresAt: Date;
@@ -40,7 +41,7 @@ export function clientPrincipal(name: string, role: Role): ClientPrincipal {
 }
 
 export function userPrincipal(
-  user: { id: string; email: string; displayName: string },
+  user: { id: string; email: string; displayName: string; role?: 'reviewer' | 'demo' },
   session: { hash: string; expiresAt: Date },
 ): UserPrincipal {
   return {
@@ -51,7 +52,7 @@ export function userPrincipal(
     userId: user.id,
     email: user.email,
     displayName: user.displayName,
-    role: 'reviewer',
+    role: user.role ?? 'reviewer',
     sessionHash: session.hash,
     expiresAt: session.expiresAt,
   };
@@ -75,3 +76,11 @@ export function reviewerFor(principal: Principal): ReviewerIdentity {
     ? { id: principal.id, name: principal.displayName }
     : { id: principal.id, name: principal.name };
 }
+
+/**
+ * Which side of the real/demo wall a principal is on, sent to the Python service with every ticket read and review. It comes ONLY
+ * from the authenticated principal: the demo user (a session) is "demo"; every other principal, users and API clients alike, is "real".
+ */
+export type TicketScope = 'real' | 'demo';
+export const scopeFor = (principal: Principal): TicketScope =>
+  principal.kind === 'user' && principal.role === 'demo' ? 'demo' : 'real';

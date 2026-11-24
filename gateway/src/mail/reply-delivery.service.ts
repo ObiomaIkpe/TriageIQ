@@ -13,6 +13,8 @@ export interface ApprovedTicket {
   reference: string;
   status: string;
   customer_email: string | null;
+  /** True for a DEMO ticket. Such a ticket is never emailed: onApproved refuses it. */
+  is_demo?: boolean;
 }
 
 export type TriggerResult = 'disabled' | 'ignored' | 'skipped_no_email' | 'queued' | 'exists';
@@ -58,6 +60,8 @@ export class ReplyDeliveryService {
    * route catches that and logs it (the review itself stays successful), and the sweep repairs it.
    */
   async onApproved(ticket: ApprovedTicket): Promise<TriggerResult> {
+    // THE DEMO RULE, first and before everything (even before the MAIL_ENABLED check): a demo ticket gets no delivery row and no job, ever.
+    if (ticket.is_demo === true) return 'ignored';
     if (!this.enabled) return 'disabled';
     if (!SENDABLE.has(ticket.status)) return 'ignored';
 

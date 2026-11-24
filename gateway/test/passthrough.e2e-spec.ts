@@ -73,13 +73,13 @@ describe('reviewer routes forwarded to Python (fake Python server)', () => {
       expect(response.body).toEqual([RECORD]);
       expect(seen).toHaveLength(1);
       expect(seen[0].method).toBe('GET');
-      expect(seen[0].url).toBe('/tickets?status=pending_review&limit=5'); // evil and offset dropped
+      expect(seen[0].url).toBe('/tickets?status=pending_review&limit=5&scope=real'); // evil and offset dropped
     });
 
     it('GET /tickets forwards a keyset cursor (and encodes it)', async () => {
       const cursor = `2026-11-23T10:00:00.123456+00:00|${ID}`;
       await api(app, 'ops').get('/tickets').query({ status: 'pending_review', limit: 20, cursor }).expect(200);
-      expect(seen[0].url).toBe(`/tickets?status=pending_review&limit=20&cursor=${encodeURIComponent(cursor)}`);
+      expect(seen[0].url).toBe(`/tickets?status=pending_review&limit=20&cursor=${encodeURIComponent(cursor)}&scope=real`);
     });
 
     it('GET /tickets/counts reaches the COUNTS route (not /tickets/:id) and returns the counts', async () => {
@@ -87,7 +87,7 @@ describe('reviewer routes forwarded to Python (fake Python server)', () => {
       answer = { status: 200, body: counts };
       const response = await api(app, 'ops').get('/tickets/counts').expect(200);
       expect(response.body).toEqual(counts);
-      expect(seen.map((s) => s.url)).toEqual(['/tickets/counts']);
+      expect(seen.map((s) => s.url)).toEqual(['/tickets/counts?scope=real']);
     });
 
     it('a submitter cannot read the counts (403) and Python is not contacted', async () => {
@@ -105,20 +105,20 @@ describe('reviewer routes forwarded to Python (fake Python server)', () => {
 
     it('GET /tickets with no parameters sends none', async () => {
       await api(app, 'ops').get('/tickets').expect(200);
-      expect(seen[0].url).toBe('/tickets');
+      expect(seen[0].url).toBe('/tickets?scope=real');
     });
 
     it('GET /tickets/:id -> Python GET /tickets/{id}', async () => {
       answer = { status: 200, body: RECORD };
       const response = await api(app, 'ops').get(`/tickets/${ID}`).expect(200);
       expect(response.body).toEqual(RECORD);
-      expect(seen.map((s) => s.url)).toEqual([`/tickets/${ID}`]);
+      expect(seen.map((s) => s.url)).toEqual([`/tickets/${ID}?scope=real`]);
     });
 
     it('GET /tickets/reference/TKT-AAAAAA reaches the REFERENCE route (not /tickets/:id)', async () => {
       answer = { status: 200, body: RECORD };
       await api(app, 'ops').get(`/tickets/reference/${REF}`).expect(200);
-      expect(seen.map((s) => s.url)).toEqual([`/tickets/reference/${REF}`]);
+      expect(seen.map((s) => s.url)).toEqual([`/tickets/reference/${REF}?scope=real`]);
     });
 
     it('POST /tickets/:id/review -> Python POST /tickets/{id}/review with the validated decision', async () => {
@@ -129,7 +129,7 @@ describe('reviewer routes forwarded to Python (fake Python server)', () => {
         .expect(200);
       expect(response.body.status).toBe('edited');
       expect(seen[0].method).toBe('POST');
-      expect(seen[0].url).toBe(`/tickets/${ID}/review`);
+      expect(seen[0].url).toBe(`/tickets/${ID}/review?scope=real`);
       expect(seen[0].headers['content-type']).toBe('application/json');
       // the client's validated decision, plus WHO is reviewing, taken from the authenticated key (client "ops")
       expect(JSON.parse(seen[0].body)).toEqual({

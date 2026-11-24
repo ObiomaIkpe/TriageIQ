@@ -107,7 +107,7 @@ def test_an_invalid_body_is_422_and_nothing_is_touched(key_set, monkeypatch, bod
 def test_a_ticket_is_found_by_reference(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        review_api, "get_ticket_by_reference", lambda ref: seen.append(ref) or record()
+        review_api, "get_ticket_by_reference", lambda ref, scope=None: seen.append(ref) or record()
     )
 
     response = client.get("/tickets/reference/TKT-ABC234")
@@ -118,7 +118,7 @@ def test_a_ticket_is_found_by_reference(monkeypatch):
 
 
 def test_an_unknown_reference_is_404(monkeypatch):
-    monkeypatch.setattr(review_api, "get_ticket_by_reference", lambda ref: None)
+    monkeypatch.setattr(review_api, "get_ticket_by_reference", lambda ref, scope=None: None)
 
     response = client.get("/tickets/reference/TKT-NOPE22")
 
@@ -128,7 +128,7 @@ def test_an_unknown_reference_is_404(monkeypatch):
 
 def test_the_reference_route_is_not_captured_by_the_ticket_id_route(monkeypatch):
     # If /tickets/{ticket_id} captured it, "reference" would fail UUID parsing (422).
-    monkeypatch.setattr(review_api, "get_ticket_by_reference", lambda ref: None)
+    monkeypatch.setattr(review_api, "get_ticket_by_reference", lambda ref, scope=None: None)
 
     assert client.get("/tickets/reference/anything").status_code == 404
 

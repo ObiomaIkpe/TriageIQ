@@ -45,6 +45,18 @@ describe('TriageProcessor.process', () => {
     expect(JSON.parse(init.body as string)).toEqual({ subject: SUBJECT, body: BODY, customer_id: 'c1' });
   });
 
+  it('a job a demo visitor submitted tells Python is_demo; an ordinary job never does', async () => {
+    const demoFetch = reply(200, '{}');
+    const demoJob = { id: 'job-1', data: { ...DATA, demo: true, customer_name: 'Demo Visitor', customer_email: 'visitor@example.com' }, attemptsMade: 0, opts: { attempts: 5 } } as unknown as Job<TicketJobData>;
+    await new TriageProcessor(config, demoFetch).process(demoJob);
+    const sent = JSON.parse(((demoFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(sent).toMatchObject({ is_demo: true, customer_name: 'Demo Visitor' });
+
+    const plain = reply(200, '{}');
+    await new TriageProcessor(config, plain).process(job());
+    expect(JSON.parse(((plain as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit])[1].body as string)).not.toHaveProperty('is_demo');
+  });
+
   it('503 with Retry-After -> throws a retryable error that carries the seconds', async () => {
     const processor = new TriageProcessor(config, reply(503, '{}', { 'Retry-After': '30' }));
     const error = await processor.process(job()).catch((e: unknown) => e);

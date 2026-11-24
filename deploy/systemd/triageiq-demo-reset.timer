@@ -1,0 +1,11 @@
+[Unit]
+Description=Reset the TriageIQ demo every night at 04:00 (server time), after the 03:30 backup
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+# If the server was off at 04:00, run once when it is back.
+Persistent=true
+Unit=triageiq-demo-reset.service
+
+[Install]
+WantedBy=timers.target

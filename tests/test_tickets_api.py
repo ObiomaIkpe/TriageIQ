@@ -50,7 +50,7 @@ def make_record(**overrides) -> TicketRecord:
 def test_get_ticket_returns_the_record(monkeypatch):
     seen = []
 
-    def fake_get(ticket_id):
+    def fake_get(ticket_id, scope=None):
         seen.append(ticket_id)
         return make_record()
 
@@ -71,7 +71,7 @@ def test_get_ticket_returns_the_record(monkeypatch):
 
 
 def test_get_ticket_returns_404_when_the_store_has_none(monkeypatch):
-    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id: None)
+    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id, scope=None: None)
 
     response = client.get(f"/tickets/{TICKET_ID}")
 
@@ -81,7 +81,7 @@ def test_get_ticket_returns_404_when_the_store_has_none(monkeypatch):
 
 def test_get_ticket_rejects_a_non_uuid_id_without_calling_the_store(monkeypatch):
     calls = []
-    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id: calls.append(ticket_id))
+    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id, scope=None: calls.append(ticket_id))
 
     response = client.get("/tickets/not-a-uuid")
 
@@ -90,7 +90,7 @@ def test_get_ticket_rejects_a_non_uuid_id_without_calling_the_store(monkeypatch)
 
 
 def test_get_ticket_returns_503_when_the_database_is_down(monkeypatch):
-    def down(ticket_id):
+    def down(ticket_id, scope=None):
         raise sqlalchemy.exc.OperationalError(
             "SELECT ...", {}, psycopg.OperationalError("connection refused")
         )
@@ -110,7 +110,7 @@ def test_get_ticket_returns_503_when_the_database_is_down(monkeypatch):
 def test_list_tickets_passes_defaults_to_the_store(monkeypatch):
     seen = []
 
-    def fake_list(status, limit):
+    def fake_list(status, limit, scope=None):
         seen.append((status, limit))
         return [make_record()]
 
@@ -126,7 +126,7 @@ def test_list_tickets_passes_defaults_to_the_store(monkeypatch):
 def test_list_tickets_passes_status_and_limit_to_the_store(monkeypatch):
     seen = []
 
-    def fake_list(status, limit):
+    def fake_list(status, limit, scope=None):
         seen.append((status, limit))
         return []
 
@@ -149,7 +149,7 @@ def test_list_tickets_rejects_invalid_parameters_without_calling_the_store(
 ):
     calls = []
     monkeypatch.setattr(
-        tickets_api, "list_tickets", lambda status, limit: calls.append((status, limit))
+        tickets_api, "list_tickets", lambda status, limit, scope=None: calls.append((status, limit))
     )
 
     response = client.get("/tickets", params=params)
@@ -160,7 +160,7 @@ def test_list_tickets_rejects_invalid_parameters_without_calling_the_store(
 
 @pytest.mark.parametrize("limit", [1, 200])
 def test_list_tickets_accepts_the_limit_boundaries(monkeypatch, limit):
-    monkeypatch.setattr(tickets_api, "list_tickets", lambda status, limit: [])
+    monkeypatch.setattr(tickets_api, "list_tickets", lambda status, limit, scope=None: [])
 
     response = client.get("/tickets", params={"limit": limit})
 
@@ -179,7 +179,7 @@ def test_get_ticket_returns_the_reference_and_the_review_fields(monkeypatch):
         review_note="Tone fixed.",
         reviewed_at=REVIEWED_AT,
     )
-    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id: record)
+    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id, scope=None: record)
 
     body = client.get(f"/tickets/{TICKET_ID}").json()
 
@@ -191,7 +191,7 @@ def test_get_ticket_returns_the_reference_and_the_review_fields(monkeypatch):
 
 
 def test_an_unreviewed_ticket_has_null_review_fields(monkeypatch):
-    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id: make_record())
+    monkeypatch.setattr(tickets_api, "get_ticket", lambda ticket_id, scope=None: make_record())
 
     body = client.get(f"/tickets/{TICKET_ID}").json()
 
@@ -204,7 +204,7 @@ def test_an_unreviewed_ticket_has_null_review_fields(monkeypatch):
 def test_list_tickets_accepts_the_review_statuses(monkeypatch, status):
     seen = []
     monkeypatch.setattr(
-        tickets_api, "list_tickets", lambda status, limit: seen.append(status) or []
+        tickets_api, "list_tickets", lambda status, limit, scope=None: seen.append(status) or []
     )
 
     response = client.get("/tickets", params={"status": status})

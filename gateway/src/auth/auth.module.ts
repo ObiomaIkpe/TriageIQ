@@ -11,6 +11,7 @@ import { AuthController } from './auth.controller.js';
 import { COUNTER_STORE, LoginLimiter, RedisCounterStore } from './login-limiter.js';
 import { LoginService } from './login.service.js';
 import { OriginGuard } from './origin.guard.js';
+import { DemoOnlyGuard } from '../demo/demo-only.js';
 import { AuthGuard } from './auth.guard.js';
 import {
   DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
@@ -37,9 +38,12 @@ import { RolesGuard } from './roles.guard.js';
     LoginService,
     OriginGuard,
     { provide: RATE_LIMIT_WINDOW_SECONDS, useValue: DEFAULT_RATE_LIMIT_WINDOW_SECONDS },
+    // First: a demo route is a 404 for everyone when DEMO_MODE is off, before anyone is asked to log in.
+    { provide: APP_GUARD, useClass: DemoOnlyGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
+  exports: [SessionService],
 })
 export class AuthModule {}

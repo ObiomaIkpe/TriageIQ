@@ -220,6 +220,12 @@ Baseline already in place:
 - [ ] **M6c-1. Go live on the VPS** (prepared, not yet run). Everything is in `deploy/`: `server/setup.sh`, the shared edge Caddy (`deploy/edge/`), `deploy.sh <TAG>` with `--rollback`, and `FIRST_DEPLOY.md`, tested on the laptop (the whole shape, `deploy/local-test.sh check`). Email stays off; `PUBLIC_DAILY_CAP=30`. **Done when** the nine checks at the end of `FIRST_DEPLOY.md` pass on the server (HTTPS in a browser, `/api/ready`, a form ticket, login, the ticket in the queue, a backup, only the edge publishing ports).
 - [ ] **M6c-2 (next): real email.** A mail provider, SPF/DKIM/DMARC for the sending domain, `MAIL_ENABLED=true` with a real `SMTP_*` (never Mailpit: the guard refuses it), the customer-address question, then raise `PUBLIC_DAILY_CAP` once the real cost per ticket is known. Then the rest of the production checklist below.
 
+### After M6
+
+- [x] **Demo mode.** "Try it as a reviewer" with example tickets, a server-side wall between demo and real data, no email ever for a demo ticket, visitors' own test tickets under their own cap, and a nightly reset (see README, "Demo mode").
+- [ ] **M7: knowledge-base management.** Real reviewers edit the shared knowledge base (create, edit and retire articles; re-embedding on save; a record of who changed what). Demo visitors get a private **sandbox** copy that is deleted after 24 hours, so they can try editing without touching the real articles.
+- [ ] **M8: an admin role and reviewer invites.** An admin page (list, disable and enable reviewers, reset a password without the CLI) and **invites**: the admin enters an email, the invitee gets an email with an expiring set-password link, and the account is created when they use it. Replaces the `reviewers` CLI as the normal way to add people.
+
 ### M6 production checklist (things the web UI needs when it is deployed)
 
 - **Content-Security-Policy must allow Cloudflare Turnstile** (done in the M6b web image: `script-src` and `frame-src` allow `https://challenges.cloudflare.com` and nothing inline; verified in Chrome with Cloudflare's test key, no violation): `script-src https://challenges.cloudflare.com` and `frame-src https://challenges.cloudflare.com` (the widget is an iframe; also `connect-src` if the browser console shows blocked calls). Without it the public form shows "Verification couldn't load" and cannot be sent.

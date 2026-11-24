@@ -51,6 +51,17 @@ describe('the trigger: ReplyDeliveryService.onApproved', () => {
     expect(t.queue.adds).toHaveLength(1);
   });
 
+  it.each(['approved', 'edited'])('A DEMO %s ticket is never emailed: no row, no job, even with an address and with mail on', async (status) => {
+    expect(await t.service.onApproved(ticket({ status, is_demo: true }))).toBe('ignored');
+    expect(t.deliveries.rows.size).toBe(0);
+    expect(t.queue.adds).toEqual([]);
+  });
+
+  it('a demo ticket is refused before the mail switch is even looked at', async () => {
+    const off = setup(false);
+    expect(await off.service.onApproved(ticket({ is_demo: true }))).toBe('ignored'); // not "disabled": the demo rule comes first
+  });
+
   it('with mail switched off nothing is recorded or queued', async () => {
     const off = setup(false);
     expect(await off.service.onApproved(ticket())).toBe('disabled');

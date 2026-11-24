@@ -119,13 +119,13 @@ export class MemoryUsers {
 
   constructor(private readonly clock: FakeClock) {}
 
-  add(input: { email: string; passwordHash: string; displayName?: string; disabled?: boolean; passwordChangedAt?: Date }): UserWithHash {
+  add(input: { email: string; passwordHash: string; displayName?: string; disabled?: boolean; passwordChangedAt?: Date; role?: 'reviewer' | 'demo' }): UserWithHash {
     const now = new Date(this.clock.now);
     const user: UserWithHash = {
       id: `00000000-0000-4000-8000-${String(this.nextId++).padStart(12, '0')}`,
       email: input.email.toLowerCase(),
       displayName: input.displayName ?? 'Ada Lovelace',
-      role: 'reviewer',
+      role: input.role ?? 'reviewer',
       disabledAt: input.disabled ? now : null,
       passwordChangedAt: input.passwordChangedAt ?? new Date(this.clock.now - 60_000),
       createdAt: now,
@@ -139,6 +139,14 @@ export class MemoryUsers {
   async findByEmail(email: string) {
     this.lookups.byEmail += 1;
     return [...this.rows.values()].find((u) => u.email === email.trim().toLowerCase());
+  }
+
+  /** The same rule as the SQL: one demo user, never changed once it exists. */
+  async ensureDemoUser(email: string, displayName: string, passwordHash: string): Promise<User> {
+    const existing = [...this.rows.values()].find((u) => u.role === 'demo');
+    const row = existing ?? this.add({ email, displayName, passwordHash, role: 'demo' });
+    const { passwordHash: _hash, ...user } = row;
+    return user;
   }
 
   async findById(id: string): Promise<User | undefined> {
@@ -175,38 +183,44 @@ export class MemoryUsers {
 export class MemoryPublicStore {
   ips = new Map<string, { count: number; expiresAt: number }>();
   caps = new Map<string, number>();
+  /** The key prefixes the callers used (the demo room passes its own, so its counters are separate from the public form's). */
+  prefixes = new Set<string>();
   /** Make the next call of this kind fail, like Redis trouble. */
   failing: 'none' | 'ip' | 'cap' | 'release' = 'none';
   calls: string[] = [];
   constructor(private readonly clock: FakeClock) {}
 
-  async hitIp(ip: string, windowSeconds: number) {
+  async hitIp(ip: string, windowSeconds: number, prefix = '') {
     this.calls.push('hitIp');
+    this.prefixes.add(prefix);
     if (this.failing === 'ip') throw new Error('redis down');
-    let entry = this.ips.get(ip);
+    const key = prefix + ip;
+    let entry = this.ips.get(key);
     if (!entry || entry.expiresAt <= this.clock.now) entry = { count: 0, expiresAt: this.clock.now + windowSeconds * 1000 };
     entry.count += 1;
-    this.ips.set(ip, entry);
+    this.ips.set(key, entry);
     return { count: entry.count, ttlSeconds: Math.ceil((entry.expiresAt - this.clock.now) / 1000) };
   }
 
-  async reserveCap(day: string, cap: number) {
+  async reserveCap(day: string, cap: number, prefix = '') {
     this.calls.push('reserveCap');
     if (this.failing === 'cap') throw new Error('redis down');
-    const count = (this.caps.get(day) ?? 0) + 1;
+    const key = prefix + day;
+    const count = (this.caps.get(key) ?? 0) + 1;
     if (count > cap) return { reserved: false, count: count - 1 };
-    this.caps.set(day, count);
+    this.caps.set(key, count);
     return { reserved: true, count };
   }
 
-  async releaseCap(day: string) {
+  async releaseCap(day: string, prefix = '') {
     this.calls.push('releaseCap');
     if (this.failing === 'release') throw new Error('redis down');
-    const count = this.caps.get(day) ?? 0;
-    if (count > 0) this.caps.set(day, count - 1);
+    const key = prefix + day;
+    const count = this.caps.get(key) ?? 0;
+    if (count > 0) this.caps.set(key, count - 1);
   }
 
-  capUsed(day: string) {
-    return this.caps.get(day) ?? 0;
+  capUsed(day: string, prefix = '') {
+    return this.caps.get(prefix + day) ?? 0;
   }
 }

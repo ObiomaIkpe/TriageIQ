@@ -2,7 +2,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { fetchTickets, type Ticket } from '../api/tickets.js';
-import { useLogout, useMe } from '../auth/useAuth.js';
+import { isDemo, useLogout, useMe } from '../auth/useAuth.js';
+import { DemoSubmitBox } from '../queue/DemoSubmitBox.js';
 import { TicketDetail } from '../queue/TicketDetail.js';
 import { TicketList } from '../queue/TicketList.js';
 import { STATUS_LABEL, TABS, tabFor } from '../queue/tabs.js';
@@ -64,6 +65,15 @@ export function QueuePage() {
         <p role="alert" className="min-h-5 text-danger">
           {logout.isError ? 'Could not log out. Please try again.' : ''}
         </p>
+        {/* Only for the demo visitor: a real reviewer never sees this box. */}
+        {isDemo(me.data) ? (
+          <DemoSubmitBox
+            onSent={(sentReference) => {
+              setMessage(`Submitted ${sentReference}. The AI is working on it: it will appear in Pending (or Auto-handled) within a minute or two. Visible to other demo visitors until the nightly reset.`);
+              void queryClient.invalidateQueries({ queryKey: keys.all });
+            }}
+          />
+        ) : null}
         {/* Confirmations and status changes, announced by screen readers too. */}
         <p role="status" aria-live="polite" className="mb-2 min-h-5 font-medium">
           {message}

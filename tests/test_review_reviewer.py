@@ -68,7 +68,7 @@ def wired(monkeypatch):
         )
 
     monkeypatch.setattr(review_api, "get_session", fake_session)
-    monkeypatch.setattr(review_api, "get_ticket_for_update", lambda session, ticket_id: _record())
+    monkeypatch.setattr(review_api, "get_ticket_for_update", lambda session, ticket_id, scope=None: _record())
     monkeypatch.setattr(
         review_api,
         "resume_review",
@@ -207,8 +207,8 @@ def test_the_endpoint_comment_explains_why_the_reviewer_is_trusted():
 
 def test_a_ticket_read_shows_reviewed_by_or_null(monkeypatch):
     reviewed = _record(TicketStatus.edited, ReviewedBy(id="client:ops", name="ops"))
-    monkeypatch.setattr(review_api, "get_ticket_by_reference", lambda ref: reviewed)
+    monkeypatch.setattr(review_api, "get_ticket_by_reference", lambda ref, scope=None: reviewed)
     assert client.get("/tickets/reference/TKT-ABC234").json()["reviewed_by"] == {"id": "client:ops", "name": "ops"}
 
-    monkeypatch.setattr(review_api, "get_ticket_by_reference", lambda ref: _record())
+    monkeypatch.setattr(review_api, "get_ticket_by_reference", lambda ref, scope=None: _record())
     assert client.get("/tickets/reference/TKT-ABC234").json()["reviewed_by"] is None

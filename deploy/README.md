@@ -12,7 +12,8 @@ deploy/
   env/*.env.example              the settings, one file per service (copy to env/*.env, which git ignores)
   make-secrets.sh                fills fresh random passwords and keys, never printing them
   backup.sh  restore.sh          nightly dump of both databases, and restoring one of them
-  systemd/                       the nightly timer
+  systemd/                       the nightly timers (backup 03:30, demo reset 04:00)
+  demo-reset.sh                  the nightly demo reset (see "Demo mode")
   db/                            the database init scripts (a copy of ../db; deploy/sync-db-sql.sh keeps it in step)
   edge/                          the SHARED Caddy stack (HTTPS for every app on the server) and one site file per app
   server/setup.sh                one-time server preparation (Docker, swap, updates, the edge network); run with sudo
@@ -110,6 +111,47 @@ The gateway database restores the same way (`gateway.dump`; only `triageiq-gatew
 | **API client keys** | Create a new one with `make-client-key.ts`, add its entry to `GATEWAY_CLIENTS`, give the key to the client, remove the old entry, `up -d --force-recreate triageiq-gateway`. |
 | **Anthropic / Voyage / Turnstile secret** | Make the new one at the provider, edit the file, `up -d --force-recreate app` (or `triageiq-gateway`), then revoke the old one at the provider. |
 | **A reviewer's password** | `docker compose -f docker-compose.prod.yml exec -it triageiq-gateway node dist/scripts/reviewers.js set-password --email you@example.com` (ends their sessions). |
+
+## Demo mode ("Try it as a reviewer")
+
+A visitor (a recruiter, a curious reader) clicks **Try it as a reviewer (demo)** on the login page and gets the full review screen on **example tickets**, as a shared "Demo Reviewer", for one hour, with no account. It is a second room next to the real one:
+
+- **Data wall.** Demo tickets are marked `is_demo` in the database. Python answers only for the scope the gateway sends (`demo` for the demo visitor, `real` for everyone else) and a ticket on the other side is a 404. Real reviewers never see demo tickets; the demo visitor never sees a real one. The gateway also keeps the visitor out of dead letters, delivery retry and the intake route.
+- **Nothing is ever emailed** for a demo ticket (checked in the review route, in the delivery trigger and in the mail worker). The screen shows the email that *would* have been sent.
+- A visitor can **submit a test ticket** (a real triage run with real model calls, so real cost): protected by Turnstile, a per-IP limit and its own `DEMO_DAILY_CAP` (default 20 a day). It is visible to all demo visitors until the nightly reset.
+- **Reset every night at 04:00** (after the 03:30 backup): all demo tickets and their checkpoints are deleted, the 8 examples come back, and the demo sessions end. Only demo rows are ever touched.
+- With `DEMO_MODE=false` (the default) every demo route is a 404 and nothing of this exists.
+
+### Turn it on (after merging; in this order)
+
+```bash
+# 1. LAPTOP: copy the new files (demo-reset.sh, the two systemd units, the env example)
+rsync -az --exclude 'env/*.env' --exclude '.env' --exclude env.local-test/ --exclude .deploy-state --exclude edge/ deploy/ contabo:/opt/triageiq/deploy/
+
+# 2. SERVER: two new lines in the gateway settings (nano; nothing secret is new: the Turnstile secret is already there)
+cd /opt/triageiq/deploy
+nano env/gateway.env          # DEMO_MODE=true      DEMO_DAILY_CAP=20
+
+# 3. SERVER: deploy the new version (the gateway migration 004 and the Python migration 0006 run by themselves)
+./deploy.sh sha-<the new commit>
+
+# 4. SERVER: put the 8 example tickets in, ONCE (no model call is made; safe to run again)
+docker compose -f docker-compose.prod.yml exec app python -m app.demo.seed       # "Demo tickets: 8 added, 0 already there."
+
+# 5. SERVER: install the nightly reset, and run it once to see it work
+sudo cp systemd/triageiq-demo-reset.service systemd/triageiq-demo-reset.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now triageiq-demo-reset.timer
+systemctl list-timers triageiq-demo-reset.timer
+sudo systemctl start triageiq-demo-reset.service
+journalctl -u triageiq-demo-reset.service -n 8 --no-pager     # "demo-reset: done"
+```
+
+`deploy.sh` refuses `DEMO_MODE=true` without a Turnstile secret. To switch the demo off: `DEMO_MODE=false`, then `./deploy.sh <tag>`. Demo tickets stay in the database, hidden; the reset timer keeps working (it only touches demo rows), or disable it: `sudo systemctl disable --now triageiq-demo-reset.timer`.
+
+The demo user (`demo@triageiq.invalid`) appears in `reviewers list`. It has no usable password, `reviewers set-password` refuses it, and a password login for it is always refused. If you ever want it gone for good, disable it: `reviewers disable --email demo@triageiq.invalid` (the demo button then says it is not available).
+
+**Cost to watch:** every test ticket a visitor submits is a full model run (about a cent or two). `DEMO_DAILY_CAP` bounds it per day; the public form's cap (`PUBLIC_DAILY_CAP`) is separate.
 
 ## Cost per ticket
 

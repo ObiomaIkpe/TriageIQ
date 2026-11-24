@@ -252,6 +252,7 @@ jobs:
           deploy/tests/test-make-secrets.sh
           deploy/tests/test-deploy-script.sh
           deploy/tests/test-edge.sh
+          deploy/tests/test-demo-reset.sh
       - name: No env file, key or secret inside any of the three images
         run: deploy/tests/test-image-contents.sh triageiq-app:ci triageiq-gateway:ci triageiq-web:ci
       - name: Web image (non-root, SPA fallback, caching, security headers)

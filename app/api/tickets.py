@@ -2,8 +2,9 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.auth import get_scope
 from app.models import TicketRecord, TicketStatus
 from app.tickets.store import count_tickets_by_status, get_ticket, list_tickets
 
@@ -25,24 +26,26 @@ def read_tickets(
     limit: int = Query(50, ge=1, le=200),
     cursor: Optional[str] = Query(None, max_length=100),
     reviewed_since: Optional[datetime] = None,
+    scope=Depends(get_scope),
 ) -> list[TicketRecord]:
     extra = {}
     if cursor is not None:
         extra["before"] = _parse_cursor(cursor)
     if reviewed_since is not None:
         extra["reviewed_since"] = reviewed_since
-    return list_tickets(status=status, limit=limit, **extra)
+    return list_tickets(status=status, limit=limit, scope=scope, **extra)
 
 
 # Declared BEFORE /{ticket_id}: otherwise "counts" would be read as a ticket id (and be a 422).
 @router.get("/counts", response_model=dict[str, int])
-def read_ticket_counts() -> dict[str, int]:
-    return count_tickets_by_status()
+def read_ticket_counts(scope=Depends(get_scope)) -> dict[str, int]:
+    return count_tickets_by_status(scope)
 
 
 @router.get("/{ticket_id}", response_model=TicketRecord)
-def read_ticket(ticket_id: UUID) -> TicketRecord:
-    record = get_ticket(str(ticket_id))
+def read_ticket(ticket_id: UUID, scope=Depends(get_scope)) -> TicketRecord:
+    # A ticket on the other side of the wall is a 404, the same answer as a ticket that does not exist.
+    record = get_ticket(str(ticket_id), scope)
     if record is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return record

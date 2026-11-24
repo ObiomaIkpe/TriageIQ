@@ -48,7 +48,7 @@ def test_health_is_unaffected_by_a_missing_graph():
 def test_other_endpoints_do_not_need_the_graph(monkeypatch):
     from app.api import tickets as tickets_api
 
-    monkeypatch.setattr(tickets_api, "list_tickets", lambda status, limit: [])
+    monkeypatch.setattr(tickets_api, "list_tickets", lambda status, limit, scope=None: [])
 
     assert client.get("/tickets").status_code == 200
 

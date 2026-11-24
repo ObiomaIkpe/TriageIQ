@@ -1,4 +1,4 @@
-export const USER_ROLES = ['reviewer'] as const;
+export const USER_ROLES = ['reviewer', 'demo'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
 /** A reviewer account, as every read except findByEmail returns it: never with the hash. */

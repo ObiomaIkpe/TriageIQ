@@ -54,12 +54,16 @@ export class LoginService {
 
     // 2. Always verify a password: against the real hash, or against the dummy one when the email is unknown.
     const user = await this.users.findByEmail(email);
-    const passwordOk = await this.hasher.verify(user?.passwordHash ?? this.hasher.dummyHash, attempt.password);
+    // The demo user has no password at all: whatever is typed, it is a failure, and it does the same work as any other failure.
+    const isDemo = user?.role === 'demo';
+    const passwordOk = await this.hasher.verify(user && !isDemo ? user.passwordHash : this.hasher.dummyHash, attempt.password);
 
     // 3. Decide, after the verification, so every path took comparable time.
     const reason: FailureReason | undefined = !user
       ? 'unknown_email'
-      : !passwordOk
+      : isDemo
+        ? 'wrong_password'
+        : !passwordOk
         ? 'wrong_password'
         : user.disabledAt !== null
           ? 'disabled'

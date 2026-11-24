@@ -1,0 +1,14 @@
+# Nightly demo reset (see deploy/README.md, "Demo mode"). Installed by hand:
+#   sudo cp triageiq-demo-reset.service triageiq-demo-reset.timer /etc/systemd/system/
+# Edit WorkingDirectory/ExecStart if deploy/ is not in /opt/triageiq/deploy.
+[Unit]
+Description=TriageIQ demo reset (delete the demo tickets, put the examples back, end the demo sessions)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/triageiq/deploy
+ExecStart=/opt/triageiq/deploy/demo-reset.sh
+Nice=10
+TimeoutStartSec=10min

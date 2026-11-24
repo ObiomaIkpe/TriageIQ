@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppConfig } from '../config/env.schema.js';
+import type { TicketScope } from '../auth/principal.js';
 import { FETCH } from '../health/health.constants.js';
 import {
   MSG_ERROR,
@@ -28,6 +29,11 @@ export interface TriageCall {
   /** A body already validated by the caller. Sent as JSON. */
   body?: unknown;
   kind: 'read' | 'review';
+  /**
+   * Which side of the real/demo wall this call is for. REQUIRED, so no caller can forget to decide: a route takes it from the
+   * authenticated principal (scopeFor), the email worker and the sweep always say "real". Python honours it only with the review key.
+   */
+  scope: TicketScope;
   /** For the log line only: the route as a fixed label, such as "GET /tickets/:id". */
   route: string;
   /** For the log line only: the API client's name. */
@@ -74,7 +80,7 @@ export class TriageClient {
 
   async call(call: TriageCall): Promise<TriageAnswer> {
     const started = Date.now();
-    const query = new URLSearchParams(call.query ?? {}).toString();
+    const query = new URLSearchParams({ ...call.query, scope: call.scope }).toString();
     const url = `${this.baseUrl}${call.path}${query ? `?${query}` : ''}`;
     const headers: Record<string, string> = {
       accept: 'application/json',

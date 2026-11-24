@@ -74,6 +74,21 @@ export class UsersRepository {
     return (rowCount ?? 0) > 0;
   }
 
+  /**
+   * Makes sure the one shared demo user exists (role 'demo', a password hash that matches nothing). Called at startup when
+   * DEMO_MODE is on. Safe to repeat and to run from several processes at once: it never changes an existing row (an operator who
+   * disabled the account keeps it disabled).
+   */
+  async ensureDemoUser(email: string, displayName: string, passwordHash: string): Promise<User> {
+    await this.pool.query(
+      `INSERT INTO users (email, display_name, password_hash, role)
+       VALUES ($1, $2, $3, 'demo') ON CONFLICT DO NOTHING`,
+      [normalizeEmail(email), displayName, passwordHash],
+    );
+    const { rows } = await this.pool.query<UserRow>(`SELECT ${PUBLIC_COLUMNS} FROM users WHERE role = 'demo'`);
+    return toUser(rows[0]);
+  }
+
   /** Creates a reviewer. Throws DuplicateEmailError if the email is taken. */
   async create(user: NewUser): Promise<User> {
     try {
@@ -89,11 +104,14 @@ export class UsersRepository {
     }
   }
 
-  /** Replaces the password hash and stamps password_changed_at. Undefined if there is no such account. */
+  /**
+   * Replaces the password hash and stamps password_changed_at. Undefined if there is no such account. The demo account is
+   * never matched: it must not be given a password (the CLI would say "no such account").
+   */
   async setPassword(email: string, passwordHash: string): Promise<User | undefined> {
     const { rows } = await this.pool.query<UserRow>(
       `UPDATE users SET password_hash = $2, password_changed_at = now(), updated_at = now()
-       WHERE email = $1 RETURNING ${PUBLIC_COLUMNS}`,
+       WHERE email = $1 AND role <> 'demo' RETURNING ${PUBLIC_COLUMNS}`,
       [normalizeEmail(email), passwordHash],
     );
     return rows[0] ? toUser(rows[0]) : undefined;

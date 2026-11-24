@@ -9,12 +9,13 @@ const config = {
 } as never;
 const TIMEOUTS = { readMs: 50, reviewMs: 120 };
 
-const READ: TriageCall = { method: 'GET', path: '/tickets', kind: 'read', route: 'GET /tickets', client: 'ops' };
+const READ: TriageCall = { method: 'GET', path: '/tickets', kind: 'read', scope: 'real', route: 'GET /tickets', client: 'ops' };
 const REVIEW: TriageCall = {
   method: 'POST',
   path: '/tickets/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34/review',
   body: { action: 'edit', edited_reply: TICKET_TEXT },
   kind: 'review',
+  scope: 'real',
   route: 'POST /tickets/:id/review',
   client: 'ops',
 };
@@ -40,7 +41,7 @@ describe('TriageClient: the request it builds', () => {
     const fetchFn = json(200, []);
     await make(fetchFn).call(READ);
     const [url, init] = callOf(fetchFn);
-    expect(url).toBe('http://app:8000/tickets');
+    expect(url).toBe('http://app:8000/tickets?scope=real');
     expect(init.method).toBe('GET');
     expect(init.headers).toEqual({ accept: 'application/json', 'x-api-key': KEY });
     expect(init.body).toBeUndefined();
@@ -51,7 +52,7 @@ describe('TriageClient: the request it builds', () => {
     const fetchFn = json(200, { ok: true });
     await make(fetchFn).call(REVIEW);
     const [url, init] = callOf(fetchFn);
-    expect(url).toBe('http://app:8000/tickets/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34/review');
+    expect(url).toBe('http://app:8000/tickets/3f6b2c1e-8a4d-4b7e-9c10-5d2e7a9b1f34/review?scope=real');
     expect(init.method).toBe('POST');
     expect(init.headers).toEqual({
       accept: 'application/json',
@@ -64,11 +65,23 @@ describe('TriageClient: the request it builds', () => {
   it('puts only the given query parameters on the URL', async () => {
     const fetchFn = json(200, []);
     await make(fetchFn).call({ ...READ, query: { status: 'triaged', limit: '5' } });
-    expect(callOf(fetchFn)[0]).toBe('http://app:8000/tickets?status=triaged&limit=5');
+    expect(callOf(fetchFn)[0]).toBe('http://app:8000/tickets?status=triaged&limit=5&scope=real');
+  });
+
+  it('always names the scope, and the caller decides which: demo when it says demo', async () => {
+    const fetchFn = json(200, []);
+    await make(fetchFn).call({ ...READ, scope: 'demo' });
+    expect(callOf(fetchFn)[0]).toBe('http://app:8000/tickets?scope=demo');
+  });
+
+  it('a scope in the validated query cannot override the one the caller set (the principal decides)', async () => {
+    const fetchFn = json(200, []);
+    await make(fetchFn).call({ ...READ, scope: 'real', query: { scope: 'demo' } });
+    expect(callOf(fetchFn)[0]).toBe('http://app:8000/tickets?scope=real');
   });
 
   it('has no way to copy a client header: the call carries no headers at all', () => {
-    const keys: (keyof TriageCall)[] = ['method', 'path', 'query', 'body', 'kind', 'route', 'client'];
+    const keys: (keyof TriageCall)[] = ['method', 'path', 'query', 'body', 'kind', 'scope', 'route', 'client'];
     expect(keys).not.toContain('headers');
   });
 });

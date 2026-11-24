@@ -54,6 +54,8 @@ export interface SubmitOptions {
   fingerprint?: string;
   /** Contact details that travel with the job (public form). */
   contact?: { customer_name: string; customer_email: string };
+  /** The ticket comes from a demo visitor: the job is marked, and Python saves it as a demo ticket. */
+  demo?: boolean;
 }
 
 /**
@@ -140,6 +142,7 @@ export class IdempotencyService {
             reference,
             customer_name: options.contact?.customer_name,
             customer_email: options.contact?.customer_email,
+            demo: options.demo,
           });
           return { jobId, replayed: false, reference };
         } catch (error) {

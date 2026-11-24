@@ -28,4 +28,5 @@ export const ERR_RECIPIENT = 'recipient address refused';
 export const ERR_TRIAGE_DOWN = 'could not read the ticket';
 export const ERR_NOT_APPROVED = 'ticket is not approved or has no reply';
 export const ERR_LIMIT = 'recipient daily limit';
+export const ERR_DEMO = 'demo tickets are never emailed';
 export const ERR_OTHER = 'mail error';

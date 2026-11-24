@@ -19,6 +19,8 @@ export interface TicketJobData {
   /** Public form only. Kept out of every log and every model prompt. */
   customer_name?: string;
   customer_email?: string;
+  /** A ticket a demo visitor submitted: Python saves it as a demo ticket (never shown to real reviewers, never emailed). */
+  demo?: boolean;
 }
 
 /** What a job carries beyond the ticket itself. */
@@ -26,6 +28,7 @@ export interface JobExtras {
   reference?: string;
   customer_name?: string;
   customer_email?: string;
+  demo?: boolean;
 }
 
 /** The parts of a BullMQ Job this service reads. */
@@ -105,6 +108,7 @@ export class TriageQueueService {
       ...(extras.reference === undefined ? {} : { reference: extras.reference }),
       ...(extras.customer_name === undefined ? {} : { customer_name: extras.customer_name }),
       ...(extras.customer_email === undefined ? {} : { customer_email: extras.customer_email }),
+      ...(extras.demo === true ? { demo: true } : {}),
     };
     await this.guarded(async (expired) => {
       // Wait for a live connection BEFORE sending the write. Otherwise, with Redis down, the
