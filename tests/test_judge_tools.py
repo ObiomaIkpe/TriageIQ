@@ -321,3 +321,79 @@ def test_validate_reports_quote_errors_and_failed_calls_without_hiding_them(tmp_
     assert m["quote_errors"] == 2 and m["failed_calls"] == 2 and m["valid"] == 4
     text = md.read_text()
     assert "QUOTE NOT FOUND" in text and "Judge error: TimeoutError: slow" in text and "NO VERDICT: N1" in text
+
+
+# --- credentials, fail fast, never write an empty freeze -----------------------------------------------
+import os  # noqa: E402
+
+from evals import credentials  # noqa: E402
+from evals.judge import judge as judge_mod  # noqa: E402
+
+
+def test_the_judge_client_gets_its_key_from_settings_when_the_environment_has_none(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    backend = judge_mod.AnthropicBackend(SimpleNamespace(
+        anthropic_api_key="sk-fake-from-settings", judge_model="", model_id="m", llm_timeout_seconds=5, llm_max_retries=0))
+    llm = backend._llm.bound                       # the ChatAnthropic under bind_tools
+    assert llm.anthropic_api_key.get_secret_value() == "sk-fake-from-settings"
+
+
+def test_export_credentials_fills_a_missing_environment_variable_but_never_overrides_one(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("VOYAGE_API_KEY", "from-shell")
+    credentials.export_credentials(SimpleNamespace(anthropic_api_key=" from-env-file ", voyage_api_key="from-env-file"))
+    assert os.environ["ANTHROPIC_API_KEY"] == "from-env-file"
+    assert os.environ["VOYAGE_API_KEY"] == "from-shell"
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    credentials.export_credentials(SimpleNamespace(anthropic_api_key="", voyage_api_key=""))
+    assert "ANTHROPIC_API_KEY" not in os.environ
+
+
+def test_freeze_fails_fast_naming_the_missing_key_before_asking_or_running(tmp_path, capsys):
+    g = graph4()
+    ds = dataset(tmp_path, ["A"])
+    asked = []
+    s = SimpleNamespace(anthropic_api_key="x", voyage_api_key=" ", model_id="m", voyage_rpm=3)
+    code = freeze_drafts.main(["--dataset", str(ds), "--out", str(tmp_path / "o.jsonl")],
+                              input_fn=lambda p: asked.append(p) or "y", graph=g, settings=s)
+    err = capsys.readouterr().err
+    assert code == 1 and asked == [] and g.calls == 0 and "VOYAGE_API_KEY" in err and "ANTHROPIC_API_KEY" not in err
+
+
+def test_an_authentication_error_stops_the_run_at_the_first_ticket_and_writes_nothing(tmp_path, capsys):
+    err = TypeError("Anthropic authentication failed: no API key or authorization credentials were provided.")
+    g = FakeGraph({"s-A": err, "s-B": err, "s-C": err, "s-D": err})
+    code, out, _ = run_freeze(tmp_path, "y", g)
+    assert code == 1 and g.calls == 1                                   # not 4
+    assert not out.exists() and not common.split_path(out).exists()
+    assert "rejected the credentials" in capsys.readouterr().err
+
+
+def test_zero_drafts_writes_no_frozen_and_no_split_file_and_exits_non_zero(tmp_path, capsys):
+    g = FakeGraph({f"s-{i}": RuntimeError("model unavailable") for i in "ABCD"})
+    code, out, _ = run_freeze(tmp_path, "y", g)
+    err = capsys.readouterr().err
+    assert code == 1 and g.calls == 4
+    assert not out.exists() and not common.split_path(out).exists()
+    assert "No ticket produced a draft" in err and "4 of 4 tickets failed" in err and "model unavailable" in err
+    g2 = FakeGraph({f"s-{i}": state(None, kb=()) for i in "ABCD"})      # ran fine, but nothing was drafted
+    code, out2, _ = run_freeze(tmp_path, "y", g2)
+    assert code == 1 and not out2.exists()
+
+
+def test_validate_stops_at_the_first_authentication_error(tmp_path):
+    frozen, ldir = prepared(tmp_path, {"G1": True, "N1": False, "N2": False})
+
+    class Denied:
+        model = "m"
+        calls = 0
+
+        def complete(self, system, user):
+            Denied.calls += 1
+            return RawAnswer(error="AuthenticationError: 401", auth_failed=True)
+
+    with pytest.raises(judge_mod.AuthFailed):
+        validate.run_judge(Denied(), common.judged(common.load_frozen(frozen)), runs=3)
+    assert Denied.calls == 1
+    assert judge_mod.is_auth_error(TypeError("Anthropic authentication failed: no API key"))
+    assert not judge_mod.is_auth_error(RuntimeError("authentication"))

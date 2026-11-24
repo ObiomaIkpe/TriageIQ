@@ -19,7 +19,9 @@ from pathlib import Path
 
 from evals.judge.common import FROZEN_DIR, judged, write_jsonl
 from evals.judge.split import SEED, proxy_stratum, make_split, save_split
-from evals.run_eval import git_commit, load_dataset, missing_keys
+from evals.credentials import export_credentials, missing_keys
+from evals.judge.judge import AuthFailed, is_auth_error
+from evals.run_eval import git_commit, load_dataset
 from evals.scoring import reply_checks, summarize_reply_checks
 
 DATASET_DIR = Path("evals/dataset")
@@ -72,6 +74,8 @@ def freeze_one(graph, label: dict, meta: dict) -> dict:
         record["review_reason"] = state.get("review_reason") or None
         record["usage"] = collector.summary()
     except Exception as exc:
+        if is_auth_error(exc):
+            raise AuthFailed(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
         record["error"] = f"{type(exc).__name__}: {exc}"
     record["latency_seconds"] = round(time.perf_counter() - started, 3)
     return record
@@ -138,6 +142,7 @@ def main(argv=None, *, input_fn=input, graph=None, settings=None) -> int:
         return 1
 
     if graph is None:
+        export_credentials(settings)  # before the graph (and its Claude clients) is imported
         from langgraph.checkpoint.memory import MemorySaver
 
         from app.graph.build import build_triage_graph
@@ -149,11 +154,22 @@ def main(argv=None, *, input_fn=input, graph=None, settings=None) -> int:
             "models": {"drafter": settings.model_id, "classifier": settings.model_id,
                        "critic": settings.model_id, "grader": settings.model_id},
             "frozen_at": datetime.now().isoformat(timespec="seconds")}
-    rows = freeze(dataset, graph, meta, only,
-                  progress=lambda r: print(f"{r['id']}: {'ERROR ' + r['error'] if r['error'] else 'done'}", file=sys.stderr))
-    write_jsonl(out, rows)
+    try:
+        rows = freeze(dataset, graph, meta, only,
+                      progress=lambda r: print(f"{r['id']}: {'ERROR ' + r['error'] if r['error'] else 'done'}", file=sys.stderr))
+    except AuthFailed as exc:
+        print(f"\nStopped at the first ticket: the Anthropic API rejected the credentials ({exc}). "
+              "Nothing was written.", file=sys.stderr)
+        return 1
 
     drafted = judged(rows)
+    if not drafted:
+        errors = [r["error"] for r in rows if r.get("error")]
+        why = f"{len(errors)} of {len(rows)} tickets failed; first error: {errors[0][:200]}" if errors else \
+            "no ticket produced a draft"
+        print(f"\nNo ticket produced a draft ({why}). Nothing was written.", file=sys.stderr)
+        return 1
+    write_jsonl(out, rows)
     split = make_split({r["id"]: proxy_stratum(r) for r in drafted}, SEED)
     split_file = save_split(out, split, basis="critic flag (proxy, before labelling)")
     print(f"\nWrote {out}\nWrote {split_file}: tune {len(split['tune'])}, test {len(split['test'])}\n")

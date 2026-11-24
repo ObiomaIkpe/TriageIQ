@@ -127,6 +127,18 @@ class JudgeResult:
         return self.verdict is not None and self.model_verdict is not None and self.verdict != self.model_verdict
 
 
+class AuthFailed(Exception):
+    """The provider rejected our credentials (or none reached the client). Repeating the call is pointless."""
+
+
+def is_auth_error(exc: BaseException) -> bool:
+    """True for a 401/403 from the API, or the client's own "no API key" TypeError. Never looks at a key."""
+    if type(exc).__name__ in ("AuthenticationError", "PermissionDeniedError"):
+        return True
+    text = str(exc).lower()
+    return isinstance(exc, TypeError) and ("authentication" in text or "api key" in text)
+
+
 @dataclass
 class RawAnswer:
     """What a backend returns: the tool input as a dict (or an error) plus token counts."""
@@ -135,6 +147,7 @@ class RawAnswer:
     input_tokens: int = 0
     output_tokens: int = 0
     model: str = ""
+    auth_failed: bool = False
 
 
 class JudgeBackend(Protocol):
@@ -167,6 +180,8 @@ def evaluate(answer: RawAnswer, articles: list[dict]) -> JudgeResult:
 
 def judge_draft(backend: JudgeBackend, *, subject: str, body: str, articles: list[dict], draft: str) -> JudgeResult:
     answer = backend.complete(SYSTEM_PROMPT, build_user_message(subject, body, articles, draft))
+    if answer.auth_failed:
+        raise AuthFailed(answer.error or "authentication failed")
     if not answer.model:
         answer.model = backend.model
     return evaluate(answer, articles)
@@ -189,6 +204,8 @@ class AnthropicBackend:
         self.model = model or resolve_model(settings)
         self._llm = ChatAnthropic(
             model=self.model,
+            # From settings (which read .env), NOT from os.environ: the shell may not have exported it.
+            api_key=settings.anthropic_api_key,
             temperature=0,
             timeout=settings.llm_timeout_seconds,
             max_tokens=self.MAX_TOKENS,
@@ -199,7 +216,8 @@ class AnthropicBackend:
         try:
             message = self._llm.invoke([("system", system), ("human", user)])
         except Exception as exc:  # a failed call is a result, not a crash: the run keeps going
-            return RawAnswer(error=f"{type(exc).__name__}: {str(exc)[:200]}", model=self.model)
+            return RawAnswer(error=f"{type(exc).__name__}: {str(exc)[:200]}", model=self.model,
+                             auth_failed=is_auth_error(exc))
         usage = getattr(message, "usage_metadata", None) or {}
         tokens = dict(input_tokens=int(usage.get("input_tokens") or 0),
                       output_tokens=int(usage.get("output_tokens") or 0), model=self.model)

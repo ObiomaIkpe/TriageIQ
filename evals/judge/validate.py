@@ -19,7 +19,7 @@ from pathlib import Path
 from evals.judge.common import (
     LABELS_DIR, judged, labels_path, latest_frozen, load_frozen, load_labels, split_path, split_sentences,
 )
-from evals.judge.judge import JudgeResult, judge_draft
+from evals.judge.judge import AuthFailed, JudgeResult, judge_draft
 
 DEFAULT_OUT = "evals/results"
 
@@ -235,8 +235,12 @@ def main(argv=None, *, backend=None) -> int:
             print("Cannot run the judge: ANTHROPIC_API_KEY not set.", file=sys.stderr)
             return 1
         backend = AnthropicBackend(settings)
-    md, js, _ = validate(frozen, args.split, args.runs, backend, out_dir=args.out,
-                         progress=lambda n, tid, r: print(f"run {n} {tid}: {r.verdict or 'ERROR'}", file=sys.stderr))
+    try:
+        md, js, _ = validate(frozen, args.split, args.runs, backend, out_dir=args.out,
+                             progress=lambda n, tid, r: print(f"run {n} {tid}: {r.verdict or 'ERROR'}", file=sys.stderr))
+    except AuthFailed as exc:
+        print(f"Stopped: the Anthropic API rejected the credentials ({exc}). No report written.", file=sys.stderr)
+        return 1
     print(md.read_text(encoding="utf-8"))
     print(f"Wrote {md} and {js}")
     return 0

@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from evals.credentials import missing_keys  # noqa: F401  (re-exported)
 from evals.scoring import CHECKS, REPLY_CHECKS, reply_checks, score_ticket, summarize, summarize_reply_checks
 
 DEFAULT_DATASET = "evals/dataset/tickets_v1.jsonl"
@@ -25,13 +26,6 @@ DEFAULT_OUT = "evals/results"
 def load_dataset(path) -> list:
     lines = Path(path).read_text(encoding="utf-8").splitlines()
     return [json.loads(line) for line in lines if line.strip()]
-
-
-def missing_keys(settings) -> list:
-    """Names (never values) of the required keys that are empty."""
-    required = {"ANTHROPIC_API_KEY": settings.anthropic_api_key,
-                "VOYAGE_API_KEY": settings.voyage_api_key}
-    return [name for name, value in required.items() if not (value or "").strip()]
 
 
 def git_commit() -> str:
@@ -234,6 +228,9 @@ def main(argv=None) -> int:
               "Set them in .env or the environment.", file=sys.stderr)
         return 1
 
+    from evals.credentials import export_credentials
+
+    export_credentials(settings)  # before the graph (and its Claude clients) is imported
     only = [i.strip() for i in args.only.split(",") if i.strip()] if args.only else None
     try:
         result = run_eval(args.dataset, only)
