@@ -1,0 +1,28 @@
+{
+ "article": "Accounts lock after 5 failed login attempts within 15 minutes. Lockout clears automatically after 1 hour.",
+ "answer": {
+  "claims": [
+   {
+    "text": "Hello",
+    "label": "not_a_claim",
+    "evidence_quote": ""
+   },
+   {
+    "text": "Accounts lock after 5 failed attempts in 15 minutes",
+    "label": "supported",
+    "evidence_quote": "Accounts lock after 5 failed login attempts within 15 minutes."
+   },
+   {
+    "text": "The lockout clears after 1 hour",
+    "label": "supported",
+    "evidence_quote": "Lockout clears automatically after 1 hour."
+   },
+   {
+    "text": "A specialist will follow up",
+    "label": "not_a_claim",
+    "evidence_quote": ""
+   }
+  ],
+  "verdict": "grounded"
+ }
+}

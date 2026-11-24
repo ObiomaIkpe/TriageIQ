@@ -11,6 +11,8 @@ output is the dict the runner builds from the graph state:
     kb_sources                   list of {"topic": str, "distance": float}, closest first
 """
 
+import re
+
 CHECKS = ("category", "urgency", "flag", "kb_topic", "must_include", "must_not_include")
 
 
@@ -91,3 +93,61 @@ def summarize(scored: list) -> dict:
         if flag["extra_flag"]:
             extra.append(item["id"])
     return {"checks": checks, "missed_flags": missed, "extra_flags": extra}
+
+
+# --- Deterministic reply checks (plain code, no AI) ------------------------------------------------
+# Three known drafter problems seen in production. They are reported next to the scores, per ticket and
+# as rates, and are NOT part of CHECKS (a draft can pass every label check and still have these).
+REPLY_CHECKS = ("has_markdown", "has_subject_line", "draft_without_kb")
+
+_MARKDOWN_PATTERNS = (
+    re.compile(r"\*\*[^*\n]+\*\*"),                     # **bold**
+    re.compile(r"__[^_\s][^_\n]*__"),                      # __bold__
+    re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+\S", re.MULTILINE),  # # heading
+    re.compile(r"`"),                                      # `code`
+    re.compile(r"^[ \t]*[-*+][ \t]+\S", re.MULTILINE),     # - bullet, * bullet, + bullet
+    re.compile(r"\[[^\]\n]+\]\([^)\s]+\)"),               # [text](url)
+)
+_SUBJECT_LINE = re.compile(r"\A\s*subject\s*:", re.IGNORECASE)
+
+
+def has_markdown(draft) -> bool:
+    """True if the reply uses Markdown (bold, headings, backticks, bullets or links). A reply is
+    sent as plain text, where these show as raw characters."""
+    return _has_text(draft) and any(p.search(draft) for p in _MARKDOWN_PATTERNS)
+
+
+def has_subject_line(draft) -> bool:
+    """True if the reply starts (after optional whitespace) with "Subject:"."""
+    return _has_text(draft) and bool(_SUBJECT_LINE.match(draft))
+
+
+def draft_without_kb(draft, kb_sources) -> bool:
+    """True if a non-empty draft was written although no KB article was given to the drafter."""
+    return _has_text(draft) and not kb_sources
+
+
+def reply_checks(output: dict) -> dict:
+    """The three checks for one output: {name: True | False}. All False when there is no draft."""
+    draft = output.get("draft_reply")
+    return {
+        "has_markdown": has_markdown(draft),
+        "has_subject_line": has_subject_line(draft),
+        "draft_without_kb": draft_without_kb(draft, output.get("kb_sources")),
+    }
+
+
+def summarize_reply_checks(items: list) -> dict:
+    """Per check: how many tickets hit it, out of how many, and which. Items are
+    {"id": str, "output": dict-or-None}. Tickets that errored have no output and are left out.
+    has_markdown and has_subject_line are out of the tickets that HAVE a draft; draft_without_kb is
+    out of every ticket (a ticket with no draft cannot hit it, but it is part of the set)."""
+    with_output = [i for i in items if i.get("output")]
+    drafted = [i for i in with_output if _has_text(i["output"].get("draft_reply"))]
+    summary = {}
+    for name in REPLY_CHECKS:
+        pool = with_output if name == "draft_without_kb" else drafted
+        hits = [i["id"] for i in pool if reply_checks(i["output"])[name]]
+        summary[name] = {"hits": hits, "count": len(hits), "of": len(pool),
+                         "rate": (len(hits) / len(pool)) if pool else None}
+    return summary

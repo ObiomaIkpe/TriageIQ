@@ -1,4 +1,5 @@
 """evals/scoring.py: every check, the skip cases, and the summary."""
+import pytest
 from evals.scoring import score_ticket, summarize
 
 LABEL = {
@@ -166,3 +167,60 @@ def test_summarize_of_nothing_is_all_zero():
     summary = summarize([])
     assert summary["missed_flags"] == [] and summary["extra_flags"] == []
     assert all(c == {"pass": 0, "fail": 0, "skip": 0} for c in summary["checks"].values())
+
+
+# --- deterministic reply checks (Part B of M5a) ---------------------------------------------------
+from evals.scoring import draft_without_kb, has_markdown, has_subject_line, reply_checks, summarize_reply_checks  # noqa: E402
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Click **Forgot password** to continue.", True),
+    ("Click __Forgot password__.", True),
+    ("# Steps\nDo this.", True),
+    ("Use the `reset` link.", True),
+    ("Here:\n- first\n- second", True),
+    ("Here:\n* first", True),
+    ("See [our guide](https://example.com/x).", True),
+    ("Click 'Forgot password' on the sign-in page.", False),
+    ("Steps:\n1. Open the page.\n2. Click the link.", False),
+    ("A 5 * 3 sum, and a #hashtag mid-line, and snake_case_name.", False),
+    ("Your lockout clears after 1 hour - no action needed.", False),
+    ("", False),
+    (None, False),
+])
+def test_has_markdown(text, expected):
+    assert has_markdown(text) is expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Subject: Re: your ticket\n\nHi", True),
+    ("  \n subject: Re", True),
+    ("Hi,\nSubject: not first", False),
+    ("The subject: of your ticket", False),
+    (None, False),
+])
+def test_has_subject_line(text, expected):
+    assert has_subject_line(text) is expected
+
+
+@pytest.mark.parametrize("draft,sources,expected", [
+    ("A reply.", [], True),
+    ("A reply.", None, True),
+    ("A reply.", [{"topic": "x"}], False),
+    ("   ", [], False),
+    (None, [], False),
+])
+def test_draft_without_kb(draft, sources, expected):
+    assert draft_without_kb(draft, sources) is expected
+
+
+def test_reply_checks_and_rates():
+    ok = {"draft_reply": "Fine.", "kb_sources": [{"topic": "a"}]}
+    bad = {"draft_reply": "Subject: x\n**hi**", "kb_sources": []}
+    none = {"draft_reply": None, "kb_sources": []}
+    assert reply_checks(bad) == {"has_markdown": True, "has_subject_line": True, "draft_without_kb": True}
+    assert reply_checks(none) == {"has_markdown": False, "has_subject_line": False, "draft_without_kb": False}
+    s = summarize_reply_checks([{"id": "A", "output": ok}, {"id": "B", "output": bad},
+                                {"id": "C", "output": none}, {"id": "D", "output": None}])
+    assert s["has_markdown"] == {"hits": ["B"], "count": 1, "of": 2, "rate": 0.5}      # out of tickets with a draft
+    assert s["draft_without_kb"]["of"] == 3 and s["draft_without_kb"]["hits"] == ["B"]  # out of all with an output

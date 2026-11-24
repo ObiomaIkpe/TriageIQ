@@ -349,7 +349,7 @@ Two separated rooms. The **real** room (real reviewers, real tickets, real email
 
 ## Evals
 
-`evals/` holds a labelled set of 20 tickets (`evals/dataset/tickets_v1.jsonl`) and a script that runs each one through the real graph and scores the result. Scoring is deterministic string and value comparison; there is no LLM judge.
+`evals/` holds a labelled set of 20 tickets (`evals/dataset/tickets_v1.jsonl`) and a script that runs each one through the real graph and scores the result. Scoring is deterministic string and value comparison. An LLM groundedness judge is built but not yet validated (see below).
 
 What it measures, per ticket:
 
@@ -380,6 +380,16 @@ Shows, for every ticket, the cosine distance to **every** KB article with no cut
 On 2026-10-21 the 5 KB articles were rewritten as realistic help articles (120 to 200 words each). Their policy sentences are unchanged and sit inside the new text word for word, and they were written without reading the eval set. Re-run the ingest to load them (see Run the whole system).
 
 Read the numbers with care: the knowledge base is only 5 articles, so retrieval is easy, and 20 tickets is a small sample. One run is one sample of a non-deterministic model.
+
+### The groundedness judge (M5a, round 1: built, not yet validated)
+
+Substring lists (`must_include` / `must_not_include`) missed reworded unsupported advice ("drafter drift"), so a second check asks a model whether every claim in a draft is supported by the KB articles the drafter received. **Evals only: nothing in `app/` imports it, and it is never in the request path.** The judge is not trusted until it agrees with hand labels (see the order below).
+
+- `evals/judge/judge.py`: one call at temperature 0, answer forced through a tool and validated with pydantic: a list of claims (`supported` / `unsupported` / `not_a_claim`, with a verbatim `evidence_quote`) and a verdict. Plain code then checks that every quote of a "supported" claim really appears in the article (whitespace, case and quote marks forgiven, nothing else); if not, the claim counts as unsupported and is reported as a judge error. The verdict is `not_grounded` exactly when any claim is unsupported, decided from the claims, not taken from the model. `JUDGE_MODEL` picks the model (empty = the drafting model); every report records it.
+- `evals/scoring.py` also has three deterministic reply checks, in every `run_eval` report (per ticket in the JSON, as rates in the scorecard): `has_markdown`, `has_subject_line`, `draft_without_kb`.
+- **Frozen drafts** (`python -m evals.judge.freeze_drafts`): runs the real pipeline once over the latest `tickets_v*.jsonl` and saves each ticket's input, the full article texts the drafter received, the draft, models, commit and time to `evals/judge/frozen/drafts_<date>.jsonl`, so every judge run grades identical text. Tickets with no draft are kept (for `draft_without_kb`) but never judged. It prints an estimated cost and asks `y/N` first. It also writes a seeded tune (about 60%) / test (about 40%) split next to the file.
+- **Labelling** (`python -m evals.judge.label <frozen file>`): a blind terminal tool (it never shows the judge or the critic). Shows the ticket, the articles and the draft with numbered sentences; asks grounded y/n, the unsupported sentence numbers and an optional note; saves after every answer to `evals/judge/labels/`, resumes, `b` goes back one. Afterwards `python -m evals.judge.split <frozen file> --by-labels` can redo the split stratified by your real labels.
+- **Validation** (`python -m evals.judge.validate --split tune --runs 3`): refuses to run unless every ticket of the split is labelled; runs the judge N times and writes `evals/results/judge-<split>-<time>.md`: false pass rate first (judge says grounded, label says not), agreement, confusion matrix, false fail rate, consistency across runs, quote errors, cost, and every disagreement with the judge's claims and your note. Real Claude calls, one per draft per run.
 
 ## Evals: results
 

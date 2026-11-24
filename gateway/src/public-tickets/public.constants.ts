@@ -13,6 +13,9 @@ export const PUBLIC_IP_WINDOW_SECONDS = 3600;
 export const TURNSTILE_DEFAULT_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 export const TURNSTILE_TIMEOUT_MS = Symbol('TURNSTILE_TIMEOUT_MS');
 export const DEFAULT_TURNSTILE_TIMEOUT_MS = 5000;
+/** Pause before the single retry of a siteverify call that got no answer. */
+export const TURNSTILE_RETRY_DELAY_MS = Symbol('TURNSTILE_RETRY_DELAY_MS');
+export const DEFAULT_TURNSTILE_RETRY_DELAY_MS = 300;
 export const PUBLIC_CLOCK = Symbol('PUBLIC_CLOCK');
 export const PUBLIC_STORE = Symbol('PUBLIC_STORE');
 

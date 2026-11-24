@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { describe, expect, it, vi } from 'vitest';
 import { TurnstileService } from './turnstile.service.js';
@@ -22,7 +23,7 @@ function make(settings: Record<string, unknown>, answer: () => Response | Promis
     TURNSTILE_EXPECTED_ACTION: '',
     ...settings,
   });
-  return { service: new TurnstileService(config as never, fetchFn, 200), calls };
+  return { service: new TurnstileService(config as never, fetchFn, 200, 5), calls };
 }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -92,6 +93,58 @@ describe('TurnstileService.verify', () => {
     ]) {
       expect((await make({}, answer).service.verify(TOKEN, '1.1.1.1')).kind).toBe('unavailable');
     }
+  });
+
+  describe('one retry when there is no answer at all (cold start)', () => {
+    const refused = () => Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+
+    it('a network failure and then a good answer is accepted, after exactly two calls with the same idempotency key', async () => {
+      let n = 0;
+      const { service, calls } = make({}, () => {
+        if (++n === 1) throw refused();
+        return json({ success: true });
+      });
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      expect(await service.verify(TOKEN, '1.1.1.1')).toEqual({ kind: 'ok' });
+      expect(calls).toHaveLength(2);
+      const keys = calls.map((c) => new URLSearchParams(c.init.body as URLSearchParams).get('idempotency_key'));
+      expect(keys[0]).toBe(keys[1]);
+      expect(warn).toHaveBeenCalledTimes(1); // the retry is logged
+      expect(String(warn.mock.calls[0][0])).toContain('retrying once');
+      expect(String(warn.mock.calls[0][0])).not.toContain(TOKEN);
+      expect(String(warn.mock.calls[0][0])).not.toContain(SECRET);
+      warn.mockRestore();
+    });
+
+    it('a timeout and then a good answer is accepted', async () => {
+      let n = 0;
+      const { service, calls } = make({}, () => (++n === 1 ? new Promise<Response>(() => undefined) : json({ success: true })));
+      expect(await service.verify(TOKEN, '1.1.1.1')).toEqual({ kind: 'ok' });
+      expect(calls).toHaveLength(2);
+    });
+
+    it('two failures in a row fail closed as unavailable (the 503), after exactly two calls', async () => {
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const { service, calls } = make({}, () => {
+        throw refused();
+      });
+      expect(await service.verify(TOKEN, '1.1.1.1')).toEqual({ kind: 'unavailable', codes: ['unreachable'] });
+      expect(calls).toHaveLength(2);
+      warn.mockRestore();
+    });
+
+    it.each([
+      ['an invalid-token answer', () => json({ success: false, 'error-codes': ['invalid-input-response'] }), 'failed'],
+      ['an already-used answer', () => json({ success: false, 'error-codes': ['timeout-or-duplicate'] }), 'failed'],
+      ['a refused secret', () => json({ success: false, 'error-codes': ['invalid-input-secret'] }), 'unavailable'],
+      ['a 500 answer', () => json({}, 500), 'unavailable'],
+      ['an unreadable answer', () => new Response('<html>', { status: 200 }), 'unavailable'],
+      ['a success', () => json({ success: true }), 'ok'],
+    ])('%s is a Cloudflare answer and is never retried', async (_name, answer, kind) => {
+      const { service, calls } = make({}, answer);
+      expect((await service.verify(TOKEN, '1.1.1.1')).kind).toBe(kind);
+      expect(calls).toHaveLength(1);
+    });
   });
 
   it('never puts the token or the secret in anything it returns or logs', async () => {

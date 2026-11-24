@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # (VOYAGE_RPM in .env) once the account has a payment method.
     voyage_rpm: int = 3
     model_id: str = "claude-sonnet-4-6"
+    # The model that grades drafts in the EVALS (evals/judge). Empty = the drafting model (model_id).
+    # Never used in the request path.
+    judge_model: str = ""
 
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 2
