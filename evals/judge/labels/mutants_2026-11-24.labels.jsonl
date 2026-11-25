@@ -1,0 +1,32 @@
+{"id": "C-T01", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T01 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "C-T02", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T02 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "C-T03", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T03 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "C-T04", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T04 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "C-T06", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T06 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "C-T07", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T07 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "C-T11", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T11 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "C-T12", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T12 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "C-T20", "grounded": true, "unsupported_sentences": [], "provenance": "planted", "note": "control: T20 unmutated (a DEV draft, labelled grounded)", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M01", "grounded": false, "unsupported_sentences": [3], "provenance": "planted", "note": "number_changed (obvious): T01 sentence 3, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M02", "grounded": false, "unsupported_sentences": [2], "provenance": "planted", "note": "number_changed (subtle): T01 sentence 2, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M03", "grounded": false, "unsupported_sentences": [4], "provenance": "planted", "note": "number_changed (obvious): T02 sentence 4, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M04", "grounded": false, "unsupported_sentences": [5], "provenance": "planted", "note": "number_changed (subtle): T20 sentence 5, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M05", "grounded": false, "unsupported_sentences": [2], "provenance": "planted", "note": "number_changed (obvious): T04 sentence 2, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M06", "grounded": false, "unsupported_sentences": [3], "provenance": "planted", "note": "added_step (obvious): T06 sentence 3, add", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M07", "grounded": false, "unsupported_sentences": [4], "provenance": "planted", "note": "added_step (subtle): T01 sentence 4, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M08", "grounded": false, "unsupported_sentences": [5], "provenance": "planted", "note": "added_step (obvious): T03 sentence 5, add", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M09", "grounded": false, "unsupported_sentences": [2], "provenance": "planted", "note": "invented_account_claim (subtle): T07 sentence 2, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M10", "grounded": false, "unsupported_sentences": [3], "provenance": "planted", "note": "invented_account_claim (obvious): T04 sentence 3, add", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M11", "grounded": false, "unsupported_sentences": [8], "provenance": "planted", "note": "invented_account_claim (obvious): T20 sentence 8, add", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M12", "grounded": false, "unsupported_sentences": [5], "provenance": "planted", "note": "invented_promise (obvious): T06 sentence 5, add", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M13", "grounded": false, "unsupported_sentences": [4], "provenance": "planted", "note": "invented_promise (subtle): T07 sentence 4, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M14", "grounded": false, "unsupported_sentences": [2], "provenance": "planted", "note": "invented_promise (subtle): T12 sentence 2, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M15", "grounded": false, "unsupported_sentences": [3], "provenance": "planted", "note": "reversed_fact (obvious): T06 sentence 3, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M16", "grounded": false, "unsupported_sentences": [3], "provenance": "planted", "note": "reversed_fact (subtle): T07 sentence 3, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M17", "grounded": false, "unsupported_sentences": [5], "provenance": "planted", "note": "reversed_fact (subtle): T01 sentence 5, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M18", "grounded": false, "unsupported_sentences": [2], "provenance": "planted", "note": "unsupported_explanation (subtle): T03 sentence 2, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M19", "grounded": false, "unsupported_sentences": [3], "provenance": "planted", "note": "unsupported_explanation (subtle): T04 sentence 3, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M20", "grounded": false, "unsupported_sentences": [4], "provenance": "planted", "note": "unsupported_explanation (subtle): T06 sentence 4, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M21", "grounded": false, "unsupported_sentences": [3], "provenance": "planted", "note": "invented_app_path (obvious): T11 sentence 3, replace", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M22", "grounded": false, "unsupported_sentences": [3], "provenance": "planted", "note": "invented_app_path (subtle): T11 sentence 3, add", "labelled_at": "2026-11-24T00:00:00"}
+{"id": "M23", "grounded": false, "unsupported_sentences": [4], "provenance": "planted", "note": "invented_app_path (obvious): T12 sentence 4, add", "labelled_at": "2026-11-24T00:00:00"}

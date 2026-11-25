@@ -8,7 +8,7 @@ import pytest
 from evals.judge.common import split_sentences
 from evals.judge.judge import (
     SYSTEM_PROMPT, JudgeOutput, RawAnswer, build_user_message, evaluate, judge_draft, normalise,
-    quote_in_articles, resolve_model,
+    numbers_in, numbers_missing, quote_in_articles, resolve_model,
 )
 
 FIX = Path(__file__).parent / "fixtures" / "judge"
@@ -196,7 +196,8 @@ def test_quotes_may_come_from_different_articles():
     arts = [{"topic": "a", "content": "Reset emails expire after 30 minutes."}, {"topic": "b", "content": "Open it as soon as it arrives."}]
     payload = {"sentences": [{"sentence": 1, "label": "supported",
                               "quotes": ["Reset emails expire after 30 minutes.", "Open it as soon as it arrives."]}], "verdict": "grounded"}
-    assert evaluate(RawAnswer(payload=payload), arts, ["One."]).verdict == "grounded"
+    sentence = ["Reset emails expire after 30 minutes, so open it as soon as it arrives."]
+    assert evaluate(RawAnswer(payload=payload), arts, sentence).verdict == "grounded"
 
 
 def test_every_quote_must_be_found_one_missing_makes_the_sentence_unsupported_and_a_quote_error():
@@ -228,3 +229,105 @@ def test_not_supported_labels_need_no_quotes_and_the_prompt_allows_several_but_n
     assert evaluate(RawAnswer(payload=_items(1)), [], ["One."]).verdict == "grounded"
     assert "1 to 3 short passages" in SYSTEM_PROMPT and "Never join passages into one quote" in SYSTEM_PROMPT
     assert "ONE short passage from ONE article" not in SYSTEM_PROMPT
+
+
+# --- change 3: the prompt rules and the number check -------------------------------------------------------
+def test_the_prompt_has_the_request_followup_and_detail_rules():
+    for rule in ("a sentence that only asks the customer for information or to send or prepare something",
+                 'A sentence that states a requirement or a policy ("you must provide X", "we need X to verify you") is a claim.',
+                 "a sentence that only says the team will follow up, contact the customer or look into it is not_a_claim",
+                 "A sentence that describes how a process works or what will happen in it",
+                 "A member of our team will guide you through the identity verification process.",
+                 "Every specific detail in a supported sentence must appear in at least one of its quotes",
+                 "even if the rest of it is quoted"):
+        assert " ".join(rule.split()) in " ".join(SYSTEM_PROMPT.split()), rule
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Reset emails expire after 30 minutes.", {"30"}),
+    ("a 30-minute window", {"30"}),
+    ("after five attempts in 15 minutes", {"5", "15"}),
+    ("within one hour", {"1"}),
+    ("after 1 hour", {"1"}),
+    ("sign up on the 17th", {"17"}),
+    ("about 1,000 requests", {"1000"}),
+    ("two-factor codes (2FA)", {"2"}),
+    ("go back and request a new one", set()),                    # "one" as a pronoun is not a number
+    ("which one of them", set()),
+    ("There are thirteen of them", set()),                       # only one to twelve are words
+    ("Thank you for getting in touch.", set()),
+])
+def test_numbers_in(text, expected):
+    assert numbers_in(text) == expected
+
+
+def test_numbers_missing_looks_across_all_quotes_and_treats_words_and_digits_alike():
+    assert numbers_missing("Accounts lock after five attempts within a 15-minute window.",
+                           ["lock after 5 failed login attempts", "within 15 minutes"]) == []
+    assert numbers_missing("It clears after 24 hours.", ["clears automatically after 1 hour"]) == ["24"]
+
+
+def test_a_supported_sentence_with_a_number_in_no_quote_becomes_unsupported_and_is_a_number_error():
+    answer, arts, sents = fixture("number_not_in_quote")
+    res = evaluate(RawAnswer(payload=answer), arts, sents)
+    assert res.verdict == "not_grounded" and res.model_verdict == "grounded" and res.verdict_mismatch
+    c = res.sentences[0]
+    assert c.label == "supported" and c.final_label == "unsupported"
+    assert c.number_error and c.missing_numbers == ["24"] and not c.quote_error
+    assert res.number_errors == [c] and res.quote_errors == [] and res.flagged == [1]
+
+
+def test_a_number_in_one_of_several_quotes_is_enough():
+    arts = [{"topic": "a", "content": "Reset emails expire after 30 minutes. It is best to open it right away."}]
+    payload = {"sentences": [{"sentence": 1, "label": "supported",
+                              "quotes": ["Reset emails expire after 30 minutes.", "open it right away"]}], "verdict": "grounded"}
+    res = evaluate(RawAnswer(payload=payload), arts, ["The email expires after a 30-minute wait, so open it right away."])
+    assert res.verdict == "grounded" and res.number_errors == []
+
+
+def test_a_missing_quote_is_a_quote_error_only_and_other_labels_are_never_number_checked():
+    arts = [{"topic": "a", "content": "text"}]
+    bad_quote = {"sentences": [{"sentence": 1, "label": "supported", "quotes": ["not there"]}], "verdict": "grounded"}
+    res = evaluate(RawAnswer(payload=bad_quote), arts, ["It clears after 24 hours."])
+    assert len(res.quote_errors) == 1 and res.number_errors == []
+    claim_free = {"sentences": [{"sentence": 1, "label": "not_a_claim"}], "verdict": "grounded"}
+    res = evaluate(RawAnswer(payload=claim_free), arts, ["Please send the 3 screenshots."])
+    assert res.verdict == "grounded" and res.number_errors == []
+
+
+# --- the ticket's own numbers count as covered ---------------------------------------------------------------
+def _t04_and_m05():
+    from evals.judge.common import load_frozen
+    d = Path(__file__).resolve().parent.parent / "evals" / "judge" / "frozen"
+    t04 = next(r for r in load_frozen(d / "drafts_2026-11-24.jsonl") if r["id"] == "T04")
+    m05 = next(r for r in load_frozen(d / "mutants_2026-11-24.jsonl") if r["id"] == "M05")
+    return t04, m05
+
+
+def _judge_sentence_2(row):
+    quote = "Billing occurs on the same calendar day each month as the original signup date."
+    sents = split_sentences(row["draft"])
+    items = [{"sentence": i, "label": "supported" if i == 2 else "not_a_claim", **({"quotes": [quote]} if i == 2 else {})}
+             for i in range(1, len(sents) + 1)]
+    backend = FakeBackend({"sentences": items, "verdict": "grounded"})
+    return judge_draft(backend, subject=row["subject"], body=row["body"], articles=row["kb_articles"], draft=row["draft"])
+
+
+def test_a_number_from_the_customers_ticket_is_covered_t04_passes():
+    t04, _ = _t04_and_m05()
+    res = _judge_sentence_2(t04)
+    assert res.sentences[1].text.startswith("As you signed up on the 17th, your card will be charged on the 17th")
+    assert res.verdict == "grounded" and res.number_errors == []
+
+
+def test_whole_numbers_are_compared_so_the_mutant_1st_is_still_caught():
+    _, m05 = _t04_and_m05()
+    res = _judge_sentence_2(m05)
+    assert "on the 1st of each month" in res.sentences[1].text
+    assert res.verdict == "not_grounded" and res.sentences[1].missing_numbers == ["1"] and len(res.number_errors) == 1
+
+
+def test_numbers_missing_accepts_ticket_numbers_only_as_whole_numbers():
+    assert numbers_missing("Charged on the 17th.", ["same calendar day"], "signed up on the 17th") == []
+    assert numbers_missing("Charged on the 1st.", ["same calendar day"], "signed up on the 17th") == ["1"]
+    assert numbers_missing("Charged on the 17th.", ["same calendar day"]) == ["17"]

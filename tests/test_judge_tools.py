@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models import Category, ClassificationResult, KbMatch, Urgency
-from evals.judge import common, freeze_drafts, label, split, validate
+from evals.judge import common, freeze_drafts, label, mutate, split, validate
 from evals.judge.judge import RawAnswer
 
 KB = KbMatch(topic="account lockout", content="Lockout clears automatically after 1 hour.", distance=0.3)
@@ -466,3 +466,215 @@ def test_split_all_refuses_if_any_judged_draft_is_unlabelled(tmp_path):
     frozen, ldir = prepared(tmp_path, {"G1": True, "N1": False, "N2": False})          # G2 unlabelled
     with pytest.raises(validate.Refused, match="G2"):
         validate.validate(frozen, "all", 1, ScriptedJudge(), labels_dir=ldir, out_dir=tmp_path / "r")
+
+
+# --- the number check in the report ------------------------------------------------------------------------
+def test_validate_reports_number_errors_next_to_quote_errors(tmp_path):
+    frozen, ldir = prepared(tmp_path, {"G1": True, "N1": False, "N2": False})
+    common.write_jsonl(frozen, [{**r, "subject": "help", "body": "please help"} for r in common.load_frozen(frozen)])
+
+    class NoNumber(ScriptedJudge):
+        def complete(self, system, user):
+            if "Lockout clears after 1 hour." in user.split("DRAFT REPLY START")[1]:      # G1
+                return RawAnswer(payload={"sentences": [{"sentence": 1, "label": "supported",
+                                                         "quotes": ["Lockout clears automatically"]}],
+                                          "verdict": "grounded"}, model="fake-judge")
+            return super().complete(system, user)
+
+    md, js, m = validate.validate(frozen, "tune", 2, NoNumber(), labels_dir=ldir, out_dir=tmp_path / "r")
+    assert m["number_errors"] == 2 and m["quote_errors"] == 0
+    text = md.read_text()
+    assert "Number errors (judge said supported, but a number of the sentence is in none of its quotes" in text
+    assert text.index("Quote verifier errors") < text.index("Number errors")
+    assert "NUMBER NOT IN QUOTES: 1, counted unsupported" in text and "FALSE FAIL: G1" in text
+
+
+# --- the mutation set (evals/judge/mutate.py) ----------------------------------------------------------------
+SOURCE = common.FROZEN_DIR / "drafts_2026-11-24.jsonl"
+DATA = mutate.DEFAULT_DATA
+MUTANTS = common.FROZEN_DIR / "mutants_2026-11-24.jsonl"
+MUTANT_LABELS = common.LABELS_DIR / "mutants_2026-11-24.labels.jsonl"
+
+
+def _built():
+    data = json.loads(DATA.read_text(encoding="utf-8"))
+    return data, mutate.build(common.load_frozen(SOURCE), data)
+
+
+def test_mutate_is_deterministic_and_the_committed_files_are_what_it_builds():
+    data, (frozen, labels) = _built()
+    again = mutate.build(common.load_frozen(SOURCE), data)
+    assert (frozen, labels) == again
+    assert MUTANTS.read_text(encoding="utf-8") == mutate._dump(frozen)
+    assert MUTANT_LABELS.read_text(encoding="utf-8") == mutate._dump(labels)
+
+
+def test_every_mutant_differs_from_its_source_in_exactly_the_recorded_sentence_and_the_label_matches():
+    data, (frozen, labels) = _built()
+    source = {r["id"]: r for r in common.load_frozen(SOURCE)}
+    lab = {r["id"]: r for r in labels}
+    mutants = [r for r in frozen if r["mutation"]]
+    assert len(mutants) == len(data["mutants"]) and 20 <= len(mutants) <= 25
+    for row in mutants:
+        m = row["mutation"]
+        before, after = common.split_sentences(source[m["source"]]["draft"]), common.split_sentences(row["draft"])
+        n = m["sentence"]
+        if m["op"] == "replace":
+            assert len(after) == len(before) and after[n - 1] == m["mutated"] and before[n - 1] == m["original"]
+            assert [a for i, a in enumerate(after) if i != n - 1] == [b for i, b in enumerate(before) if i != n - 1]
+        else:
+            assert len(after) == len(before) + 1 and after[n - 1] == m["mutated"] and m["original"] is None
+            assert after[:n - 1] + after[n:] == before
+        assert row["kb_articles"] == source[m["source"]]["kb_articles"] and row["subject"] == source[m["source"]]["subject"]
+        assert lab[row["id"]] == {**lab[row["id"]], "grounded": False, "unsupported_sentences": [n], "provenance": "planted"}
+        assert m["expected"] == "not grounded"
+
+
+def test_controls_are_the_unmutated_source_drafts_labelled_grounded_and_the_notes_say_they_are_dev():
+    data, (frozen, labels) = _built()
+    source = {r["id"]: r for r in common.load_frozen(SOURCE)}
+    controls = [r for r in frozen if r["mutation"] is None]
+    assert [r["id"] for r in controls] == [f"C-{t}" for t in data["controls"]] and len(controls) == 9
+    for r in controls:
+        assert r["draft"] == source[r["source_ticket"]]["draft"]
+    lab = {r["id"]: r for r in labels}
+    assert all(lab[r["id"]]["grounded"] and lab[r["id"]]["provenance"] == "planted" for r in controls)
+    assert all(r["provenance"] == "planted" for r in labels) and len(labels) == len(frozen)
+    assert "DEV drafts" in validate.MUTANTS_NOTE
+
+
+def test_the_mutation_set_covers_every_type_and_a_third_are_subtle():
+    data, _ = _built()
+    ms = data["mutants"]
+    assert {m["type"] for m in ms} == {"number_changed", "added_step", "invented_account_claim", "invented_promise",
+                                       "reversed_fact", "unsupported_explanation", "invented_app_path"}
+    assert sum(m["subtlety"] == "subtle" for m in ms) >= len(ms) / 3
+    assert {m["subtlety"] for m in ms} == {"obvious", "subtle"}
+    assert {m["source"] for m in ms if m["type"] == "invented_app_path"} == {"T11", "T12"}
+    assert {m["source"] for m in ms} <= set(data["controls"]) and len({m["id"] for m in ms}) == len(ms)
+
+
+@pytest.mark.parametrize("change,fragment", [
+    ({"sentence": 99}, "does not exist"),
+    ({"text": "One sentence. And another."}, "ONE sentence"),
+    ({"text": "Thank you for getting in touch."}, "equals the original"),   # T01 sentence 1
+    ({"expected": "grounded"}, "expected must be"),
+    ({"op": "swap"}, "op must be"),
+    ({"source": "T99"}, "not a judged draft"),
+])
+def test_bad_mutations_are_refused(change, fragment):
+    data = {"date": "2026-11-24", "controls": [],
+            "mutants": [{"id": "X1", "source": "T01", "op": "replace", "sentence": 1, "type": "t", "subtlety": "obvious",
+                         "expected": "not grounded", "text": "Hello there."} | change]}
+    with pytest.raises(mutate.BadMutation, match=fragment):
+        mutate.build(common.load_frozen(SOURCE), data)
+
+
+def test_an_added_sentence_must_be_numbered_inside_the_draft_and_stays_on_the_same_line():
+    rows = [{"id": "A", "subject": "s", "body": "b", "kb_articles": [], "draft": "Hi.\nOne. Two.\nBye.", "judged": True}]
+    spec = lambda n: {"date": "d", "controls": [], "mutants": [{"id": "X", "source": "A", "op": "add", "sentence": n,
+                      "type": "t", "subtlety": "subtle", "expected": "not grounded", "text": "New."}]}
+    frozen, labels = mutate.build(rows, spec(3))
+    assert frozen[0]["draft"] == "Hi.\nOne. New. Two.\nBye.\n" and labels[0]["unsupported_sentences"] == [3]
+    for bad in (1, 6):
+        with pytest.raises(mutate.BadMutation, match="2..5"):
+            mutate.build(rows, spec(bad))
+
+
+def test_frozen_mutant_files_are_never_overwritten_with_different_content(tmp_path):
+    out, lab = tmp_path / "mutants_x.jsonl", tmp_path / "mutants_x.labels.jsonl"
+    mutate.run(DATA, SOURCE, out, lab)
+    before = out.read_text(encoding="utf-8")
+    mutate.run(DATA, SOURCE, out, lab)                                   # identical content: fine
+    assert out.read_text(encoding="utf-8") == before == MUTANTS.read_text(encoding="utf-8")
+    out.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(mutate.BadMutation, match="never overwritten"):
+        mutate.run(DATA, SOURCE, out, lab)
+
+
+class AllClear:
+    """A judge that calls every sentence not_a_claim (so it passes everything)."""
+    model = "fake-judge"
+
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, system, user):
+        self.calls += 1
+        items = [{"sentence": int(line[1:line.index("]")]), "label": "not_a_claim"} for line in _sentences_of(user)]
+        return RawAnswer(payload={"sentences": items, "verdict": "grounded"}, input_tokens=10, output_tokens=5,
+                         model="fake-judge")
+
+
+def test_validate_all_works_on_the_mutants_file_without_a_split_file_and_says_it_is_the_mutation_set(tmp_path):
+    assert not common.split_path(MUTANTS).exists()
+    judge = AllClear()
+    md, js, m = validate.validate(MUTANTS, "all", 1, judge, out_dir=tmp_path / "r")
+    assert judge.calls == 32 and m["tickets"] == 32
+    assert m["false_pass"] == 23 and m["false_pass_of"] == 23 and m["false_fail"] == 0 and m["false_fail_of"] == 9
+    text = md.read_text(encoding="utf-8")
+    assert validate.MUTANTS_NOTE in text and "no longer held out" not in text
+    assert md.name.startswith("judge-all-")
+    with pytest.raises(validate.Refused, match="No split file"):
+        validate.select_split(MUTANTS, "tune")
+
+
+def test_validate_cli_takes_frozen_with_split_all(tmp_path, capsys):
+    assert validate.main(["--split", "all", "--runs", "1", "--frozen", str(MUTANTS), "--out", str(tmp_path / "r")],
+                         backend=AllClear()) == 0
+    assert "MUTATION SET" in capsys.readouterr().out
+
+
+# --- the mutant breakdown in the report ------------------------------------------------------------------------
+class MutantJudge:
+    """Scripted by sentence text: '24 hours — you' -> supported with a real quote lacking the number (number
+    check); 'expires after 24 hours' -> supported with a made-up quote (quote check); 'one-month credit' ->
+    unsupported (the model); everything else not_a_claim (missed)."""
+    model = "fake-judge"
+
+    def complete(self, system, user):
+        items = []
+        for line in _sentences_of(user):
+            n = int(line[1:line.index("]")])
+            if "24 hours — you" in line:
+                it = {"sentence": n, "label": "supported", "quotes": ["Lockout clears automatically after"]}
+            elif "expires after 24 hours" in line:
+                it = {"sentence": n, "label": "supported", "quotes": ["made up quote"]}
+            elif "one-month credit" in line:
+                it = {"sentence": n, "label": "unsupported"}
+            else:
+                it = {"sentence": n, "label": "not_a_claim"}
+            items.append(it)
+        return RawAnswer(payload={"sentences": items, "verdict": "grounded"}, input_tokens=1, output_tokens=1,
+                         model="fake-judge")
+
+
+def test_mutant_report_breaks_down_by_type_and_subtlety_and_says_what_caught_each():
+    md, js, m = validate.validate(MUTANTS, "all", 2, MutantJudge(), out_dir=tmp_dir())
+    b = m["mutation"]
+    assert (b["caught"], b["missed"], b["total"]) == (6, 40, 46)          # 3 mutants caught, 2 runs each
+    assert b["number_only"] == 2 and b["causes"] == {"model": 2, "quote_check": 2, "number_check": 2, "other_sentence": 0}
+    assert b["false_pass_rate"] == pytest.approx(40 / 46) and b["false_pass_rate_without_number_only"] == pytest.approx(42 / 46)
+    assert b["by_type"]["number_changed"] == {"caught": 4, "missed": 6}
+    assert b["by_type"]["invented_promise"] == {"caught": 2, "missed": 4}
+    assert b["by_subtlety"]["subtle"]["caught"] == 0 and b["by_subtlety"]["obvious"]["caught"] == 6
+    assert b["per_mutant"]["M01"]["causes"] == {"number_check": 2} and b["per_mutant"]["M03"]["causes"] == {"quote_check": 2}
+    assert b["per_mutant"]["M12"]["causes"] == {"model": 2}
+    text = md.read_text(encoding="utf-8")
+    assert "## Mutants: caught or missed, and by what" in text
+    assert "**40/46 (87%)**" in text and "**42/46 (91%)**" in text
+    assert "| type: number_changed | 4 | 6 |" in text and "| subtlety: subtle | 0 |" in text
+    assert "- M01 (number_changed, obvious): caught 2/2; by number check (2)" in text
+    assert "- M12 (invented_promise, obvious): caught 2/2; by model (2)" in text
+    assert "- M02 (number_changed, subtle): caught 0/2" in text
+
+
+def test_no_mutant_section_for_ordinary_drafts(tmp_path):
+    frozen, ldir = prepared(tmp_path, {"G1": True, "N1": False, "N2": False})
+    md, _, m = validate.validate(frozen, "tune", 1, ScriptedJudge(), labels_dir=ldir, out_dir=tmp_path / "r")
+    assert m["mutation"] is None and "Mutants: caught or missed" not in md.read_text()
+
+
+def tmp_dir():
+    import tempfile
+    return tempfile.mkdtemp()

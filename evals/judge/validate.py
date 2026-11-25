@@ -23,6 +23,13 @@ DEFAULT_OUT = "evals/results"
 
 
 ALL_SPLIT_NOTE = "split: all (dev). The test split was run once on 2026-11-24 and is no longer held out."
+MUTANTS_NOTE = ("MUTATION SET (planted errors, labels are known by construction). Run it ONCE; no judge change "
+                "after seeing its result, only recording it. The controls (C-*) are unmutated DEV drafts, so a "
+                "false fail on them is not a held-out number.")
+
+
+def is_mutation_set(frozen_path) -> bool:
+    return Path(frozen_path).name.startswith("mutants_")
 
 
 class Refused(Exception):
@@ -36,9 +43,12 @@ def truth_of(label: dict) -> str:
 def select_split(frozen_path, split_name: str, labels_dir=LABELS_DIR) -> tuple[list[dict], dict]:
     """(judged rows of the split, my labels for them), or Refused."""
     sp = split_path(frozen_path)
-    if not sp.exists():
+    if split_name == "all":
+        split = {}  # "all" needs no tune/test split file (a mutation set has none)
+    elif not sp.exists():
         raise Refused(f"No split file {sp}. Freeze the drafts first.")
-    split = json.loads(sp.read_text(encoding="utf-8"))
+    else:
+        split = json.loads(sp.read_text(encoding="utf-8"))
     by_id = {r["id"]: r for r in judged(load_frozen(frozen_path))}
     ids = sorted(by_id) if split_name == "all" else split[split_name]
     unknown = [i for i in ids if i not in by_id]
@@ -82,7 +92,7 @@ def _rate(num: int, den: int):
 
 def compute(rows: list[dict], labels: dict, results: dict[str, list[JudgeResult]]) -> dict:
     matrix = {"grounded": {"grounded": 0, "not_grounded": 0}, "not_grounded": {"grounded": 0, "not_grounded": 0}}
-    failed = quote_errors = mismatches = 0
+    failed = quote_errors = number_errors = mismatches = 0
     input_tokens = output_tokens = 0
     cost: float | None = 0.0
     models = set()
@@ -100,6 +110,7 @@ def compute(rows: list[dict], labels: dict, results: dict[str, list[JudgeResult]
             c = cost_usd(res.model, res.input_tokens, res.output_tokens)
             cost = None if (c is None or cost is None) else cost + c
             quote_errors += len(res.quote_errors)
+            number_errors += len(res.number_errors)
             mismatches += res.verdict_mismatch
             if res.verdict is None:
                 failed += 1
@@ -125,10 +136,67 @@ def compute(rows: list[dict], labels: dict, results: dict[str, list[JudgeResult]
         "false_fail_rate": _rate(matrix["grounded"]["not_grounded"], n_ok),
         "false_pass_tickets": false_pass_tickets, "sentence_level": sentence_level,
         "unstable_tickets": unstable, "consistent": len(rows) - len(unstable), "tickets": len(rows),
-        "failed_calls": failed, "quote_errors": quote_errors, "verdict_mismatches": mismatches,
+        "failed_calls": failed, "quote_errors": quote_errors, "number_errors": number_errors, "verdict_mismatches": mismatches,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost,
         "models": sorted(m for m in models if m),
+        "mutation": mutation_breakdown(rows, results),
     }
+
+
+def mutation_breakdown(rows: list[dict], results: dict[str, list[JudgeResult]]) -> dict | None:
+    """For a mutation set: per mutation type and subtle yes/no, how many judgements (every run counted)
+    caught the mutant (verdict not_grounded) or missed it, and WHAT caught it, read from the mutated
+    sentence: "model" (it labelled it unsupported itself), "quote_check" (a quote not in the article),
+    "number_check" (a number in no quote or ticket), or "other_sentence" (the draft failed, but not on
+    the mutated sentence). Judgements with no verdict are left out and counted."""
+    mut_rows = [r for r in rows if r.get("mutation")]
+    if not mut_rows:
+        return None
+    empty = lambda: {"caught": 0, "missed": 0}  # noqa: E731
+    by_type: dict[str, dict] = {}
+    by_subtle: dict[str, dict] = {}
+    per_mutant: dict[str, dict] = {}
+    causes_total = {"model": 0, "quote_check": 0, "number_check": 0, "other_sentence": 0}
+    caught = missed = number_only = no_verdict = 0
+    for row in mut_rows:
+        mu = row["mutation"]
+        n = mu["sentence"]
+        pm = per_mutant[row["id"]] = {"type": mu["type"], "subtle": mu["subtlety"] == "subtle", "caught": 0,
+                                      "runs": 0, "causes": {}}
+        for res in results[row["id"]]:
+            if res.verdict is None:
+                no_verdict += 1
+                continue
+            pm["runs"] += 1
+            hit = res.verdict == "not_grounded"
+            for bucket in (by_type.setdefault(mu["type"], empty()), by_subtle.setdefault(mu["subtlety"], empty())):
+                bucket["caught" if hit else "missed"] += 1
+            if not hit:
+                missed += 1
+                continue
+            caught += 1
+            pm["caught"] += 1
+            sent = next((c for c in res.sentences if c.number == n), None)
+            causes = []
+            if sent is not None:
+                if sent.label == "unsupported":
+                    causes.append("model")
+                if sent.quote_error:
+                    causes.append("quote_check")
+                if sent.number_error:
+                    causes.append("number_check")
+            if not causes:
+                causes.append("other_sentence")
+            for c in causes:
+                causes_total[c] += 1
+                pm["causes"][c] = pm["causes"].get(c, 0) + 1
+            if causes == ["number_check"]:
+                number_only += 1
+    total = caught + missed
+    return {"by_type": by_type, "by_subtlety": by_subtle, "per_mutant": per_mutant, "causes": causes_total,
+            "caught": caught, "missed": missed, "total": total, "number_only": number_only, "no_verdict": no_verdict,
+            "false_pass_rate": _rate(missed, total),
+            "false_pass_rate_without_number_only": _rate(missed + number_only, total)}
 
 
 def _pct(rate) -> str:
@@ -151,7 +219,7 @@ def disagreements(rows: list[dict], labels: dict, results: dict[str, list[JudgeR
 def render_markdown(meta: dict, m: dict, diffs: list[dict]) -> str:
     L = [f"# Judge validation: {meta['split']} split", ""]
     if meta["split"] == "all":
-        L += [ALL_SPLIT_NOTE, ""]
+        L += [MUTANTS_NOTE if is_mutation_set(meta["frozen"]) else ALL_SPLIT_NOTE, ""]
     L += [
          f"- Judge model: `{', '.join(m['models']) or meta['judge_model']}`",
          f"- Frozen drafts: `{meta['frozen']}` (commit `{meta['frozen_commit']}`, drafter `{meta['drafter_model']}`)",
@@ -176,10 +244,13 @@ def render_markdown(meta: dict, m: dict, diffs: list[dict]) -> str:
           f"- None of my sentences flagged: {sl['none']}/{total}",
           f"- I marked no sentence numbers (not comparable): {sl['not_marked']}/{total}",
           "(judgements with no verdict are left out)"]
+    if m.get("mutation"):
+        L += render_mutation(m["mutation"])
     L += ["", "## Consistency, quote errors, cost", "",
           f"- Same verdict in every run: {m['consistent']}/{m['tickets']} tickets" +
           (f" (unstable: {', '.join(m['unstable_tickets'])})" if m["unstable_tickets"] else ""),
           f"- Quote verifier errors (judge said supported, the quote is not in the article; counted unsupported): {m['quote_errors']}",
+          f"- Number errors (judge said supported, but a number of the sentence is in none of its quotes; counted unsupported): {m['number_errors']}",
           f"- Judge verdict contradicted its own sentences (sentences win): {m['verdict_mismatches']}",
           f"- Judge calls that failed or did not validate (no verdict, left out of the numbers above): {m['failed_calls']}",
           f"- Tokens: {m['input_tokens']:,} in, {m['output_tokens']:,} out; cost (estimate): " +
@@ -204,12 +275,38 @@ def render_markdown(meta: dict, m: dict, diffs: list[dict]) -> str:
                 star = "*" if c.number in mine else " "
                 flag = " **[QUOTE NOT FOUND, counted unsupported]**" if c.quote_error else ""
                 quote = "".join(f' quote: "{q}"' for q in c.quotes)
+                if c.number_error:
+                    flag += f" **[NUMBER NOT IN QUOTES: {', '.join(c.missing_numbers)}, counted unsupported]**"
                 reason = f" ({c.reason})" if c.reason else ""
                 L.append(f"- {star}[{c.number}] {c.label}{flag}{reason}: {c.text}{quote}")
         else:
             L.append("- (no usable judge answer)")
         L.append("")
     return "\n".join(L) + "\n"
+
+
+def render_mutation(b: dict) -> list[str]:
+    names = {"model": "model", "quote_check": "quote check", "number_check": "number check",
+             "other_sentence": "another sentence (not the mutated one)"}
+    L = ["", "## Mutants: caught or missed, and by what", "",
+         "Caught = verdict not_grounded; missed = grounded (a false pass). Every run counted; judgements with no "
+         f"verdict are left out ({b['no_verdict']}).", "",
+         f"- Mutant false pass rate (overall): **{b['missed']}/{b['total']} ({_pct(b['false_pass_rate'])})**",
+         f"- Same, counting runs caught ONLY by the number check as missed (the model's own performance): "
+         f"**{b['missed'] + b['number_only']}/{b['total']} ({_pct(b['false_pass_rate_without_number_only'])})**; "
+         f"runs caught only by the number check: {b['number_only']}",
+         "- What caught the mutated sentence (a run can have several): " +
+         ", ".join(f"{names[k]} {v}" for k, v in b["causes"].items()), "",
+         "| Group | caught | missed |", "|---|---|---|"]
+    for title, groups in (("type", b["by_type"]), ("subtlety", b["by_subtlety"])):
+        for k in sorted(groups):
+            L.append(f"| {title}: {k} | {groups[k]['caught']} | {groups[k]['missed']} |")
+    L += ["", "Per mutant:", ""]
+    for mid, pm in b["per_mutant"].items():
+        by = ", ".join(f"{names[k]} ({v})" for k, v in pm["causes"].items())
+        L.append(f"- {mid} ({pm['type']}, {'subtle' if pm['subtle'] else 'obvious'}): caught {pm['caught']}/{pm['runs']}"
+                 + (f"; by {by}" if by else ""))
+    return L
 
 
 def write_report(meta: dict, m: dict, diffs: list[dict], out_dir) -> tuple[Path, Path]:
