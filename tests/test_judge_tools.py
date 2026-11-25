@@ -678,3 +678,68 @@ def test_no_mutant_section_for_ordinary_drafts(tmp_path):
 def tmp_dir():
     import tempfile
     return tempfile.mkdtemp()
+
+
+# --- out of credit is fatal, like an authentication error ------------------------------------------------------
+CREDIT = ("Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': "
+          "'Your credit balance is too low to access the Anthropic API.'}}")
+
+
+def test_is_billing_error_matches_only_a_400_about_the_credit_balance():
+    class BadRequestError(Exception):
+        status_code = 400
+
+    assert judge_mod.is_billing_error(BadRequestError(CREDIT))
+    assert judge_mod.is_billing_error(RuntimeError(CREDIT))                       # message alone with "400" in it
+    assert not judge_mod.is_billing_error(BadRequestError("max_tokens is too large"))
+    assert not judge_mod.is_billing_error(RuntimeError("credit balance is too low"))     # no 400
+    assert not judge_mod.is_billing_error(TypeError("Anthropic authentication failed: no API key"))
+
+
+def test_validate_stops_at_once_when_the_credit_runs_out_and_writes_no_report(tmp_path, capsys, monkeypatch):
+    frozen, ldir = prepared(tmp_path, {"G1": True, "G2": True, "N1": False, "N2": False})
+    real_select, real_validate = validate.select_split, validate.validate          # point both at my temp labels
+    monkeypatch.setattr(validate, "select_split", lambda f, s, d=None: real_select(f, s, ldir))
+    monkeypatch.setattr(validate, "validate", lambda *a, **k: real_validate(*a, labels_dir=ldir, **k))
+    calls = {"n": 0}
+
+    class OutOfCredit(ScriptedJudge):
+        def complete(self, system, user):
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                return RawAnswer(error="BadRequestError: " + CREDIT, billing_failed=True)
+            return super().complete(system, user)
+
+    out = tmp_path / "r"
+    code = validate.main(["--split", "all", "--runs", "3", "--frozen", str(frozen), "--out", str(out)],
+                         backend=OutOfCredit())
+    err = capsys.readouterr().err
+    assert code == 1 and calls["n"] == 3                                  # stopped at the first failing call
+    assert "no credit left" in err and "No report written" in err and "rejected the credentials" not in err
+    assert not out.exists() or not list(out.iterdir())
+    with pytest.raises(judge_mod.BillingFailed):
+        validate.run_judge(OutOfCredit(), common.judged(common.load_frozen(frozen)), runs=1)
+
+
+def test_the_backend_marks_a_credit_error_as_billing_not_as_authentication():
+    class BadRequestError(Exception):
+        status_code = 400
+
+    class Llm:
+        def invoke(self, _):
+            raise BadRequestError(CREDIT)
+
+    backend = judge_mod.AnthropicBackend.__new__(judge_mod.AnthropicBackend)
+    backend.model, backend._llm = "m", Llm()
+    ans = backend.complete("s", "u")
+    assert ans.billing_failed and not ans.auth_failed and ans.payload is None
+
+
+def test_freeze_stops_at_once_when_the_credit_runs_out_and_writes_nothing(tmp_path, capsys):
+    err = RuntimeError(CREDIT)
+    g = FakeGraph({"s-A": err, "s-B": err, "s-C": err, "s-D": err})
+    code, out, _ = run_freeze(tmp_path, "y", g)
+    assert code == 1 and g.calls == 1
+    assert not out.exists() and not common.split_path(out).exists()
+    text = capsys.readouterr().err
+    assert "no credit left" in text and "Nothing was written" in text and "rejected the credentials" not in text

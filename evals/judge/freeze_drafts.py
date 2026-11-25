@@ -20,7 +20,7 @@ from pathlib import Path
 from evals.judge.common import FROZEN_DIR, judged, write_jsonl
 from evals.judge.split import SEED, proxy_stratum, make_split, save_split
 from evals.credentials import export_credentials, missing_keys
-from evals.judge.judge import AuthFailed, is_auth_error
+from evals.judge.judge import AuthFailed, BillingFailed, is_auth_error, is_billing_error
 from evals.run_eval import git_commit, load_dataset
 from evals.scoring import reply_checks, summarize_reply_checks
 
@@ -74,6 +74,8 @@ def freeze_one(graph, label: dict, meta: dict) -> dict:
         record["review_reason"] = state.get("review_reason") or None
         record["usage"] = collector.summary()
     except Exception as exc:
+        if is_billing_error(exc):
+            raise BillingFailed(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
         if is_auth_error(exc):
             raise AuthFailed(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
         record["error"] = f"{type(exc).__name__}: {exc}"
@@ -157,6 +159,10 @@ def main(argv=None, *, input_fn=input, graph=None, settings=None) -> int:
     try:
         rows = freeze(dataset, graph, meta, only,
                       progress=lambda r: print(f"{r['id']}: {'ERROR ' + r['error'] if r['error'] else 'done'}", file=sys.stderr))
+    except BillingFailed as exc:
+        print(f"\nStopped: the Anthropic account has no credit left ({exc}). Add credit and run again. "
+              "Nothing was written.", file=sys.stderr)
+        return 1
     except AuthFailed as exc:
         print(f"\nStopped at the first ticket: the Anthropic API rejected the credentials ({exc}). "
               "Nothing was written.", file=sys.stderr)

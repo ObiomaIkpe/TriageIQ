@@ -215,6 +215,17 @@ class AuthFailed(Exception):
     """The provider rejected our credentials (or none reached the client). Repeating the call is pointless."""
 
 
+class BillingFailed(AuthFailed):
+    """The account has no credit left (HTTP 400 "credit balance is too low"). Repeating the call is pointless."""
+
+
+def is_billing_error(exc: BaseException) -> bool:
+    """True for a 400 from the API whose message says the credit balance is too low."""
+    text = str(exc).lower()
+    is_400 = getattr(exc, "status_code", None) == 400 or type(exc).__name__ == "BadRequestError" or "400" in text
+    return is_400 and "credit balance is too low" in text
+
+
 def is_auth_error(exc: BaseException) -> bool:
     """True for a 401/403 from the API, or the client's own "no API key" TypeError. Never looks at a key."""
     if type(exc).__name__ in ("AuthenticationError", "PermissionDeniedError"):
@@ -232,6 +243,7 @@ class RawAnswer:
     output_tokens: int = 0
     model: str = ""
     auth_failed: bool = False
+    billing_failed: bool = False
 
 
 class JudgeBackend(Protocol):
@@ -309,6 +321,8 @@ def judge_draft(backend: JudgeBackend, *, subject: str, body: str, articles: lis
 
     sentences = split_sentences(draft)
     answer = backend.complete(SYSTEM_PROMPT, build_user_message(subject, body, articles, sentences))
+    if answer.billing_failed:
+        raise BillingFailed(answer.error or "credit balance is too low")
     if answer.auth_failed:
         raise AuthFailed(answer.error or "authentication failed")
     if not answer.model:
@@ -346,7 +360,7 @@ class AnthropicBackend:
             message = self._llm.invoke([("system", system), ("human", user)])
         except Exception as exc:  # a failed call is a result, not a crash: the run keeps going
             return RawAnswer(error=f"{type(exc).__name__}: {str(exc)[:200]}", model=self.model,
-                             auth_failed=is_auth_error(exc))
+                             auth_failed=is_auth_error(exc), billing_failed=is_billing_error(exc))
         usage = getattr(message, "usage_metadata", None) or {}
         tokens = dict(input_tokens=int(usage.get("input_tokens") or 0),
                       output_tokens=int(usage.get("output_tokens") or 0), model=self.model)

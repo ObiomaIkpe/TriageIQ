@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from evals.judge.common import LABELS_DIR, judged, labels_path, latest_frozen, load_frozen, load_labels, split_path
-from evals.judge.judge import AuthFailed, JudgeResult, judge_draft
+from evals.judge.judge import AuthFailed, BillingFailed, JudgeResult, judge_draft
 
 DEFAULT_OUT = "evals/results"
 
@@ -367,6 +367,10 @@ def main(argv=None, *, backend=None) -> int:
     try:
         md, js, _ = validate(frozen, args.split, args.runs, backend, out_dir=args.out,
                              progress=lambda n, tid, r: print(f"run {n} {tid}: {r.verdict or 'ERROR'}", file=sys.stderr))
+    except BillingFailed as exc:
+        print(f"Stopped: the Anthropic account has no credit left ({exc}). Add credit and run again. "
+              "No report written.", file=sys.stderr)
+        return 1
     except AuthFailed as exc:
         print(f"Stopped: the Anthropic API rejected the credentials ({exc}). No report written.", file=sys.stderr)
         return 1
