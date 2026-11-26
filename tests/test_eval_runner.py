@@ -244,3 +244,15 @@ def test_md_notes_skips_in_the_counts(fakes, dataset, tmp_path):
     md = next((tmp_path / "r").glob("*.md")).read_text(encoding="utf-8")
     assert "- category: 2/2" in md
     assert "- must_include: 1/1 (1 skipped)" in md
+
+
+def test_the_report_has_the_deterministic_reply_checks_per_ticket_and_as_rates(fakes, dataset, tmp_path):
+    out = tmp_path / "results"
+    assert run(dataset, out) == 0
+    result = read_result(out)
+    assert result["tickets"][0]["reply_checks"] == {"has_markdown": False, "has_subject_line": False,
+                                                    "draft_without_kb": False}
+    assert result["tickets"][2]["reply_checks"] is None                       # E3 errored: no output
+    assert result["reply_checks"]["has_markdown"]["of"] == 1                  # only E1 had a draft
+    md = next(out.glob("*.md")).read_text(encoding="utf-8")
+    assert "DETERMINISTIC REPLY CHECKS" in md and "has_markdown: 0/1 (0%)" in md

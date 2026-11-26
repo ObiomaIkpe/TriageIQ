@@ -137,6 +137,7 @@ Baseline already in place:
   - [ ] calibration error
   - [ ] latency p50/p95 and cost per ticket
 - [x] **G2a. Eval harness and eval loop (M5.1).** `python -m evals.run_eval` runs a labelled set through the real graph with deterministic scoring and a markdown/JSON report; the loop of run, investigate, fix and re-run has been used (see the README's Evals: results). The LLM judge (reply groundedness, under G2) and tracing (J2) stay open.
+- [ ] **G2b. LLM groundedness judge (M5a).** *Round 1 built (judge, quote verifier, deterministic reply checks, frozen drafts, blind labelling tool, validation script; see the README's Evals).* Round 2: freeze the drafts, label them by hand, validate the judge on the tune split (read every disagreement, one change per round), confirm once on the test split, and only then change the drafter prompt (Markdown, a "Subject:" line, a draft with no KB article) and measure it with the judge.
 - [ ] **G3. CI regression gate:** fail the build if any metric drops below a stored baseline.
 - [ ] **G4. Threshold tuning** for confidence (0.6) and distance (0.5) using precision/recall curves, with the chosen values and reasoning recorded.
 - [ ] **G5. Prompt versioning and A/B comparison** run through the same eval set.

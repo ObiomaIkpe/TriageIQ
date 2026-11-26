@@ -1,0 +1,15 @@
+{
+ "article": "Accounts lock after 5 failed login attempts within 15 minutes. Lockout clears automatically after 1 hour.",
+ "draft": "One sentence.",
+ "answer": {
+  "sentences": [
+   {
+    "sentence": 1,
+    "label": "maybe",
+    "reason": "x",
+    "quotes": []
+   }
+  ],
+  "verdict": "grounded"
+ }
+}

@@ -16,7 +16,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from evals.scoring import CHECKS, score_ticket, summarize
+from evals.credentials import missing_keys  # noqa: F401  (re-exported)
+from evals.scoring import CHECKS, REPLY_CHECKS, reply_checks, score_ticket, summarize, summarize_reply_checks
 
 DEFAULT_DATASET = "evals/dataset/tickets_v1.jsonl"
 DEFAULT_OUT = "evals/results"
@@ -25,13 +26,6 @@ DEFAULT_OUT = "evals/results"
 def load_dataset(path) -> list:
     lines = Path(path).read_text(encoding="utf-8").splitlines()
     return [json.loads(line) for line in lines if line.strip()]
-
-
-def missing_keys(settings) -> list:
-    """Names (never values) of the required keys that are empty."""
-    required = {"ANTHROPIC_API_KEY": settings.anthropic_api_key,
-                "VOYAGE_API_KEY": settings.voyage_api_key}
-    return [name for name, value in required.items() if not (value or "").strip()]
 
 
 def git_commit() -> str:
@@ -76,11 +70,12 @@ def run_ticket(graph, label: dict) -> dict:
     config = {"configurable": {"thread_id": str(uuid.uuid4())}}
     started = time.perf_counter()
     entry = {"id": label["id"], "label": label, "output": None, "scores": None,
-             "latency_seconds": None, "error": None}
+             "reply_checks": None, "latency_seconds": None, "error": None}
     try:
         state = graph.invoke({"ticket": ticket}, config=config)
         entry["output"] = extract_output(state)
         entry["scores"] = score_ticket(label, entry["output"])
+        entry["reply_checks"] = reply_checks(entry["output"])
     except Exception as exc:  # one bad ticket must not stop the run
         entry["error"] = f"{type(exc).__name__}: {exc}"
     entry["latency_seconds"] = round(time.perf_counter() - started, 3)
@@ -124,6 +119,7 @@ def run_eval(dataset_path, only=None, graph=None) -> dict:
         "started_at": started_at.isoformat(timespec="seconds"),
         "duration_seconds": round(time.perf_counter() - started, 3),
         "summary": summarize(scored),
+        "reply_checks": summarize_reply_checks(tickets),
         "tickets": tickets,
     }
 
@@ -172,6 +168,19 @@ def render_markdown(result: dict) -> str:
     if not reply:
         lines.append("None.")
 
+    lines += ["", "## DETERMINISTIC REPLY CHECKS (plain code, no AI; lower is better)", ""]
+    rc = result.get("reply_checks")
+    if rc:
+        for name in REPLY_CHECKS:
+            item = rc[name]
+            rate = f"{item['rate']:.0%}" if item["rate"] is not None else "n/a"
+            ids = f": {', '.join(item['hits'])}" if item["hits"] else ""
+            lines.append(f"- {name}: {item['count']}/{item['of']} ({rate}){ids}")
+        lines.append("- (has_markdown and has_subject_line are out of tickets with a draft; "
+                     "draft_without_kb is out of all tickets)")
+    else:
+        lines.append("Not recorded.")
+
     lines += ["", "## OTHER FAILURES", ""]
     other = _fails(result, "category", "urgency", "kb_topic")
     for t, name, check in other:
@@ -219,6 +228,9 @@ def main(argv=None) -> int:
               "Set them in .env or the environment.", file=sys.stderr)
         return 1
 
+    from evals.credentials import export_credentials
+
+    export_credentials(settings)  # before the graph (and its Claude clients) is imported
     only = [i.strip() for i in args.only.split(",") if i.strip()] if args.only else None
     try:
         result = run_eval(args.dataset, only)

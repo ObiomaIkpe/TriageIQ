@@ -1,0 +1,17 @@
+{"id": "T01", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T18:08:08"}
+{"id": "T02", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T18:09:03"}
+{"id": "T03", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T18:09:37"}
+{"id": "T04", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T18:10:15"}
+{"id": "T05", "grounded": false, "unsupported_sentences": [2], "note": "claude, borderline: \"unused portion\" not in article", "labelled_at": "2026-11-24T18:11:34"}
+{"id": "T06", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T18:11:56"}
+{"id": "T07", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T18:13:33"}
+{"id": "T08", "grounded": false, "unsupported_sentences": [7], "note": "", "labelled_at": "2026-11-24T18:14:59"}
+{"id": "T09", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T19:06:45"}
+{"id": "T10", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T19:07:16"}
+{"id": "T11", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T19:07:59"}
+{"id": "T12", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T19:08:16"}
+{"id": "T16", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T19:08:58"}
+{"id": "T17", "grounded": false, "unsupported_sentences": [3], "note": "", "labelled_at": "2026-11-24T19:12:07"}
+{"id": "T18", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T19:12:24"}
+{"id": "T19", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T19:12:31"}
+{"id": "T20", "grounded": true, "unsupported_sentences": [], "note": "", "labelled_at": "2026-11-24T19:14:31"}
